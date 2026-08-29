@@ -1,0 +1,453 @@
+# Builds the 3D geometry for a maze.
+#
+# A 90x90 maze is 8100 cells and up to ~16000 wall quads. That is far too many
+# to make individual nodes out of, so every wall goes into ONE surface built with
+# SurfaceTool, plus one floor and one grid-line overlay. Three draw calls for the
+# whole maze.
+#
+# The grid lines are not decoration: they are the timing contract the whole
+# control scheme rests on (CLAUDE.md section 11.3). They get their own emissive
+# overlay so they stay readable at speed.
+class_name MazeMesh
+extends Node3D
+
+# The live colourway, swapped per maze from Tuning.PALETTES so arriving in a new
+# maze reads as arriving somewhere. Defaults to maze 1's so a mesh built without
+# an explicit palette -- SceneTest does this -- still looks right.
+#
+# Gate and exit stay FIXED across all three: they are navigation, not
+# decoration, and a gate has to be identifiable as a gate on sight rather than
+# re-learned once per maze.
+var _palette: Dictionary = Tuning.PALETTES[0]
+
+var _maze: Maze
+
+# Collected while emitting wall quads, consumed by _build_wall_tops().
+var _wall_edges: Array = []
+
+
+func build(maze: Maze, palette_index: int = 0) -> void:
+	_maze = maze
+	_palette = Tuning.PALETTES[clampi(palette_index, 0, Tuning.PALETTES.size() - 1)]
+	_wall_edges.clear()
+
+	for child in get_children():
+		child.queue_free()
+
+	_build_floor()
+	_build_walls()
+	_build_grid_lines()
+	_build_gates()
+	_build_exit()
+
+
+# --- Floor -------------------------------------------------------------------
+
+func _build_floor() -> void:
+	var size_x := _maze.width * Tuning.CELL_SIZE
+	var size_z := _maze.height * Tuning.CELL_SIZE
+
+	var plane := PlaneMesh.new()
+	plane.size = Vector2(size_x, size_z)
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = _palette["floor"]
+	mat.roughness = 0.65
+	mat.metallic = 0.1
+	plane.material = mat
+
+	var instance := MeshInstance3D.new()
+	instance.mesh = plane
+	# PlaneMesh is centred on its origin; cell centres run from 0 to (n-1)*size,
+	# so the centre of the grid sits half a cell short of half the full extent.
+	instance.position = Vector3(
+		size_x * 0.5 - Tuning.CELL_SIZE * 0.5,
+		0.0,
+		size_z * 0.5 - Tuning.CELL_SIZE * 0.5
+	)
+	add_child(instance)
+
+
+# --- Walls -------------------------------------------------------------------
+
+func _build_walls() -> void:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	var half := Tuning.CELL_SIZE * 0.5
+
+	for y in _maze.height:
+		for x in _maze.width:
+			var cell := Vector2i(x, y)
+			var cx := x * Tuning.CELL_SIZE
+			var cz := y * Tuning.CELL_SIZE
+
+			# Only emit the north and west faces of each cell, plus the outer
+			# south/east boundary. Emitting all four would double every interior
+			# wall into coincident quads that z-fight.
+			if _maze._has_wall(cell, Maze.N):
+				_add_wall_quad(st,
+					Vector3(cx - half, 0, cz - half),
+					Vector3(cx + half, 0, cz - half))
+			if _maze._has_wall(cell, Maze.W):
+				_add_wall_quad(st,
+					Vector3(cx - half, 0, cz + half),
+					Vector3(cx - half, 0, cz - half))
+			if x == _maze.width - 1 and _maze._has_wall(cell, Maze.E):
+				_add_wall_quad(st,
+					Vector3(cx + half, 0, cz - half),
+					Vector3(cx + half, 0, cz + half))
+			if y == _maze.height - 1 and _maze._has_wall(cell, Maze.S):
+				_add_wall_quad(st,
+					Vector3(cx + half, 0, cz + half),
+					Vector3(cx - half, 0, cz + half))
+
+	st.generate_normals()
+
+	# Wall faces sit in a narrow band between two failure modes, and both have
+	# been hit:
+	#
+	#   too bright -> every wall washes out to flat cyan and all depth reading
+	#                 dies, because the neon must come from the EDGES (wall-top
+	#                 caps, the floor band at the wall base, and the grid),
+	#                 never the faces
+	#   too dark   -> with correct outward normals the corridor-facing sides
+	#                 point away from the directional light and get ambient only,
+	#                 so the maze becomes neon lines floating in a void
+	#
+	# A low albedo plus a trace of emission keeps the surfaces present without
+	# competing with the edges. The headlight in Game.gd does the rest.
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = _palette["wall_albedo"]
+	mat.emission_enabled = true
+	mat.emission = _palette["wall_emission"]
+	mat.emission_energy_multiplier = 0.40
+	mat.roughness = 0.85
+	mat.metallic = 0.0
+	# Walls are single quads with no thickness, so each one is shared by the two
+	# cells either side of it and must render from BOTH. Culling backfaces here
+	# makes every wall invisible from one of the two corridors it bounds.
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	var instance := MeshInstance3D.new()
+	instance.mesh = st.commit()
+	instance.material_override = mat
+	add_child(instance)
+
+	_build_wall_tops()
+
+
+# A flat wall plane running from `a` to `b` along the ground, rising to
+# WALL_HEIGHT.
+#
+# ZERO THICKNESS, deliberately. These were solid boxes, on the reasoning that a
+# flat wall shows nothing edge-on so corridor mouths read as slits cut in paper.
+# In practice the opposite was true: at 0.5-0.7m the slab's side faces and end
+# caps were plainly visible as you passed an opening, every junction showed the
+# wall's depth, and the maze read as a set of 3D blocks rather than a clean
+# lightcycle grid. Thickness also created the artifacts it took three passes to
+# kill -- the doubled-looking walls and the banded end caps both came from
+# having a slab to decorate.
+#
+# Opacity does NOT come from thickness, it comes from the material: the wall
+# surface is fully opaque either way. What thickness bought was a visible side
+# face, and that was the thing that looked wrong.
+func _add_wall_quad(st: SurfaceTool, a: Vector3, b: Vector3) -> void:
+	var h := Vector3(0, Tuning.WALL_HEIGHT, 0)
+
+	# One quad. Both faces are drawn because the material is CULL_DISABLED --
+	# with no thickness there is no "outside" to cull toward, and a plane culled
+	# to one side would vanish when seen from the other corridor.
+	_add_quad(st, a, b, b + h, a + h)
+
+	_wall_edges.append([a, b])
+
+
+# Emits the quad p1-p2-p3-p4 as two triangles.
+#
+# Winding no longer decides visibility: the wall material is CULL_DISABLED
+# because a zero-thickness wall is shared by the corridors on both sides and has
+# to draw from either. It still sets the normal direction, which is what the
+# lighting reads, so the order is kept consistent.
+func _add_quad(st: SurfaceTool, p1: Vector3, p2: Vector3, p3: Vector3, p4: Vector3) -> void:
+	st.add_vertex(p1)
+	st.add_vertex(p2)
+	st.add_vertex(p3)
+
+	st.add_vertex(p1)
+	st.add_vertex(p3)
+	st.add_vertex(p4)
+
+
+# The neon: a cap along the top of every wall, and a band on the floor at its
+# base. Both are EDGES -- a glowing line where two surfaces meet reads as depth,
+# where an emissive wall face just becomes a flat colour field.
+func _build_wall_tops() -> void:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	# The neon lives on ONE surface per wall side: a band lying flat on the
+	# FLOOR, tight against the base of the wall, plus the cap along the top.
+	#
+	# The band used to be a vertical strip on the wall face, and that is what
+	# produced both artifacts at once:
+	#
+	#   - Pushed 0.06 OUTSIDE the face it floated in open air, drove through
+	#     perpendicular walls at every corner, and hung in space beyond them.
+	#   - Pulled 0.06 INSIDE the face it was buried in solid geometry and only
+	#     rendered by winning a depth fight it should lose -- which is the
+	#     ribbed "panel" striping that showed up on every wall end.
+	#
+	# There is no offset that works, because a coplanar decal on a thick slab is
+	# the wrong construction. A floor band has neither problem: it sits on the
+	# floor plane, well clear of every wall surface in depth, and it is bounded
+	# by the corridor rather than the slab. It also reads BETTER at speed -- it
+	# runs alongside the grid lines the player is already tracking (section
+	# 11.3) rather than competing with them from up on the wall.
+	# The cap is a separate quad floating over the slab's own top face, so the
+	# two are parallel and close -- the classic z-fight setup. At 0.05 they
+	# still interleaved at grazing angles and every distant wall top grew a
+	# sawtooth fringe. 0.16 is far enough to resolve cleanly at the far end of a
+	# 90-cell maze and still reads as sitting ON the wall.
+	var top := Vector3(0, Tuning.WALL_HEIGHT + 0.16, 0)
+	# Walls have no thickness now, so the cap needs its own width or it would be
+	# a zero-area strip. This is the one place a wall gets visible breadth, and
+	# it reads as a glowing rail along the top edge rather than as slab depth.
+	var half_t := 0.07
+
+	# Well above the floor strips (y = 0.02) so the two never fight for depth.
+	var floor_y := 0.05
+	# How far the glow reaches out from the wall base into the corridor.
+	var band_width := 0.30
+
+	for edge in _wall_edges:
+		var base_a: Vector3 = edge[0]
+		var base_b: Vector3 = edge[1]
+
+		var a: Vector3 = base_a + top
+		var b: Vector3 = base_b + top
+		var along := (b - a).normalized()
+		var side := Vector3(-along.z, 0.0, along.x) * half_t
+
+		# Cap along the top of the slab, flush with its sides.
+		st.add_vertex(a - side)
+		st.add_vertex(b - side)
+		st.add_vertex(b + side)
+
+		st.add_vertex(a - side)
+		st.add_vertex(b + side)
+		st.add_vertex(a + side)
+
+		# A floor band on each side, running from the wall outward. It starts a
+		# few centimetres clear of the wall plane rather than exactly on it, so
+		# the band and the wall's own base never fight for depth.
+		var unit := side.normalized()
+		var inner := unit * 0.03
+		var outer := unit * (0.03 + band_width)
+		var lift := Vector3(0, floor_y, 0)
+
+		for sign in [1.0, -1.0]:
+			var i0: Vector3 = base_a + inner * sign + lift
+			var i1: Vector3 = base_b + inner * sign + lift
+			var o0: Vector3 = base_a + outer * sign + lift
+			var o1: Vector3 = base_b + outer * sign + lift
+
+			st.add_vertex(i0)
+			st.add_vertex(i1)
+			st.add_vertex(o1)
+
+			st.add_vertex(i0)
+			st.add_vertex(o1)
+			st.add_vertex(o0)
+
+	st.generate_normals()
+
+	# Unshaded and double-sided: the caps are flat horizontal strips at wall
+	# height, and the camera eye sits below them, so a single-sided cap would be
+	# backface-culled and invisible from inside the corridor -- exactly where it
+	# needs to be seen.
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = _palette["wall"]
+	mat.emission_enabled = true
+	mat.emission = _palette["wall"]
+	mat.emission_energy_multiplier = 2.2
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	var instance := MeshInstance3D.new()
+	instance.mesh = st.commit()
+	instance.material_override = mat
+	add_child(instance)
+
+	_wall_edges.clear()
+
+
+# --- Grid lines --------------------------------------------------------------
+
+# The timing reference. Every cell boundary gets a bright line on the floor so
+# the player can see exactly when they cross into a new cell -- which is what
+# makes a 0.2-cell buffer fair rather than cruel.
+func _build_grid_lines() -> void:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	var half := Tuning.CELL_SIZE * 0.5
+	var line_half := 0.06
+	var y := 0.02   # just above the floor, to avoid z-fighting
+
+	for i in range(_maze.width + 1):
+		var x := i * Tuning.CELL_SIZE - half
+		_add_floor_strip(st,
+			Vector3(x - line_half, y, -half),
+			Vector3(x + line_half, y, _maze.height * Tuning.CELL_SIZE - half))
+
+	for i in range(_maze.height + 1):
+		var z := i * Tuning.CELL_SIZE - half
+		_add_floor_strip(st,
+			Vector3(-half, y, z - line_half),
+			Vector3(_maze.width * Tuning.CELL_SIZE - half, y, z + line_half))
+
+	st.generate_normals()
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = _palette["grid"]
+	mat.emission_enabled = true
+	mat.emission = _palette["grid"]
+	mat.emission_energy_multiplier = 1.2
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+
+	var instance := MeshInstance3D.new()
+	instance.mesh = st.commit()
+	instance.material_override = mat
+	add_child(instance)
+
+	_build_lane_lines()
+
+
+# The lane sub-grid: LANE_COUNT lines per cell in each axis, matching the
+# lateral positions the marker can occupy (Tuning, "Lanes").
+#
+# A SEPARATE, dimmer, thinner surface rather than more lines in the grid above,
+# and that separation is the whole point. The cell-boundary lines are the timing
+# contract -- the player reads them to know when a turn resolves (CLAUDE.md
+# section 11.3) -- so they must stay the dominant marking on the floor. Drawing
+# lane lines at the same weight would give five equally-loud lines per cell and
+# destroy the one reference the control scheme depends on.
+func _build_lane_lines() -> void:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	var half := Tuning.CELL_SIZE * 0.5
+	# Much thinner than the cell lines (0.06) so it reads as a subdivision.
+	var line_half := 0.012
+	# Just under the cell lines, so where the two coincide the boundary wins.
+	var y := 0.018
+	var step := Tuning.CELL_SIZE / float(Tuning.LANE_COUNT)
+
+	for i in range(_maze.width * Tuning.LANE_COUNT + 1):
+		# Skip positions that land on a cell boundary -- the bright line is
+		# already there and a dim one under it would only z-fight.
+		if i % Tuning.LANE_COUNT == 0:
+			continue
+		var x := i * step - half
+		_add_floor_strip(st,
+			Vector3(x - line_half, y, -half),
+			Vector3(x + line_half, y, _maze.height * Tuning.CELL_SIZE - half))
+
+	for i in range(_maze.height * Tuning.LANE_COUNT + 1):
+		if i % Tuning.LANE_COUNT == 0:
+			continue
+		var z := i * step - half
+		_add_floor_strip(st,
+			Vector3(-half, y, z - line_half),
+			Vector3(_maze.width * Tuning.CELL_SIZE - half, y, z + line_half))
+
+	st.generate_normals()
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = _palette["grid"]
+	mat.emission_enabled = true
+	mat.emission = _palette["grid"]
+	# A small fraction of the cell lines' energy, and dimmed in albedo too.
+	#
+	# Tuned DOWN hard from 0.30: at that strength the sub-grid read as loud as
+	# the cell boundaries and the floor became an undifferentiated graph-paper
+	# mesh, which is precisely the failure this surface was split out to avoid.
+	# The lane lines are texture and a speed cue; the boundary is the contract.
+	mat.albedo_color = (_palette["grid"] * 0.5)
+	mat.emission = (_palette["grid"] * 0.5)
+	mat.emission_energy_multiplier = 0.10
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+
+	var instance := MeshInstance3D.new()
+	instance.mesh = st.commit()
+	instance.material_override = mat
+	add_child(instance)
+
+
+func _add_floor_strip(st: SurfaceTool, from: Vector3, to: Vector3) -> void:
+	var a := Vector3(from.x, from.y, from.z)
+	var b := Vector3(to.x, from.y, from.z)
+	var c := Vector3(to.x, from.y, to.z)
+	var d := Vector3(from.x, from.y, to.z)
+
+	st.add_vertex(a)
+	st.add_vertex(b)
+	st.add_vertex(c)
+
+	st.add_vertex(a)
+	st.add_vertex(c)
+	st.add_vertex(d)
+
+
+# --- Gates and exit ----------------------------------------------------------
+
+func _build_gates() -> void:
+	for i in _maze.gates.size():
+		var gate: Vector2i = _maze.gates[i]
+		var marker := _make_marker(gate, Tuning.NEON_GATE, 0.9)
+		marker.name = "Gate%d" % i
+		add_child(marker)
+
+
+func _build_exit() -> void:
+	var marker := _make_marker(_maze.exit_cell, Tuning.NEON_EXIT, 1.6)
+	marker.name = "Exit"
+	add_child(marker)
+
+
+# A glowing pillar marking a cell. Deliberately tall: at speed the player needs
+# to see a gate coming from several corridors away.
+func _make_marker(cell: Vector2i, colour: Color, height_scale: float) -> MeshInstance3D:
+	var box := BoxMesh.new()
+	box.size = Vector3(
+		Tuning.CELL_SIZE * 0.75,
+		Tuning.WALL_HEIGHT * height_scale,
+		Tuning.CELL_SIZE * 0.12
+	)
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = colour
+	mat.emission_enabled = true
+	mat.emission = colour
+	mat.emission_energy_multiplier = 2.0
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.albedo_color.a = 0.55
+
+	var instance := MeshInstance3D.new()
+	instance.mesh = box
+	instance.material_override = mat
+	instance.position = Vector3(
+		cell.x * Tuning.CELL_SIZE,
+		Tuning.WALL_HEIGHT * height_scale * 0.5,
+		cell.y * Tuning.CELL_SIZE
+	)
+	return instance
+
+
+# Remove a gate marker once its gate is taken, so the corridor reads as cleared.
+func clear_gate(index: int) -> void:
+	var node := get_node_or_null("Gate%d" % index)
+	if node:
+		node.queue_free()

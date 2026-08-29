@@ -1,0 +1,12 @@
+# Godot 4+ engine cache
+.godot/
+/android/
+
+# Build output
+build/
+
+# Logs -- session history and extracted errors are local noise
+logs/
+
+# Web export output -- built by CI, never committed
+build/web/

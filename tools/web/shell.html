@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0">
+	<title>Maze Racer</title>
+	<meta name="description" content="A fast-paced 3D maze racer. Speed is not a choice, it is a condition.">
+	<meta property="og:title" content="Maze Racer">
+	<meta property="og:description" content="A fast-paced 3D maze racer with roguelike progression. Three keys, ever-increasing speed.">
+	<meta property="og:type" content="website">
+	<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png">
+	<link rel="apple-touch-icon" type="image/png" href="index.apple-touch-icon.png">
+	<style>
+		:root {
+			--neon: #22d3ee;
+			--ground: #05070d;
+			--dim: #64748b;
+		}
+		* { box-sizing: border-box; }
+		html, body {
+			margin: 0; padding: 0; border: 0;
+			height: 100%; overflow: hidden;
+			background: var(--ground);
+			color: #e2e8f0;
+			font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+			touch-action: none;
+		}
+		#canvas {
+			display: block; width: 100%; height: 100%;
+			outline: none; border: 0;
+		}
+		#canvas:focus { outline: none; }
+
+		/* The boot overlay sits above the canvas until the engine reports ready. */
+		#boot {
+			position: fixed; inset: 0; z-index: 10;
+			display: flex; flex-direction: column;
+			align-items: center; justify-content: center;
+			gap: 1.6rem; padding: 2rem;
+			background:
+				radial-gradient(circle at 50% 40%, #0d1424 0%, var(--ground) 70%);
+			text-align: center;
+			transition: opacity .5s ease;
+		}
+		#boot.done { opacity: 0; pointer-events: none; }
+
+		h1 {
+			margin: 0; font-size: clamp(2rem, 7vw, 3.4rem);
+			letter-spacing: .22em; text-transform: uppercase;
+			font-weight: 600; color: #fff;
+			text-shadow: 0 0 12px var(--neon), 0 0 38px rgba(34,211,238,.55);
+		}
+		.tag {
+			margin: 0; color: var(--dim);
+			font-size: clamp(.72rem, 2.1vw, .86rem);
+			letter-spacing: .16em; text-transform: uppercase;
+		}
+		.keys { display: flex; gap: .6rem; flex-wrap: wrap; justify-content: center; }
+		.keys div {
+			border: 1px solid rgba(34,211,238,.35);
+			border-radius: 6px; padding: .5rem .85rem;
+			font-size: .78rem; color: #cbd5e1;
+			background: rgba(34,211,238,.05);
+		}
+		.keys b { color: var(--neon); font-weight: 600; }
+
+		/* Progress: indeterminate until the engine reports real byte totals. */
+		#bar {
+			width: min(420px, 78vw); height: 3px;
+			background: rgba(148,163,184,.18);
+			border-radius: 3px; overflow: hidden;
+		}
+		#fill {
+			height: 100%; width: 0%;
+			background: linear-gradient(90deg, var(--neon), #a5f3fc);
+			box-shadow: 0 0 10px var(--neon);
+			transition: width .25s ease;
+		}
+		#bar.indeterminate #fill {
+			width: 35%; animation: slide 1.1s ease-in-out infinite;
+		}
+		@keyframes slide {
+			0% { margin-left: -35%; } 100% { margin-left: 100%; }
+		}
+		#msg { color: var(--dim); font-size: .74rem; letter-spacing: .1em; min-height: 1.2em; }
+		#play {
+			margin-top: .4rem; cursor: pointer;
+			background: transparent; color: var(--neon);
+			border: 1px solid var(--neon); border-radius: 6px;
+			padding: .8rem 2.4rem; font: inherit;
+			font-size: .84rem; letter-spacing: .2em; text-transform: uppercase;
+			box-shadow: 0 0 16px rgba(34,211,238,.28);
+			transition: background .2s, color .2s;
+		}
+		#play:hover { background: var(--neon); color: #041018; }
+		#play[hidden] { display: none; }
+		.err { color: #f87171; max-width: 46ch; line-height: 1.5; font-size: .8rem; }
+	</style>
+</head>
+<body>
+	<canvas id="canvas" tabindex="0">
+		Your browser does not support the HTML5 canvas element.
+	</canvas>
+
+	<div id="boot">
+		<h1>Maze Racer</h1>
+		<p class="tag">Speed is not a choice &mdash; it is a condition</p>
+		<div class="keys">
+			<div><b>&larr;</b> turn left</div>
+			<div><b>&rarr;</b> turn right</div>
+			<div><b>&darr;</b> 180&deg; / un-stick</div>
+		</div>
+		<div id="bar" class="indeterminate"><div id="fill"></div></div>
+		<div id="msg">Loading engine&hellip; (~12&nbsp;MB first visit)</div>
+		<button id="play" hidden>Play</button>
+	</div>
+
+	<script src="$GODOT_URL"></script>
+	<script>
+	(function () {
+		var boot = document.getElementById('boot');
+		var bar = document.getElementById('bar');
+		var fill = document.getElementById('fill');
+		var msg = document.getElementById('msg');
+		var play = document.getElementById('play');
+		var canvas = document.getElementById('canvas');
+
+		function fail(text) {
+			bar.style.display = 'none';
+			play.hidden = true;
+			msg.className = 'err';
+			msg.textContent = text;
+		}
+
+		if (!('WebAssembly' in window)) {
+			return fail('This browser has no WebAssembly support. Try a current Chrome, Edge, Firefox or Safari.');
+		}
+
+		var engine = new Engine($GODOT_CONFIG);
+
+		// Autoplay policies block audio until a real gesture, and a canvas that
+		// never received a click also never receives key events -- which reads
+		// exactly like a frozen game. Starting behind a button avoids both.
+		engine.startGame({
+			'onProgress': function (current, total) {
+				if (total > 0) {
+					bar.classList.remove('indeterminate');
+					fill.style.width = ((current / total) * 100).toFixed(1) + '%';
+					msg.textContent = 'Loading ' + (current / 1048576).toFixed(1) +
+						' / ' + (total / 1048576).toFixed(1) + ' MB';
+				}
+			},
+			'onProgressiveStart': function () { /* engine booted */ }
+		}).then(function () {
+			bar.classList.remove('indeterminate');
+			fill.style.width = '100%';
+			msg.textContent = '';
+			play.hidden = false;
+			play.focus();
+		}).catch(function (err) {
+			fail('Failed to start: ' + err);
+		});
+
+		play.addEventListener('click', function () {
+			boot.classList.add('done');
+			setTimeout(function () { boot.style.display = 'none'; }, 500);
+			canvas.focus();
+		});
+	})();
+	</script>
+</body>
+</html>
