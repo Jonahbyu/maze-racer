@@ -56,6 +56,12 @@ const REVERSE_H_MAX := 110.0
 
 const PAUSE_SIZE := Vector2(70.0, 52.0)
 
+# The two bars of the pause icon. Weight is chosen for the pad rather than
+# inherited from a font -- a text glyph drew them as hairlines.
+const PAUSE_BAR_W := 5.0
+const PAUSE_BAR_H := 20.0
+const PAUSE_BAR_GAP := 7.0
+
 const MARGIN := 18.0
 
 var _pads: Dictionary = {}
@@ -72,7 +78,9 @@ func _ready() -> void:
 	_build_pad("left", "◀", func(): emit_signal("turn_requested", -1))
 	_build_pad("right", "▶", func(): emit_signal("turn_requested", 1))
 	_build_pad("reverse", "↶", func(): emit_signal("reverse_requested"))
-	_build_pad("pause", "‖", func(): emit_signal("pause_requested"))
+	# Pause is drawn, not lettered -- see _build_pause_icon.
+	_build_pad("pause", "", func(): emit_signal("pause_requested"))
+	_build_pause_icon(_pads["pause"])
 
 	_layout()
 	resized.connect(_layout)
@@ -88,21 +96,59 @@ func _build_pad(key: String, glyph: String, handler: Callable) -> void:
 	pad.mouse_filter = Control.MOUSE_FILTER_STOP
 	pad.add_theme_stylebox_override("panel", _pad_style(false))
 
-	var label := Label.new()
-	label.text = glyph
-	label.add_theme_font_size_override("font_size", 40)
-	label.add_theme_color_override("font_color", COL_GLYPH)
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	pad.add_child(label)
+	if glyph != "":
+		var label := Label.new()
+		label.text = glyph
+		label.add_theme_font_size_override("font_size", 40)
+		label.add_theme_color_override("font_color", COL_GLYPH)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		pad.add_child(label)
 
 	pad.gui_input.connect(func(event: InputEvent) -> void:
 		_on_pad_input(pad, event, handler))
 
 	add_child(pad)
 	_pads[key] = pad
+
+
+# The pause icon: two solid bars, drawn as geometry rather than typed as a
+# character.
+#
+# It was the glyph U+2016, which is a TYPOGRAPHIC mark -- a double vertical
+# line meant to sit in running text -- so the font drew it at text stroke
+# weight and it read as two hairlines rattling around inside a 70px pad. No
+# font size fixes that: scaling a hairline scales its height, not its weight,
+# and the pause symbol in most UI fonts is not a text character at all. Two
+# ColorRects give the bars a weight chosen for the pad instead of inherited
+# from a typeface, and they stay crisp at any resolution -- which matters here
+# because this is the one pad the web build shows on a phone at whatever DPI
+# the device happens to have.
+func _build_pause_icon(pad: Panel) -> void:
+	var holder := Control.new()
+	holder.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pad.add_child(holder)
+
+	for i in 2:
+		var bar := ColorRect.new()
+		bar.color = COL_GLYPH
+		bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		# Centred as a pair: each bar sits half a gap out from the middle.
+		bar.anchor_left = 0.5
+		bar.anchor_right = 0.5
+		bar.anchor_top = 0.5
+		bar.anchor_bottom = 0.5
+		var dir := -1.0 if i == 0 else 1.0
+		var near_edge := PAUSE_BAR_GAP * 0.5 * dir
+		var far_edge := near_edge + PAUSE_BAR_W * dir
+		bar.offset_left = min(near_edge, far_edge)
+		bar.offset_right = max(near_edge, far_edge)
+		bar.offset_top = -PAUSE_BAR_H * 0.5
+		bar.offset_bottom = PAUSE_BAR_H * 0.5
+		holder.add_child(bar)
 
 
 # Fires on press, for both a finger and a mouse, and never on release.

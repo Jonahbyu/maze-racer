@@ -1077,6 +1077,16 @@ any headless assertion:
 - **The pads ran off the bottom edge**, because a screen fraction alone does not
   bound anything.
 
+**The pause icon is drawn, not typed.** It was `‖` (U+2016), which is a
+*typographic* mark meant to sit in running text, so the font drew it at text stroke
+weight and it read as two hairlines rattling around inside a 70px pad. No font size
+fixes that -- scaling a hairline scales its height, not its weight -- and the pause
+symbol in most UI fonts is not a text character at all. Two `ColorRect` bars give
+the icon a weight chosen for the pad rather than inherited from a typeface, and they
+stay crisp at whatever DPI a phone happens to have, which the web build cannot
+predict. The three steering pads keep their glyphs: arrowheads are solid shapes in
+the font and render correctly.
+
 The bands are constants on `TouchControls` rather than measured off the live HUD,
 because the HUD builds its layout from literals too and a queried rect is only
 correct after a frame has been laid out. If either moves, both move — they are one
