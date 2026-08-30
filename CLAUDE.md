@@ -897,28 +897,36 @@ shortcut via `tools/MazeRacer.vbs`, which starts it with no console flash.
 
 ### The web build and GitHub Pages
 
-The game is published at **https://jonahbyu.github.io/maze-racer/** from the `gh-pages`
-branch of `Jonahbyu/maze-racer`. `tools/deploy-web.ps1` builds and publishes in one step.
+The game is published at **https://jonahbyu.github.io/maze-racer/**, built and deployed by
+`.github/workflows/deploy.yml` on every push to `main`. The workflow runs `RulesTest` and
+`SceneTest` first, so a red harness blocks the deploy rather than shipping over it.
 
 The repo is **public**, and that is a hosting requirement rather than a preference: Pages
-on a private repo needs a paid plan, and the API rejects it outright on Free with
-*"Your current plan does not support GitHub Pages for this repository."*
+on a private repo needs a paid plan, and the API rejects it on Free with *"Your current
+plan does not support GitHub Pages for this repository."* Going public also lifted a
+second block — an OAuth token without the **`workflow`** scope cannot write
+`.github/workflows/` on a private repo, over git push *or* the Contents API, where it
+fails as a bare 404 rather than a permission error.
 
-`tools/ci/deploy.yml.txt` is the GitHub Actions workflow that would run the harnesses and
-deploy on every push. It is parked outside `.github/workflows/` because the `gh` token
-lacks the **`workflow`** scope, and GitHub refuses that path — over both git push *and*
-the Contents API, which fails as a confusing 404 rather than a permission error. Granting
-it is `gh auth refresh -h github.com -s workflow`, which needs a browser.
+`tools/deploy-web.ps1` publishes straight from this machine, bypassing CI. It is the
+fallback for when Actions is broken or unavailable; the normal path is to push and let the
+workflow run.
 
-Two things about deploying that are easy to get wrong:
+Two things about Pages that are easy to get wrong:
 
-- **Pages does not build the first time on its own.** After pointing it at a branch, the
-  build list stays empty and the site 404s indefinitely — five minutes of polling showed
-  no build ever queued. `POST /repos/{owner}/{repo}/pages/builds` kicks off the first one;
-  pushes after that build normally.
-- **Build outside the project folder.** OneDrive holds locks on synced directories, so
-  removing an in-tree `build/` fails partway with "Device or resource busy". The deploy
-  script builds into `$env:TEMP`.
+- **Pages does not build the first time on its own.** After first pointing it at a source,
+  the build list stays empty and the site 404s indefinitely — five minutes of polling
+  showed no build ever queued. `POST /repos/{owner}/{repo}/pages/builds` kicks off the
+  first one. Note this applies to branch (`legacy`) mode; in `workflow` mode the deploy job
+  publishes directly.
+- **`build_type` decides which artifact is actually served, and a successful deploy job
+  does not change it.** With Pages left on `legacy`/`gh-pages`, the CI run went green while
+  the live site was still an older manual push — green checkmarks against a stale site is
+  the failure mode to watch for. Setting `build_type=workflow` is what hands CI the site.
+
+**Build outside the project folder.** OneDrive holds locks on synced directories, so
+removing an in-tree `build/` fails partway with "Device or resource busy". The deploy
+script builds into `$env:TEMP`; CI is unaffected.
 
 ### Headless tests
 
