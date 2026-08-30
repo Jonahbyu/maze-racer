@@ -1055,6 +1055,14 @@ moved, so the stray turn is cheap and immediately undone by the reversal. Chargi
 every ordinary turn a fraction of its buffer to avoid it would be a far larger and
 constant cost.
 
+**The chord is mobile only.** The keyboard keeps `↓` and never acquires a
+left+right gesture — pressing both arrows at once on a desktop is an ordinary
+accident, and it must stay two turns. This is free rather than enforced: the
+gesture lives entirely in `TouchControls`, which does not exist when the pads are
+off, and the keyboard reaches `_on_reverse_input` directly. `ShellTest` asserts it
+with the pads switched off, since a later refactor that moved chord handling up
+into `Game` would break it silently.
+
 **Held state must be cleared, or the chord latches.** A finger that slides off a pad
 before lifting may never deliver its release to that pad, which leaves a direction
 held and turns *every later tap* into a reverse. Releasing clears it, and hiding the
@@ -1403,7 +1411,7 @@ Six harnesses, each answering a different question:
 | `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, landmark placement. 174 assertions. |
 | `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall- and path-indicator placement, the crash camera, pause, landmark mesh winding, marker sight lines. 61 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, and the final build. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching. 28 assertions. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard. 31 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 21 assertions. |
 | `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 39 assertions. |
 

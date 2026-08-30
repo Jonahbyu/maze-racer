@@ -142,6 +142,30 @@ func _go() -> void:
 				int(seen["turns"]) == 2 and int(seen["reverses"]) == 1,
 				"turns %d reverses %d" % [seen["turns"], seen["reverses"]])
 
+		# The chord is MOBILE ONLY. The keyboard keeps its own reverse key and
+		# must not acquire a left+right gesture along the way -- pressing both
+		# arrows at once on a desktop is an ordinary thing to do by accident,
+		# and it must stay two turns.
+		#
+		# Checked with the pads switched OFF, which is the desktop
+		# configuration: the keyboard's reverse still has to work, and it must
+		# reach the racer without going through TouchControls at all.
+		settings.set_touch_controls(false)
+		check("the pads hide when the setting is off", not pads.visible)
+		if g.get("racer") != null:
+			var f_before: int = int(g.racer.facing)
+			g._on_turn_input(-1)
+			g._on_turn_input(1)
+			check("two arrow presses are not a reverse on desktop",
+				int(g.racer.facing) != Maze.OPPOSITE[f_before],
+				"facing %d -> %d" % [f_before, int(g.racer.facing)])
+
+			var f2: int = int(g.racer.facing)
+			g._on_reverse_input()
+			check("the keyboard reverse still works",
+				int(g.racer.facing) == int(Maze.OPPOSITE[f2]),
+				"facing %d -> %d" % [f2, int(g.racer.facing)])
+
 		# Put it back the way the player had it.
 		settings.set_touch_controls(before)
 
