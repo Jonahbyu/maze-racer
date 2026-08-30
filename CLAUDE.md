@@ -1029,11 +1029,37 @@ part that would have rotted silently: a pad that still turned during an upgrade
 pick would be driving the racer while the timer is stopped, and no harness driving
 only the keyboard would ever see it.
 
-**Three pads and a pause, mirroring §2 exactly.** Left, right, 180 — there is no
+**Two pads and a pause, mirroring §2 exactly.** Left and right steer; there is no
 accelerator or brake to add, because speed is systemic. Pause gets a pad despite
 §2 calling it "not a fourth driving input" for the reason that section already
 gives: it steers nothing, it is the same category as closing the window, and on a
 phone there is no `Esc` key to fall back to.
+
+**The 180 is left and right together, not a pad.** It had its own pad, and that pad
+sat in the middle of the bottom edge — directly under the player marker and the
+corridor vanishing point, which is where the Path Indicator panels, the Golden
+Trail and the wall indicator all draw. A control parked over the thing it is
+helping you read is the mistake the HUD chevrons made (§7), and the trailer caption
+avoids for the same reason (§9b).
+
+**The first press turns; the second completes the chord.** The obvious alternative
+— hold both presses briefly and see whether a chord is forming — was rejected on
+the buffer maths. The buffer is 1.0 cells (§4), which at the 10x cap is 100ms, so
+any hold long enough to detect a chord would spend a large fraction of the entire
+forgiveness window on *every* turn, and worst exactly where the game is hardest.
+Turning first costs the common case nothing.
+
+The price is that a chord also fires one turn on the way in, and that is the right
+way round: a 90 is nearly free at −0.03x (§5.3) and the racer is pivoted rather than
+moved, so the stray turn is cheap and immediately undone by the reversal. Charging
+every ordinary turn a fraction of its buffer to avoid it would be a far larger and
+constant cost.
+
+**Held state must be cleared, or the chord latches.** A finger that slides off a pad
+before lifting may never deliver its release to that pad, which leaves a direction
+held and turns *every later tap* into a reverse. Releasing clears it, and hiding the
+overlay clears whatever is left — the failure is invisible until the second gesture,
+so `ShellTest` asserts a lone press is a turn again after a chord.
 
 **A pad fires on PRESS, not release**, so it is a `Panel` rather than a `Button`.
 A `Button` emits on release, and at 8x a cell is 125ms — a press-to-release round
@@ -1377,7 +1403,7 @@ Six harnesses, each answering a different question:
 | `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, landmark placement. 174 assertions. |
 | `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall- and path-indicator placement, the crash camera, pause, landmark mesh winding, marker sight lines. 61 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, and the final build. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, and the mobile-controls toggle survives the menu-to-game swap. 24 assertions. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching. 28 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 21 assertions. |
 | `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 39 assertions. |
 

@@ -8,7 +8,9 @@
 #
 # It mirrors the three-key contract in section 2 exactly -- left, right, 180 --
 # and nothing else. There is no accelerator and no brake to add, because speed
-# is systemic.
+# is systemic. The 180 has no pad of its own: it is LEFT AND RIGHT TOGETHER,
+# which is why there are only two steering targets and the middle of the screen
+# is clear. See _on_pad_input for why the chord costs the turn nothing.
 class_name TouchControls
 extends Control
 
@@ -46,14 +48,6 @@ const PAD_H_FRACTION := 0.26
 const PAD_W_MAX := 260.0
 const PAD_H_MAX := 200.0
 
-# The 180 sits between the two steering pads, deliberately smaller and set low.
-# It is the expensive input (section 5.3) and the un-stick, so it must be
-# reachable without being easy to clip with the side of a thumb aimed at a turn.
-const REVERSE_W_FRACTION := 0.16
-const REVERSE_H_FRACTION := 0.14
-const REVERSE_W_MAX := 200.0
-const REVERSE_H_MAX := 110.0
-
 const PAUSE_SIZE := Vector2(70.0, 52.0)
 
 # The two bars of the pause icon. Weight is chosen for the pad rather than
@@ -66,6 +60,11 @@ const MARGIN := 18.0
 
 var _pads: Dictionary = {}
 
+# Which steering pads are currently held, by direction (-1 left, +1 right).
+# A chord is both of them down at once, so this has to be tracked across
+# events rather than inferred from any single one.
+var _held_dirs: Dictionary = {}
+
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -75,22 +74,47 @@ func _ready() -> void:
 	# take input.
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-	_build_pad("left", "◀", func(): emit_signal("turn_requested", -1))
-	_build_pad("right", "▶", func(): emit_signal("turn_requested", 1))
-	_build_pad("reverse", "↶", func(): emit_signal("reverse_requested"))
+	_build_pad("left", "◀", func(): _steer(-1), -1)
+	_build_pad("right", "▶", func(): _steer(1), 1)
 	# Pause is drawn, not lettered -- see _build_pause_icon.
 	_build_pad("pause", "", func(): emit_signal("pause_requested"))
 	_build_pause_icon(_pads["pause"])
 
 	_layout()
 	resized.connect(_layout)
+	visibility_changed.connect(_on_visibility_changed)
+
+
+# A finger that slides off a pad before lifting may never deliver its release
+# to that pad, which would leave a direction latched and turn every later tap
+# into a reverse. Hiding the overlay -- a gate, a pause, the setting going off
+# -- is a clean point to drop any half-finished gesture.
+func _on_visibility_changed() -> void:
+	if not visible:
+		_release_all()
+
+
+# Forget every held pad and reset their styling. Public so the game can call it
+# on a phase change: a gesture started while racing must not survive into the
+# next thing the player does.
+func clear_held() -> void:
+	_release_all()
+
+
+func _release_all() -> void:
+	_held_dirs.clear()
+	for key in ["left", "right"]:
+		var pad: Panel = _pads.get(key)
+		if pad != null:
+			pad.add_theme_stylebox_override("panel", _pad_style(false))
 
 
 # One pad. A Panel with a Label centred in it rather than a Button, because a
 # Button fires on RELEASE and steering wants the turn armed the instant the
 # thumb lands -- at 8x a cell is 125ms and a press-to-release round trip is a
 # meaningful part of the buffer (section 4).
-func _build_pad(key: String, glyph: String, handler: Callable) -> void:
+func _build_pad(key: String, glyph: String, handler: Callable,
+		direction: int = 0) -> void:
 	var pad := Panel.new()
 	pad.name = key
 	pad.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -108,7 +132,7 @@ func _build_pad(key: String, glyph: String, handler: Callable) -> void:
 		pad.add_child(label)
 
 	pad.gui_input.connect(func(event: InputEvent) -> void:
-		_on_pad_input(pad, event, handler))
+		_on_pad_input(pad, event, handler, direction))
 
 	add_child(pad)
 	_pads[key] = pad
@@ -151,12 +175,43 @@ func _build_pause_icon(pad: Panel) -> void:
 		holder.add_child(bar)
 
 
+# A steering press: a turn, or the second half of a 180.
+#
+# LEFT AND RIGHT TOGETHER is the reverse gesture. The 180 lost its own pad
+# because that pad sat in the middle of the bottom edge -- directly under the
+# player marker and the corridor vanishing point, which is where the Path
+# Indicator panels, the Golden Trail and the wall indicator all draw. A control
+# parked over the thing it is helping you read is the same mistake the HUD
+# chevrons were (section 7).
+#
+# The FIRST press turns immediately and the SECOND completes the chord. The
+# obvious alternative -- hold both presses briefly to see whether a chord is
+# forming -- was rejected on the buffer maths: the buffer is 1.0 cells (section
+# 4), which at the 10x cap is 100ms, so any hold long enough to detect a chord
+# would spend a large fraction of the entire forgiveness window on EVERY turn,
+# and worst exactly when the game is hardest. Turning first costs the common
+# case nothing.
+#
+# The price is that a chord also fires one turn on the way in. That is the
+# right way round: a 90 is nearly free at -0.03x (section 5.3) and the racer is
+# pivoted, not moved, so the stray turn is cheap and immediately undone by the
+# reversal that follows. Charging every ordinary turn a fraction of its buffer
+# to avoid it would be a far larger, and constant, cost.
+func _steer(direction: int) -> void:
+	_held_dirs[direction] = true
+	if _held_dirs.has(-direction):
+		emit_signal("reverse_requested")
+		return
+	emit_signal("turn_requested", direction)
+
+
 # Fires on press, for both a finger and a mouse, and never on release.
 #
 # Both device types are handled because the toggle is available on desktop --
 # a tester with a mouse must be able to drive the same pads, or the setting
 # cannot be checked without a phone in hand.
-func _on_pad_input(pad: Panel, event: InputEvent, handler: Callable) -> void:
+func _on_pad_input(pad: Panel, event: InputEvent, handler: Callable,
+		direction: int = 0) -> void:
 	var pressed := false
 	var released := false
 
@@ -174,6 +229,11 @@ func _on_pad_input(pad: Panel, event: InputEvent, handler: Callable) -> void:
 		accept_event()
 	elif released:
 		pad.add_theme_stylebox_override("panel", _pad_style(false))
+		# Must happen, or the first chord latches both directions forever and
+		# every later tap reads as a reverse. A touch that leaves the pad still
+		# delivers its release here, so this is not only the lift-in-place case.
+		if direction != 0:
+			_held_dirs.erase(direction)
 		accept_event()
 
 
@@ -198,21 +258,14 @@ func _layout() -> void:
 	var pad := Vector2(
 		min(view.x * PAD_W_FRACTION, PAD_W_MAX),
 		min(view.y * PAD_H_FRACTION, PAD_H_MAX))
-	var rev := Vector2(
-		min(view.x * REVERSE_W_FRACTION, REVERSE_W_MAX),
-		min(view.y * REVERSE_H_FRACTION, REVERSE_H_MAX))
 
 	# The steering pads stop short of the HUD's bottom band so the barrier and
 	# integrity bars stay both visible and untappable.
-	var floor_y := view.y - HUD_BOTTOM_BAND
-	var pad_top := floor_y - pad.y
-	var rev_top := floor_y - rev.y
+	var pad_top := view.y - HUD_BOTTOM_BAND - pad.y
 
 	_place(_pads.get("left"), Rect2(MARGIN, pad_top, pad.x, pad.y))
 	_place(_pads.get("right"), Rect2(
 		view.x - pad.x - MARGIN, pad_top, pad.x, pad.y))
-	_place(_pads.get("reverse"), Rect2(
-		(view.x - rev.x) * 0.5, rev_top, rev.x, rev.y))
 
 	# Below the timer, not beside it. The timer is right-aligned in the HUD's
 	# top row and its width changes as the run passes a minute, so anything

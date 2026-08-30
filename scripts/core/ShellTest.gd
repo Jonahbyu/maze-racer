@@ -106,6 +106,42 @@ func _go() -> void:
 					facing_before, int(g.racer.facing),
 					pending_before, int(g.racer.pending_turn)])
 
+		# The 180 gesture: left and right together, with no pad of its own.
+		#
+		# Driven through _steer rather than the signal, because what is being
+		# checked is the CHORD RESOLUTION -- that the second press turns into a
+		# reverse instead of a second turn. Emitting reverse_requested directly
+		# would assert nothing about it.
+		if pads != null:
+			check("the reverse pad is gone", not pads._pads.has("reverse"),
+				str(pads._pads.keys()))
+
+			var seen := {"turns": 0, "reverses": 0}
+			pads.turn_requested.connect(func(_d: int) -> void:
+				seen["turns"] = int(seen["turns"]) + 1)
+			pads.reverse_requested.connect(func() -> void:
+				seen["reverses"] = int(seen["reverses"]) + 1)
+
+			pads.clear_held()
+			pads._steer(-1)
+			check("one pad alone is a turn",
+				int(seen["turns"]) == 1 and int(seen["reverses"]) == 0,
+				"turns %d reverses %d" % [seen["turns"], seen["reverses"]])
+
+			pads._steer(1)
+			check("both pads together is a reverse",
+				int(seen["reverses"]) == 1,
+				"turns %d reverses %d" % [seen["turns"], seen["reverses"]])
+
+			# And the state must not latch: after releasing, a lone press is a
+			# turn again. This is the bug that would make every later tap a
+			# reverse, and it is invisible until the second gesture.
+			pads.clear_held()
+			pads._steer(1)
+			check("the chord does not latch",
+				int(seen["turns"]) == 2 and int(seen["reverses"]) == 1,
+				"turns %d reverses %d" % [seen["turns"], seen["reverses"]])
+
 		# Put it back the way the player had it.
 		settings.set_touch_controls(before)
 

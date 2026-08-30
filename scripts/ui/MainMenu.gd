@@ -164,7 +164,7 @@ func _touch_label() -> String:
 # -- so the hint describes whichever scheme is actually active.
 func _hint_text() -> String:
 	if _touch_enabled():
-		return "tap the pads to steer  -  centre pad reverses"
+		return "tap the pads to steer  -  both together reverses"
 	return "arrow keys steer  -  DOWN reverses  -  ESC pauses"
 
 
