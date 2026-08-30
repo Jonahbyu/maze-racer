@@ -1,5 +1,7 @@
 # Maze Racer
 
+### [▶ Play in your browser](https://jonahbyu.github.io/maze-racer/)
+
 A fast-paced 3D first-person maze racer with roguelike progression, built in **Godot 4.7**.
 
 ---
