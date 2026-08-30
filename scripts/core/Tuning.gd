@@ -134,6 +134,24 @@ const TRAIL_LINGER := 2.0
 
 const CARDS_PER_GATE := 3
 
+# --- Music (docs/specs/music.md) ---------------------------------------------
+
+# Every track, keyed by a short name. Adding one is an entry here plus a file in
+# audio/music/ -- no code change.
+#
+# `volume_db` trims the PLAYER, not the bus, so evening out two differently
+# mastered tracks does not move the player's own volume setting.
+const TRACKS := {
+	"find_the_way": {
+		"path": "res://audio/music/find-the-way.mp3",
+		"volume_db": -8.0,
+	},
+	"ah_eh_oh": {
+		"path": "res://audio/music/ah-eh-oh.mp3",
+		"volume_db": -9.0,
+	},
+}
+
 # --- Mazes (CLAUDE.md section 8) ---------------------------------------------
 
 # Two independent dead-end knobs, and they are not interchangeable.
@@ -147,13 +165,21 @@ const CARDS_PER_GATE := 3
 # they just tax reversals. Measured on the stock parameters they were the
 # majority of all dead ends in mazes 2 and 3 (212 of 316, 247 of 348).
 #
-# They need separate knobs because they compete for the same removals: maze 3's
-# density target sits barely under what carve-plus-braid leaves, so a
+# They need separate knobs because they compete for the same removals: the late
+# mazes' density targets sit barely under what carve-plus-braid leaves, so a
 # shallow-first ordering inside the density pass had almost no budget and
 # drained nearly none of them. Maze.gd culls stubs in their own stage first.
 const MAZES := [
 	{
 		"name": "The Grid",
+		# The track this maze plays, named here rather than in an array indexed
+		# by maze number -- that goes stale silently the moment a maze is added
+		# (docs/specs/music.md, the rule landmarks already follow).
+		#
+		# All five share one track because there are two tracks in hand, not
+		# because the system wants them to. Point a maze at a new name and it
+		# plays it.
+		"music": "ah_eh_oh",
 		"palette": 0,
 		"width": 60,
 		"height": 60,
@@ -163,6 +189,9 @@ const MAZES := [
 		# turnaround here teaches nothing the player has the speed to act on.
 		"shallow_keep": 0.15,
 		"gates": 8,
+		# Densest of the set. Maze 1 is where the vocabulary is learned, so the
+		# player needs to meet several types before landmarks can mean anything.
+		"landmarks": 0.34,
 		# Longer straight runs than the later mazes, so maze 1 reads as an
 		# introduction: room to build speed and to see a junction coming before
 		# having to decide.
@@ -176,26 +205,69 @@ const MAZES := [
 		"straighten": 0.60,
 	},
 	{
+		"name": "The Ember",
+		"music": "ah_eh_oh",
+		"palette": 3,
+		"width": 70,
+		"height": 70,
+		"braid": 0.12,
+		"dead_ends": 0.028,
+		"shallow_keep": 0.11,
+		"gates": 8,
+		"landmarks": 0.32,
+	},
+	{
 		"name": "The Tangle",
+		"music": "ah_eh_oh",
 		"palette": 1,
-		"width": 75,
-		"height": 75,
+		"width": 80,
+		"height": 80,
 		"braid": 0.18,
 		"dead_ends": 0.030,
-		"shallow_keep": 0.25,
+		"shallow_keep": 0.12,
 		"gates": 8,
+		"landmarks": 0.30,
 	},
 	{
 		"name": "The Labyrinth",
+		"music": "ah_eh_oh",
 		"palette": 2,
 		"width": 90,
 		"height": 90,
 		"braid": 0.25,
-		"dead_ends": 0.040,
-		# Maze 3 keeps the most: by here the player has upgrades and the speed
-		# to be punished by a stub they misread, which is the point of it.
-		"shallow_keep": 0.35,
+		"dead_ends": 0.030,
+		"shallow_keep": 0.11,
 		"gates": 8,
+		"landmarks": 0.28,
+	},
+	{
+		"name": "The Vault",
+		"music": "ah_eh_oh",
+		"palette": 4,
+		"width": 100,
+		"height": 100,
+		# Loop density is the most interesting escalation lever (CLAUDE.md
+		# section 8): more loops means more moments where the player is not
+		# lost but is also not on the fastest route, and cannot tell which.
+		# The last maze leans on it hardest.
+		"braid": 0.30,
+		"dead_ends": 0.032,
+		# The run's last maze keeps the most stubs: by here the player has the
+		# upgrades and the speed to be genuinely punished by one they misread,
+		# which is the only reason to keep any at all.
+		#
+		# The NUMBER is not the measured outcome. shallow_keep is the fraction
+		# kept by the cull stage, but the later density pass runs afterwards and
+		# has almost no budget at high braid, so the stubs it would otherwise
+		# drain survive: at 0.35 this maze measured 52% of all dead ends as
+		# stubs. Tuned against DeadEndProbe rather than set to the intended
+		# share directly -- re-run it after touching braid or dead_ends here.
+		"shallow_keep": 0.10,
+		"gates": 8,
+		# Sparsest. By here the maze is 100x100 and a fixed fraction of a much
+		# larger eligible set would be a forest -- scarcity is what makes a
+		# landmark memorable (see LANDMARK_DENSITY).
+		"landmarks": 0.26,
 	},
 ]
 
@@ -205,15 +277,27 @@ const MAZES := [
 # arriving somewhere -- not just as the same corridor with a bigger grid.
 #
 # The palette is the ONLY thing that changes; wall, grid and marker geometry are
-# identical across all three. That matters because the grid lines are the timing
+# identical across every one. That matters because the grid lines are the timing
 # contract (section 11.3): recolouring them is safe, restyling or reweighting
 # them is not.
 #
-# Hue is the whole signal, and the three are spaced far apart on the wheel so
-# they are never confusable at a glance. Value and saturation stay in the same
-# band across all three, because brightness is already doing a job -- the wall
-# indicator ramps amber-to-red by distance, the barrier bar goes red when low --
-# and a dim maze would make those reads land differently maze to maze.
+# Hue is the whole signal, and consecutive mazes are spaced far apart on the
+# wheel so no two in a row are confusable at a glance. Value and saturation stay
+# in the same band across all five, because brightness is already doing a job --
+# the wall indicator ramps amber-to-red by distance, the barrier bar goes red
+# when low -- and a dim maze would make those reads land differently maze to
+# maze.
+#
+# THE ORDER IS NOT THE ORDER THEY WERE ADDED. Cyan, ember, magenta, green,
+# violet: the two warm hues are held apart by magenta, and violet is kept off
+# magenta's shoulder by putting green between them. Appending ember and violet
+# to the end instead would have run magenta straight into violet, which is the
+# one adjacency on this wheel that reads as the same maze twice.
+#
+# Ember is deliberately RED-orange rather than amber. Amber is spoken for twice
+# over: NEON_GATE is amber-yellow, and the wall indicator's far end is amber, so
+# an amber maze would put the two navigation signals the player most needs to
+# pick out into the same hue as every wall around them.
 #
 # `grid` must stay the readable one. It is the floor reference the whole control
 # scheme rests on, so it is the one entry that should never be tuned dark to
@@ -239,8 +323,8 @@ const PALETTES := [
 		"fog": Color(0.07, 0.02, 0.09),
 	},
 	{
-		# Maze 3 -- acid green. The furthest from both of the others, and the
-		# most alien, for the maze the player should least want to be in.
+		# Maze 3 -- acid green. The most alien of the set, and far from both of
+		# its neighbours on the wheel.
 		"wall": Color(0.35, 1.0, 0.45),
 		"grid": Color(0.45, 0.80, 0.45),
 		"floor": Color(0.02, 0.06, 0.04),
@@ -248,12 +332,57 @@ const PALETTES := [
 		"wall_emission": Color(0.06, 0.18, 0.09),
 		"fog": Color(0.02, 0.08, 0.04),
 	},
+	{
+		# Palette 3 -- ember. Bright red-orange, held clear of the amber the
+		# gate markers and the far end of the wall indicator both use.
+		#
+		# The grid line lifts toward gold, but only just. It first went to a
+		# bright yellow (0.95, 0.68, 0.30) on the reasoning that a grid in the
+		# wall's own hue vanishes into the wall glow -- true, but it drove the
+		# AMBIENT warm, and ambient is mixed from the grid colour. Every other
+		# palette lands ambient cool (R-B between -0.11 and -0.22); yellow put
+		# ember at +0.02, and cool ambient on a dark wall reads as shadow while
+		# neutral-warm ambient reads as a LIT SURFACE. Every wall face turned
+		# milky brown, the floor grid washed out against it, and the corridor
+		# lost its depth -- the exact failure documented for maze 3's green in
+		# CLAUDE.md section 8, arriving through the light rather than the
+		# material.
+		#
+		# Held cool-leaning instead, with the separation from the wall coming
+		# from VALUE (a paler, desaturated gold against saturated orange)
+		# rather than from hue.
+		"wall": Color(1.0, 0.45, 0.10),
+		"grid": Color(0.85, 0.62, 0.42),
+		"floor": Color(0.055, 0.028, 0.018),
+		# Darker than the cool palettes' albedo at equal luminance, because a
+		# warm hue at the same measured luminance reads lighter than a cool one.
+		"wall_albedo": Color(0.21, 0.13, 0.085),
+		"wall_emission": Color(0.19, 0.085, 0.025),
+		"fog": Color(0.065, 0.03, 0.014),
+	},
+	{
+		# Palette 4 -- deep violet. The run's last maze, and the coldest and
+		# deepest of the five.
+		#
+		# Pushed BLUE of maze 2's magenta rather than merely darker: value and
+		# saturation stay in the same band across the set (see above), so hue is
+		# the only axis available to separate two colourways that are otherwise
+		# neighbours. The grid lifts toward periwinkle for the same reason the
+		# ember grid lifts toward yellow -- a violet line on a violet floor is
+		# the least readable pairing in the whole set.
+		"wall": Color(0.62, 0.35, 1.0),
+		"grid": Color(0.62, 0.60, 0.95),
+		"floor": Color(0.035, 0.025, 0.07),
+		"wall_albedo": Color(0.17, 0.14, 0.28),
+		"wall_emission": Color(0.11, 0.06, 0.22),
+		"fog": Color(0.04, 0.025, 0.10),
+	},
 ]
 
-# Gate and exit markers keep a FIXED colour across all three mazes. They are
+# Gate and exit markers keep a FIXED colour across every maze. They are
 # navigation, not decoration: a gate must be identifiable as a gate the instant
 # it comes into view, and recolouring it per maze would mean re-learning what
-# the bright thing in the corridor is three times a run.
+# the bright thing in the corridor once per maze.
 const NEON_GATE := Color(1.0, 0.85, 0.15)
 const NEON_EXIT := Color(1.0, 1.0, 1.0)
 
@@ -348,6 +477,43 @@ const CAM_CRASH_LOOK_HEIGHT := 0.35
 # reaction, slow enough not to snap.
 const CAM_CRASH_EASE := 6.0
 
+# --- Line of sight -----------------------------------------------------------
+#
+# The player marker must NEVER be hidden by a wall. It is the thing the player
+# steers with -- it answers position, wall clearance and facing all at once
+# (section 12) -- so a marker behind geometry is strictly worse than a bad
+# camera angle. This is a hard rule, not a preference.
+#
+# The two existing anti-clip passes keep the EYE out of walls; neither checks
+# whether a wall sits BETWEEN the eye and the marker. Those are different
+# questions, and the gap between them is exactly the case that bites: swinging
+# through a corner the camera sits in clear space while the segment to the
+# marker clips the inside corner of the turn, so the wall you just came past
+# wipes across the marker for a few frames -- precisely when the player most
+# needs to see where they landed.
+#
+# Walls are WALL_HEIGHT (3.0) and the camera is capped below that, so it can
+# never see OVER one. Sight is therefore a pure floor-plane problem.
+
+# How close the sight line may pass to a wall face before the camera is pulled
+# in. A little clearance rather than zero, so the marker is not left grazing a
+# corner it is technically just clear of.
+const CAM_SIGHT_MARGIN := 0.18
+
+# Smallest distance the camera may be pulled to while clearing the sight line.
+# Below this the view is inside the marker and the corridor stops reading.
+const CAM_SIGHT_MIN_DISTANCE := 0.9
+
+# Absolute last-resort camera distance, used only when nothing at
+# CAM_SIGHT_MIN_DISTANCE clears the marker.
+#
+# Note that LIFTING is not an option in this case: walls run floor to
+# WALL_HEIGHT with no gap and the camera is capped below that, so a level sight
+# line is blocked at every height the camera can hold. Closing the distance is
+# the only lever left, and an uncomfortably tight camera for a frame or two
+# beats the marker vanishing.
+const CAM_SIGHT_HARD_MIN := 0.35
+
 # --- Player marker -----------------------------------------------------------
 
 # A ring with an arrow inside it, sitting on the floor. The ring reads position
@@ -359,6 +525,150 @@ const CAM_CRASH_EASE := 6.0
 # clearance against.
 const MARKER_RADIUS := 0.62
 const MARKER_HEIGHT := 0.22
+
+
+# --- Landmarks (docs/specs/landmarks.md) -------------------------------------
+#
+# Decorative structures whose only job is to answer "have I been here before?".
+# They carry NO navigational information: placement ignores the solve path, the
+# distance field, the gates and the exit entirely.
+#
+# That line is what makes the feature safe to add at all. Three upgrade lines
+# are sold on answering "which way" -- Path Indicator (the headline upgrade),
+# Gate Compass, Golden Trail -- and free scenery that hinted at the route would
+# cannibalise all three, the same way the wall indicator would have if it were
+# allowed to mark correct turns rather than only true dead ends (section 5.6).
+#
+# What they DO fix is that a braided maze is unreadable as a loop: a re-crossed
+# junction is indistinguishable from a fresh one, so the distance-and-time
+# punishment in section 11.2 lands without the lesson.
+
+# Landmark type ids. Order matters only as an index into LANDMARK_TYPES.
+enum {
+	LANDMARK_SPIRE,
+	LANDMARK_MONOLITH,
+	LANDMARK_TREE,
+	LANDMARK_ARCH,
+	LANDMARK_RINGS,
+	LANDMARK_RUBBLE,
+}
+
+# Two tiers, answering different questions.
+#
+# SKYLINE landmarks clear WALL_HEIGHT and are visible several corridors away, so
+# they make a REGION recognisable. LOCAL ones stay under the wall line and are
+# seen only from the corridor they sit in, so they make one JUNCTION
+# recognisable.
+#
+# Skyline landmarks are seen as spires poking up past the wall tops, NEVER from
+# above: the camera is capped below WALL_HEIGHT on purpose (CAM_HEIGHT, and
+# again for the crash view) because above it the maze flattens into a floor
+# plan. So only the UPPER portion of a skyline landmark is ever seen at
+# distance, which is why each one is shaped to be identifiable from its top
+# alone.
+#
+# The hues are held clear of every reserved colour in the game. Amber-to-red is
+# the wall indicator, amber-yellow is gates, white is the exit and the player
+# marker, green/red is the Path Indicator, red is the barrier bar when low, and
+# the five maze palettes own cyan, magenta, green, ember and violet. Landmarks
+# take the gaps: deep blue, bone, teal, rose, pale violet, slate.
+#
+# All six are LOW saturation and LOW emission relative to the neon. A landmark
+# must be visible but never brighter than a gate -- gates and the exit have to
+# stay the most eye-catching things in the maze, because they are navigation and
+# landmarks explicitly are not.
+#
+# They do NOT recolour per maze. They join the short list of fixed-colour things
+# (gates, exit, player marker, HUD -- section 8): a landmark seen in maze 1 and
+# again in maze 2 should read as the same kind of object, and per-maze tinting
+# would mean re-learning the vocabulary three times a run for no gain.
+const LANDMARK_TYPES := [
+	{
+		"name": "spire",
+		"skyline": true,
+		"colour": Color(0.30, 0.42, 0.85),
+		"height": 13.0,
+	},
+	{
+		"name": "monolith",
+		"skyline": true,
+		"colour": Color(0.55, 0.53, 0.46),
+		"height": 9.5,
+	},
+	{
+		"name": "tree",
+		"skyline": true,
+		"colour": Color(0.35, 0.70, 0.66),
+		"height": 11.0,
+	},
+	{
+		"name": "arch",
+		"skyline": false,
+		"colour": Color(0.82, 0.45, 0.52),
+		"height": 2.4,
+	},
+	{
+		"name": "rings",
+		"skyline": false,
+		"colour": Color(0.62, 0.55, 0.82),
+		"height": 2.0,
+	},
+	{
+		"name": "rubble",
+		"skyline": false,
+		"colour": Color(0.52, 0.55, 0.60),
+		"height": 0.9,
+	},
+]
+
+# A skyline landmark must clear the wall line by enough to be unmistakably
+# ABOVE it rather than level with it. Asserted in RulesTest against every entry
+# marked skyline, so a future type cannot quietly be added at wall height and
+# lose the whole point of the tier.
+#
+# The actual heights sit far above this floor -- roughly 3-4x WALL_HEIGHT. A
+# first pass put them at 1.5x, which satisfies the rule and still fails the
+# PURPOSE: with the camera capped at 2.3 and fog over everything, a landmark
+# that merely clears the wall shows a few pixels of top edge. It has to tower to
+# be recognisable from the next corridor over.
+const LANDMARK_SKYLINE_MIN := WALL_HEIGHT + 1.5
+
+# Emission energy. Tuned between two failures seen in captured frames, not
+# guessed:
+#
+#   TOO DIM (0.55)   a skyline landmark four cells out was a grey speck. Fog
+#                    sits between the camera and everything, and an unlit
+#                    surface loses to it well before it reaches the wall line.
+#
+#   TOO BRIGHT (1.25) a landmark filling a dead end blew out to flat white, so
+#                    the silhouette -- the entire way a landmark is recognised
+#                    (see LANDMARK_TYPES) -- was lost exactly where the player
+#                    is closest to it. It also washed over the no-entry wall
+#                    indicator painted on that same end wall, and a decoration
+#                    must never outshout a navigation signal.
+#
+# Still under the neon's 2.2, so gates and the exit stay the most eye-catching
+# things in the maze.
+const LANDMARK_EMISSION := 0.9
+
+# Fallback landmark density for a maze whose config omits the key.
+#
+# Density is a per-maze knob (`landmarks` in MAZES) rather than a parallel array
+# indexed by maze number, deliberately: an array beside a five-entry MAZES list
+# is a transcription that goes stale the moment a maze is added, which is the
+# same failure as a test restating a tuning number (CLAUDE.md section 12).
+const LANDMARK_DENSITY := 0.24
+
+# Landmarks placed OUTSIDE the maze boundary, giving it an exterior. Skyline
+# tier only -- a local one out there would never clear the boundary wall and so
+# would never be seen at all.
+const LANDMARK_EXTERIOR_COUNT := 14
+
+# How far beyond the boundary wall the exterior ring sits, in cells. Far enough
+# that they read as distant scenery rather than as part of the maze, close
+# enough to stay inside the fog.
+const LANDMARK_EXTERIOR_MIN_CELLS := 3.0
+const LANDMARK_EXTERIOR_MAX_CELLS := 9.0
 
 
 # --- Lanes (lateral sub-grid) ------------------------------------------------
@@ -384,7 +694,56 @@ const LANE_MAX := 2          # lanes run -2..+2, 0 being the corridor centre
 const LANE_SPACING := (CELL_SIZE * 0.5 - MARKER_RADIUS - 0.25) / float(LANE_MAX)
 
 # How far a turn throws the player toward the outside of the corner, in lanes.
-const LANE_TURN_KICK := 2.0
+#
+# ONE lane, not two. At 2.0 the kick equalled LANE_MAX, so every single corner
+# slammed the marker from the centre line to hard against the outer wall -- the
+# lateral position was binary (dead centre or pinned to the edge), the arc had
+# no middle, and coming out of a corner already touching the wall meant the
+# barrier was draining before the player had done anything wrong. A one-lane
+# kick leaves the outer lane as somewhere a *second* turn in the same direction
+# can take you, which is what makes the sub-grid read as a range of positions
+# rather than a toggle.
+const LANE_TURN_KICK := 1.0
+
+# --- Turn freeze -------------------------------------------------------------
+#
+# A turn stops the racer dead for a beat before the new corridor starts moving.
+#
+# A pivot is not a continuous motion: facing changes in one frame, and the drawn
+# position can move with it -- a scrape escape repositions the marker over a
+# metre, and there is no formulation that makes that continuous (both were
+# measured; see Racer._press_into_wall). Trying to HIDE the discontinuity was
+# the wrong instinct. Freezing on it turns the jump into a beat the player can
+# actually see: the world holds still, the camera swings round to the new
+# heading, and travel resumes once the view agrees with the facing.
+#
+# It also pays for itself against the speed ramp. At 8x a corner arrives and is
+# gone inside 125ms; the freeze buys a fixed, speed-independent moment to read
+# the new corridor, which is the one thing the ramp otherwise takes away. It
+# does NOT stop the clock -- the run timer keeps running, so the freeze is a
+# real cost in the currency section 8 says the player is fighting, and Snap
+# Turn buys it back down.
+const TURN_FREEZE := 0.10
+
+# The freeze the 180 gets. Longer, because a reversal flips the view through a
+# full half-turn -- twice the camera travel, and the corridor behind you is the
+# one thing you have not been looking at.
+const REVERSE_FREEZE := 0.16
+
+# The camera slews toward the new heading this many times faster while frozen.
+# The whole point is that the view CATCHES UP during the hold rather than
+# trailing out of it -- a freeze the camera does not use is just a stutter.
+const TURN_FREEZE_CAM_MULTIPLIER := 3.5
+
+# How fast the kick is applied, in lanes per second.
+#
+# The kick used to be a step: `lane += KICK` in the same frame the facing
+# changed, so the marker jumped sideways instantly and the "arc with weight"
+# this whole mechanic exists for was invisible -- it was a second snap stapled
+# to the 90-degree snap. Easing it in over a few frames is what actually makes
+# the corner read as an arc. Fast enough to complete well inside one cell even
+# at high speed, so the lane has settled before the next junction.
+const LANE_KICK_PER_SEC := 6.0
 
 # Lanes per second the player drifts back toward centre. Slow enough that the
 # kick is still visible a cell or two later, fast enough to recover before the

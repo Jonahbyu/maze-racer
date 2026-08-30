@@ -29,14 +29,14 @@ func check(label: String, condition: bool, detail: String = "") -> void:
 
 
 func _run() -> void:
-	var scene: PackedScene = load("res://scenes/Main.tscn")
-	check("Main.tscn loads", scene != null)
+	var scene: PackedScene = load("res://scenes/Game.tscn")
+	check("Game.tscn loads", scene != null)
 	if scene == null:
 		_finish()
 		return
 
 	var game = scene.instantiate()
-	check("Main.tscn instantiates", game != null)
+	check("Game.tscn instantiates", game != null)
 	if game == null:
 		_finish()
 		return
@@ -121,6 +121,8 @@ func _run() -> void:
 	_check_wall_indicator(game)
 	_check_camera_never_clips(game)
 	_check_crash_camera(game)
+	_check_pause(game)
+	_check_landmark_meshes(game)
 
 	_finish()
 
@@ -247,6 +249,7 @@ func _check_camera_never_clips(game) -> void:
 	var to_face: float = Tuning.CELL_SIZE * 0.5 - Tuning.WALL_THICKNESS * 0.5
 	var last := Vector2i(-999, -999)
 	var bad := 0
+	var blind := 0
 	var frames := 2000
 
 	for i in frames:
@@ -294,9 +297,25 @@ func _check_camera_never_clips(game) -> void:
 			var dir := Maze.S if offset.z > 0.0 else Maze.N
 			if not game.maze.is_open(cell, dir):
 				bad += 1
+				continue
+
+		# The marker must never be hidden behind a wall (CLAUDE.md section 12).
+		# A separate question from the clip check above: the eye can sit in
+		# perfectly open space while the LINE to the marker cuts a corner, which
+		# is exactly what happens swinging through a turn -- the wall just passed
+		# wipes across the marker for a few frames.
+		#
+		# Checked in this loop rather than its own, because a second 2000-frame
+		# autopilot doubles the harness runtime to assert over the same play.
+		var marker := racer.world_position()
+		marker.y = p.y
+		if game._sight_blocked(p, marker):
+			blind += 1
 
 	check("camera never clips into a wall", bad == 0,
 		"%d of %d frames inside geometry" % [bad, frames])
+	check("the player marker is never hidden by a wall", blind == 0,
+		"%d of %d frames with sight blocked" % [blind, frames])
 
 
 # The wall indicator must only ever mark a REAL DEAD END.
@@ -325,7 +344,7 @@ func _check_wall_indicator(game) -> void:
 	game._start_maze(0)
 
 	# Re-read racer and maze from `game` every frame, never cached: _start_maze
-	# builds a NEW Racer and a NEW Maze for each of the three mazes, so a
+	# builds a NEW Racer and a NEW Maze for each maze in the run, so a
 	# reference captured up front goes stale the moment maze 1 is cleared and
 	# leaves the test inspecting an orphaned racer.
 	var racer: Racer = null
@@ -511,6 +530,49 @@ func _dead_end_ahead(maze: Maze, cell: Vector2i, facing: int) -> bool:
 # The autopilot in the other harnesses never crashes, so every part of the crash
 # path -- the camera retreat, the held prompt, the recovery -- was previously
 # unexercised by any test. This drives a real crash by steering INTO a wall.
+# Pause stops the clock AND the simulation, and blurs the minimap.
+#
+# All three matter and each fails differently: a pause that let `elapsed` run
+# would penalise stepping away in the one currency the player is fighting
+# (CLAUDE.md section 8); one that let the racer step would not be a pause; and
+# one that left the minimap sharp would be a strictly better gate screen --
+# free, unlimited, and available any time -- which is the scouting the gate blur
+# exists to prevent (section 7).
+func _check_pause(game) -> void:
+	# Leave whatever the earlier checks did behind: this test needs a live,
+	# racing game, and the crash check before it parks the racer.
+	game.phase = game.Phase.RACING
+	game.racer.state = Racer.State.RUNNING
+	game.racer.freeze = 0.0
+
+	game._set_paused(true)
+	check("pause enters the paused phase", game.phase == game.Phase.PAUSED)
+	check("pause blurs the minimap", game._minimap.blurred)
+
+	var elapsed_before: float = game.elapsed
+	var cell_before: Vector2i = game.racer.cell
+	var progress_before: float = game.racer.progress
+
+	for _i in range(30):
+		game._process(1.0 / 60.0)
+
+	check("paused: the run timer is stopped",
+		is_equal_approx(game.elapsed, elapsed_before),
+		"%.3f -> %.3f" % [elapsed_before, game.elapsed])
+	check("paused: the racer does not move",
+		game.racer.cell == cell_before and is_equal_approx(game.racer.progress, progress_before),
+		"cell %s progress %.3f" % [str(game.racer.cell), game.racer.progress])
+
+	game._set_paused(false)
+	check("unpause returns to racing", game.phase == game.Phase.RACING)
+	check("unpause unblurs the minimap", not game._minimap.blurred)
+
+	for _i in range(30):
+		game._process(1.0 / 60.0)
+	check("unpaused: the run timer resumes", game.elapsed > elapsed_before,
+		"%.3f -> %.3f" % [elapsed_before, game.elapsed])
+
+
 func _check_crash_camera(game) -> void:
 	var racer: Racer = game.racer
 	var maze: Maze = racer.maze
@@ -689,3 +751,70 @@ func _finish() -> void:
 	print("passed: %d   failed: %d" % [_passed, _failed])
 	print("RESULT: %s" % ("PASS" if _failed == 0 else "FAIL"))
 	quit(1 if _failed > 0 else 0)
+
+
+# Landmark geometry actually reaches the scene, and is built solid.
+#
+# The rules-level guarantees live in RulesTest; this checks the half that only
+# exists once there is a rendered world: that the meshes are built, that they
+# are wound the right way out, and that a skyline landmark genuinely rises above
+# the wall line rather than merely being declared tall in the table.
+func _check_landmark_meshes(game) -> void:
+	var mesh_root: Node = game._mesh
+	var found: Array[MeshInstance3D] = []
+	for child in mesh_root.get_children():
+		if child is MeshInstance3D and String(child.name).begins_with("Landmarks_"):
+			found.append(child)
+
+	check("landmark meshes are built", found.size() > 0,
+		"got %d surfaces" % found.size())
+	if found.is_empty():
+		return
+
+	var tallest := 0.0
+	var total_volume := 0.0
+	var inverted: Array[String] = []
+
+	for instance in found:
+		var arrays: Array = instance.mesh.surface_get_arrays(0)
+		var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		if verts.size() == 0:
+			continue
+
+		# Same whole-mesh invariant the wall check uses: for closed,
+		# outward-wound solids the signed volume is positive. It needs no
+		# knowledge of where any individual landmark sits, and it flips sign
+		# exactly when the winding does -- which is the failure that stays
+		# invisible until backface culling is switched on.
+		var volume := 0.0
+		for i in range(0, verts.size(), 3):
+			volume += verts[i].dot(verts[i + 1].cross(verts[i + 2]))
+		volume /= 6.0
+
+		if volume <= 0.0:
+			inverted.append(String(instance.name))
+		total_volume += volume
+
+		for v in verts:
+			tallest = maxf(tallest, v.y)
+
+	check("landmark meshes are outward-wound", inverted.is_empty(),
+		"inverted: %s" % ", ".join(inverted))
+	check("landmark meshes enclose real volume", total_volume > 1.0,
+		"got %.3f" % total_volume)
+
+	# The whole justification for the skyline tier is that the camera is capped
+	# BELOW WALL_HEIGHT (CLAUDE.md section 12), so the only way anything is
+	# visible from the next corridor over is by towering above the walls. If the
+	# built geometry never gets above the wall line, the tier does nothing --
+	# and the table alone cannot prove it, since the shapes are what decide the
+	# real height.
+	check("a landmark rises above the wall line", tallest > Tuning.WALL_HEIGHT,
+		"tallest vertex %.2f, wall is %.2f" % [tallest, Tuning.WALL_HEIGHT])
+	check("skyline landmarks tower, not merely clear",
+		tallest >= Tuning.WALL_HEIGHT * 2.0,
+		"tallest %.2f, want >= %.2f" % [tallest, Tuning.WALL_HEIGHT * 2.0])
+
+	# They must not reach so high they read as a ceiling over the corridor.
+	check("landmarks stay under a sane ceiling", tallest < Tuning.WALL_HEIGHT * 8.0,
+		"tallest %.2f" % tallest)

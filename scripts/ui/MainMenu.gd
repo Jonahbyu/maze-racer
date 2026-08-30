@@ -1,0 +1,191 @@
+# The title screen: PLAY, WATCH TRAILER, QUIT.
+#
+# Deliberately flat -- no 3D behind it. The trailer is the moving shop window
+# (docs/specs/trailer.md); a menu that also rendered a live maze would be paying
+# the cost of both and diluting the one that is actually built to sell the game.
+#
+# Colours are taken from the maze-1 palette in Tuning rather than restated, so
+# the title screen cannot drift away from the game's own cyan.
+class_name MainMenu
+extends Control
+
+signal play_pressed()
+signal trailer_pressed()
+
+const COL_ACCENT := Color(0.12, 0.85, 1.0)
+const COL_DIM := Color(0.55, 0.62, 0.75)
+const COL_CARD := Color(0.07, 0.10, 0.16, 0.96)
+const COL_CARD_HOVER := Color(0.12, 0.20, 0.32, 0.98)
+
+const BUTTON_SIZE := Vector2(360, 62)
+const SEPARATION := 18.0
+
+# Where the button stack starts, relative to screen centre. The stack grows
+# downward from here and the hint follows it.
+const ROW_TOP := -40.0
+
+var _buttons: Array[Button] = []
+var _touch_button: Button = null
+var _hint: Label = null
+
+
+func _ready() -> void:
+	# Anchors and offsets together. set_anchors_preset() leaves the offsets at
+	# zero and yields a degenerate rect, which is what hung UpgradeScreen's cards
+	# off the top-left corner (CLAUDE.md section 12).
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	mouse_filter = Control.MOUSE_FILTER_STOP
+
+	_build_background()
+	_build_title()
+	_build_buttons()
+
+
+func _build_background() -> void:
+	var back := ColorRect.new()
+	back.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	back.color = Color(0.01, 0.015, 0.03)
+	back.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(back)
+
+
+func _build_title() -> void:
+	var title := _centred_label("MAZE RACER", 78, COL_ACCENT, -250, -150)
+	title.add_theme_constant_override("outline_size", 8)
+	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	add_child(title)
+
+	add_child(_centred_label(
+		"five mazes.  speed you did not ask for.", 20, COL_DIM, -140, -104))
+
+
+func _build_buttons() -> void:
+	var row := VBoxContainer.new()
+	row.anchor_left = 0.5
+	row.anchor_right = 0.5
+	row.anchor_top = 0.5
+	row.anchor_bottom = 0.5
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", SEPARATION)
+	row.offset_left = -BUTTON_SIZE.x * 0.5
+	row.offset_right = BUTTON_SIZE.x * 0.5
+	add_child(row)
+
+	row.add_child(_make_button("PLAY", _on_play))
+	row.add_child(_make_button("WATCH TRAILER", _on_trailer))
+	# The label carries the state, so the button reads as a switch rather than
+	# an action. A separate on/off indicator beside it would be a second thing
+	# to keep in sync for no extra information.
+	_touch_button = _make_button(_touch_label(), _on_toggle_touch)
+	row.add_child(_touch_button)
+	row.add_child(_make_button("QUIT", _on_quit))
+
+	# Derived from what the row actually holds, never a fixed band. The previous
+	# literal 180 fitted three buttons by luck and already clipped the third
+	# slightly; a fourth overflowed it outright. Same trap as the upgrade card
+	# row (CLAUDE.md section 12) -- read the count, do not restate the total.
+	var count: int = _buttons.size()
+	var gaps: float = float(max(count - 1, 0))
+	var stack: float = BUTTON_SIZE.y * float(count) + SEPARATION * gaps
+	row.offset_top = ROW_TOP
+	row.offset_bottom = ROW_TOP + stack
+
+	if not _buttons.is_empty():
+		_buttons[0].grab_focus()
+
+	# Below the row wherever the row now ends, for the same reason.
+	_hint = _centred_label(_hint_text(), 16, COL_DIM,
+		row.offset_bottom + 30.0, row.offset_bottom + 60.0)
+	add_child(_hint)
+
+
+func _make_button(text: String, handler: Callable) -> Button:
+	var button := Button.new()
+	button.text = text
+	button.custom_minimum_size = BUTTON_SIZE
+	button.focus_mode = Control.FOCUS_ALL
+	button.add_theme_font_size_override("font_size", 24)
+	button.add_theme_color_override("font_color", Color.WHITE)
+	button.add_theme_color_override("font_hover_color", COL_ACCENT)
+	button.add_theme_color_override("font_focus_color", COL_ACCENT)
+
+	for state in ["normal", "hover", "pressed", "focus", "disabled"]:
+		var style := StyleBoxFlat.new()
+		var lit: bool = state in ["hover", "focus", "pressed"]
+		style.bg_color = COL_CARD_HOVER if lit else COL_CARD
+		style.set_corner_radius_all(10)
+		style.set_border_width_all(2)
+		style.border_color = COL_ACCENT if lit else Color(0.2, 0.3, 0.45)
+		style.set_content_margin_all(12)
+		button.add_theme_stylebox_override(state, style)
+
+	button.pressed.connect(handler)
+	_buttons.append(button)
+	return button
+
+
+func _centred_label(text: String, size: int, colour: Color,
+		top: float, bottom: float) -> Label:
+	var label := Label.new()
+	label.text = text
+	label.add_theme_font_size_override("font_size", size)
+	label.add_theme_color_override("font_color", colour)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.anchor_left = 0.5
+	label.anchor_right = 0.5
+	label.anchor_top = 0.5
+	label.anchor_bottom = 0.5
+	label.offset_left = -520
+	label.offset_right = 520
+	label.offset_top = top
+	label.offset_bottom = bottom
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return label
+
+
+# The live preference, or null when this menu is running outside the real
+# project -- a harness that instantiates MainMenu directly has no autoloads.
+# Every read is guarded rather than assumed, for the reason Shell guards Music:
+# a missing setting must never be what stops the menu drawing.
+func _settings() -> Node:
+	return get_node_or_null("/root/Settings")
+
+
+func _touch_enabled() -> bool:
+	var settings := _settings()
+	return settings != null and bool(settings.touch_controls)
+
+
+func _touch_label() -> String:
+	return "MOBILE CONTROLS:  %s" % ("ON" if _touch_enabled() else "OFF")
+
+
+# The keyboard line is wrong on a phone, where there are no arrow keys to press
+# -- so the hint describes whichever scheme is actually active.
+func _hint_text() -> String:
+	if _touch_enabled():
+		return "tap the pads to steer  -  centre pad reverses"
+	return "arrow keys steer  -  DOWN reverses  -  ESC pauses"
+
+
+func _on_toggle_touch() -> void:
+	var settings := _settings()
+	if settings == null:
+		return
+	settings.set_touch_controls(not bool(settings.touch_controls))
+	if _touch_button != null:
+		_touch_button.text = _touch_label()
+	if _hint != null:
+		_hint.text = _hint_text()
+
+
+func _on_play() -> void:
+	emit_signal("play_pressed")
+
+
+func _on_trailer() -> void:
+	emit_signal("trailer_pressed")
+
+
+func _on_quit() -> void:
+	get_tree().quit()

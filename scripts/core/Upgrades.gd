@@ -18,6 +18,7 @@ enum Line {
 	GATE_COMPASS,
 	WALL_ARMOR,
 	GOLDEN_TRAIL,
+	SNAP_TURN,
 }
 
 # max_rank is the number of times a line can be taken. Lines whose effect is a
@@ -110,6 +111,15 @@ const DEFINITIONS := {
 			"Crashes deal 1 less damage.",
 		],
 	},
+	Line.SNAP_TURN: {
+		"name": "Snap Turn",
+		"max_rank": 3,
+		"desc": [
+			"Corners hold you 25% less. Back up to speed sooner after every turn.",
+			"Corners hold you 45% less.",
+			"Corners hold you 60% less.",
+		],
+	},
 	Line.GOLDEN_TRAIL: {
 		"name": "Golden Trail",
 		"max_rank": 3,
@@ -175,6 +185,29 @@ func started_line_count() -> int:
 
 func buffer_cells() -> float:
 	return Tuning.BASE_BUFFER_CELLS + rank(Line.BUFFER_WINDOW) * Tuning.BUFFER_PER_RANK
+
+
+# The post-turn hold, in seconds. Snap Turn shortens it.
+#
+# It is a REDUCTION, never a removal: at rank 3 the freeze is still 40% of base,
+# because the freeze is what makes a corner readable at speed and zeroing it
+# would hand the maxed build back the unreadable pivot the freeze exists to fix.
+# What the line buys is time -- the freeze runs on the clock, and the clock is
+# the score (CLAUDE.md section 8).
+func turn_freeze() -> float:
+	return Tuning.TURN_FREEZE * _freeze_scale()
+
+
+func reverse_freeze() -> float:
+	return Tuning.REVERSE_FREEZE * _freeze_scale()
+
+
+func _freeze_scale() -> float:
+	match rank(Line.SNAP_TURN):
+		1: return 0.75
+		2: return 0.55
+		3: return 0.40
+		_: return 1.0
 
 
 func reverse_cost() -> float:

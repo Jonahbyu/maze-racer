@@ -31,6 +31,9 @@ func _init() -> void:
 	_test_lanes()
 	_test_turn_keeps_progress()
 	_test_entry_corridor_lockout()
+	_test_turn_freeze()
+	_test_landmarks()
+	_test_landmarks_do_not_move_the_racer()
 
 	print("")
 	print("passed: %d   failed: %d" % [_passed, _failed])
@@ -53,13 +56,33 @@ func _test_lanes() -> void:
 	var before_cell := r.cell
 	var before_progress := r.progress
 	r.request_turn(-1)
-	check("a turn kicks the lane off centre", absf(r.lane) > 0.5,
-		"lane %.2f" % r.lane)
-	check("the kick is toward the OUTSIDE of the turn", r.lane > 0.0,
-		"turning left should throw right of the new heading, got %.2f" % r.lane)
+
+	# The kick sets lane_target; `lane` EASES toward it rather than snapping, so
+	# the assertion has to let a little time pass before reading the position.
+	# Reading `lane` in the same call as the turn tested the old instant step and
+	# would now fail on a change that is working exactly as intended -- the kick
+	# is an arc with weight, and an arc is not observable in zero time.
+	check("a turn aims the lane off centre", absf(r.lane_target) > 0.5,
+		"lane_target %.2f" % r.lane_target)
+
+	# The turn itself is what must not touch cell or progress -- that is the
+	# separation being asserted. Checked HERE, before any time is stepped,
+	# because the frames needed to observe the lane easing legitimately advance
+	# progress down the corridor; folding them in first would make this assert
+	# that the racer does not move, which is not the claim.
 	check_eq("the kick did not move the racer's cell", r.cell, before_cell)
 	check_near("the kick did not move progress", r.progress, before_progress)
 
+	for _i in range(12):
+		r.step(1.0 / 60.0)
+	check("a turn kicks the lane off centre", absf(r.lane) > 0.5,
+		"lane %.2f" % r.lane)
+
+	# Travel since the turn stays on the corridor centre line: lane moved, and
+	# the RULES still did not notice.
+	check_eq("easing the lane did not move the racer's cell", r.cell, before_cell)
+	check("the kick is toward the OUTSIDE of the turn", r.lane > 0.0,
+		"turning left should throw right of the new heading, got %.2f" % r.lane)
 	# The offset shows up in the rendered position, perpendicular to travel.
 	var centred := Vector3(
 		float(r.cell.x) * Tuning.CELL_SIZE, Tuning.EYE_HEIGHT,
@@ -173,6 +196,66 @@ func _test_turn_keeps_progress() -> void:
 # always take the NEXT available opening.
 #
 # The 180 itself is exempt: going back IS what that input means.
+# The post-turn freeze holds POSITION, not the speed ramp.
+#
+# Two separate claims, and getting either backwards breaks something real: a
+# freeze that let travel continue would not buy the player the moment to read
+# the new corridor that it exists for, and a freeze that stopped the ramp would
+# make cornering a way to duck the game's central pressure (CLAUDE.md section 3).
+func _test_turn_freeze() -> void:
+	var r := _make_racer(_make_room(9, 9))
+
+	r.step(0.2)
+	r.request_turn(-1)
+	check("a turn arms the freeze", r.freeze > 0.0, "freeze %.3f" % r.freeze)
+
+	var cell_before := r.cell
+	var progress_before := r.progress
+	var speed_before := r.speed
+
+	# Step less than the freeze window, so the whole step is spent frozen.
+	var held := Tuning.TURN_FREEZE * 0.5
+	r.step(held)
+
+	check_eq("frozen: cell does not move", r.cell, cell_before)
+	check_near("frozen: progress does not move", r.progress, progress_before)
+	check("frozen: the speed ramp still runs", r.speed > speed_before,
+		"%.4f -> %.4f" % [speed_before, r.speed])
+	check_near("the freeze burns down with time", r.freeze,
+		Tuning.TURN_FREEZE - held)
+
+	# Past the window, travel resumes. The baseline is re-read HERE, not reused
+	# from before the freeze: a turn preserves progress, so the pre-turn value is
+	# still current and comparing against it asserts nothing about the freeze
+	# having ended -- it just re-checks that the turn did not rewind.
+	var frozen_cell := r.cell
+	var frozen_progress := r.progress
+	r.step(Tuning.TURN_FREEZE)
+	check_near("the freeze expires", r.freeze, 0.0)
+	check("travel resumes once the freeze ends",
+		r.cell != frozen_cell or r.progress > frozen_progress,
+		"progress %.3f -> %.3f" % [frozen_progress, r.progress])
+
+	# Snap Turn shortens it but never removes it -- the freeze is what makes a
+	# corner readable at speed, and a zero freeze hands the maxed build back the
+	# unreadable pivot it exists to fix.
+	var up := Upgrades.new(1)
+	var base_freeze := up.turn_freeze()
+	for _i in range(int(Upgrades.DEFINITIONS[Upgrades.Line.SNAP_TURN]["max_rank"])):
+		up.take(Upgrades.Line.SNAP_TURN)
+	check("Snap Turn shortens the freeze", up.turn_freeze() < base_freeze,
+		"%.3f -> %.3f" % [base_freeze, up.turn_freeze()])
+	check("Snap Turn never removes the freeze", up.turn_freeze() > 0.0,
+		"freeze %.3f" % up.turn_freeze())
+
+	# A crash must clear the freeze: PARKED already holds position, and a freeze
+	# left running would silently eat the first frames after un-stick.
+	var r2 := _make_racer(_make_room(9, 9))
+	r2.request_turn(-1)
+	r2._crash()
+	check_near("a crash clears the freeze", r2.freeze, 0.0)
+
+
 func _test_entry_corridor_lockout() -> void:
 	var r := _make_racer(_make_room(9, 9))
 
@@ -900,3 +983,225 @@ func _test_indicator() -> void:
 	# In a plain corridor the answer is straight ahead.
 	var straight := _make_racer(_make_corridor(10, true))
 	check_eq("indicator says straight in a corridor", straight.correct_relative_turn(), 0)
+
+
+# --- Landmarks (docs/specs/landmarks.md) -------------------------------------
+
+# Landmarks are DECORATION and must never touch the rules.
+#
+# The safety argument for the whole feature has two halves and this covers both:
+#
+#   1. They carry no navigational information. Placement ignores the solve path,
+#      the distance field, the gates and the exit -- otherwise free scenery
+#      would cannibalise Path Indicator, Gate Compass and Golden Trail, all
+#      three of which are PAID lines sold on answering "which way".
+#
+#   2. They do not influence movement. This is the failure mode hardest to
+#      notice, because landmark data hangs off the Maze and so is REACHABLE from
+#      the rules layer even though it must never be used there -- the same trap
+#      lanes have (CLAUDE.md section 12), asserted the same way.
+func _test_landmarks() -> void:
+	var cfg: Dictionary = Tuning.MAZES[0]
+
+	var decorated := Maze.new()
+	decorated.generate(24, 24, 4242, cfg["braid"], cfg["dead_ends"], 4,
+		cfg.get("straighten", 0.0), cfg.get("shallow_keep", 1.0), 0.5)
+
+	check("landmarks are placed", decorated.landmarks.size() > 0,
+		"got %d" % decorated.landmarks.size())
+
+	# --- The maze itself must be identical with and without them --------------
+	#
+	# Landmarks run on their OWN RNG stream for this reason: sharing the carve
+	# generator would mean the density knob silently redraws every maze in the
+	# game, because each extra draw shifts the whole downstream sequence.
+	var bare := Maze.new()
+	bare.generate(24, 24, 4242, cfg["braid"], cfg["dead_ends"], 4,
+		cfg.get("straighten", 0.0), cfg.get("shallow_keep", 1.0), 0.0)
+
+	check("landmarks do not perturb the carve", bare.cells == decorated.cells)
+	check("landmarks do not perturb the distance field",
+		bare.distance_field == decorated.distance_field)
+	check_eq("landmarks do not perturb the gates", bare.gates, decorated.gates)
+	check_eq("a density of zero places none", bare.landmarks.size(), 0)
+
+	# --- Reproducible from the seed ------------------------------------------
+	var again := Maze.new()
+	again.generate(24, 24, 4242, cfg["braid"], cfg["dead_ends"], 4,
+		cfg.get("straighten", 0.0), cfg.get("shallow_keep", 1.0), 0.5)
+	check_eq("landmark placement is reproducible from the seed",
+		again.landmarks.size(), decorated.landmarks.size())
+
+	var identical := true
+	for i in decorated.landmarks.size():
+		if (again.landmarks[i]["cell"] != decorated.landmarks[i]["cell"]
+				or again.landmarks[i]["type"] != decorated.landmarks[i]["type"]):
+			identical = false
+			break
+	check("the same seed places the same landmarks", identical)
+
+	# --- Never in a cell the player drives through ---------------------------
+	#
+	# Collision is deliberately not modelled: the barrier and crash rules are
+	# defined against maze WALLS only (section 5), and a second class of solid
+	# thing would mean two collision systems disagreeing at speed. That is only
+	# safe because landmarks sit where the player cannot pass through them.
+	var on_route := {}
+	for c in decorated.solve_path:
+		on_route[c] = true
+
+	var blocking := 0
+	var on_solve := 0
+	var on_gate := 0
+	for landmark in decorated.landmarks:
+		var cell: Vector2i = landmark["cell"]
+		var inside := (cell.x >= 0 and cell.x < decorated.width
+			and cell.y >= 0 and cell.y < decorated.height)
+		if not inside:
+			continue
+		# A through-corridor has two or more exits, so the player can drive
+		# straight across it. Only sealed pockets (0) and dead ends (1) qualify.
+		if decorated.open_directions(cell).size() >= 2:
+			blocking += 1
+		if on_route.has(cell):
+			on_solve += 1
+		if decorated.gates.has(cell):
+			on_gate += 1
+
+	check_eq("no landmark sits in a through-corridor", blocking, 0)
+	check_eq("no landmark sits on the solve path", on_solve, 0)
+	check_eq("no landmark sits on a gate", on_gate, 0)
+
+	var on_ends := 0
+	for landmark in decorated.landmarks:
+		var cell: Vector2i = landmark["cell"]
+		if cell == decorated.start_cell or cell == decorated.exit_cell:
+			on_ends += 1
+	check_eq("no landmark sits on the start or exit", on_ends, 0)
+
+	# --- Placement carries no directional information ------------------------
+	#
+	# If a landmark correlated with distance-to-exit, spotting one over the wall
+	# line would be a free Gate Compass. Compare the mean distance-to-exit of
+	# landmark cells against the maze as a whole: uncorrelated placement should
+	# land near the middle of the range, not clustered at either end.
+	var landmark_total := 0.0
+	var landmark_n := 0
+	for landmark in decorated.landmarks:
+		var cell: Vector2i = landmark["cell"]
+		if cell.x < 0 or cell.x >= decorated.width or cell.y < 0 or cell.y >= decorated.height:
+			continue
+		var d := decorated.get_distance(cell)
+		if d >= 0:
+			landmark_total += float(d)
+			landmark_n += 1
+
+	var maze_total := 0.0
+	var maze_n := 0
+	var furthest := 0
+	for y in decorated.height:
+		for x in decorated.width:
+			var d := decorated.get_distance(Vector2i(x, y))
+			if d >= 0:
+				maze_total += float(d)
+				maze_n += 1
+				furthest = maxi(furthest, d)
+
+	if landmark_n > 0 and maze_n > 0:
+		var landmark_mean := landmark_total / float(landmark_n)
+		var maze_mean := maze_total / float(maze_n)
+		# Generous tolerance: this is asserting the ABSENCE of a signal, and
+		# with a few dozen samples ordinary scatter is wide. A real correlation
+		# -- landmarks placed near gates, say -- would move the mean far more
+		# than a fifth of the maze's depth.
+		check("landmark placement does not correlate with distance to exit",
+			absf(landmark_mean - maze_mean) < float(furthest) * 0.2,
+			"landmarks mean %.1f vs maze mean %.1f, depth %d" % [
+				landmark_mean, maze_mean, furthest])
+
+	# --- Types and tiers ------------------------------------------------------
+	for i in Tuning.LANDMARK_TYPES.size():
+		var config: Dictionary = Tuning.LANDMARK_TYPES[i]
+		if bool(config["skyline"]):
+			# A skyline landmark that does not clear the wall line is not a
+			# skyline landmark -- the tier exists precisely so that something
+			# is visible from the next corridor over. The camera is capped
+			# BELOW WALL_HEIGHT on purpose, so height is the only way a
+			# landmark becomes visible at distance.
+			check("skyline type '%s' clears the wall line" % config["name"],
+				float(config["height"]) >= Tuning.LANDMARK_SKYLINE_MIN,
+				"%.1f, needs %.1f" % [config["height"], Tuning.LANDMARK_SKYLINE_MIN])
+		else:
+			check("local type '%s' stays under the wall line" % config["name"],
+				float(config["height"]) < Tuning.WALL_HEIGHT,
+				"%.1f, wall is %.1f" % [config["height"], Tuning.WALL_HEIGHT])
+
+	# Landmarks must never out-glow the navigation markers. Gates and the exit
+	# have to stay the most eye-catching things in the maze, because they are
+	# navigation and landmarks explicitly are not.
+	#
+	# Compared against the GATE marker's own emission rather than a literal, so
+	# this stays a real assertion instead of a transcription of a number that
+	# drifts (CLAUDE.md section 12). A first version hard-coded "< 1.0" and went
+	# red the moment the landmark glow was raised to be visible through fog --
+	# telling us only that two constants had diverged, not that anything was
+	# wrong.
+	var gate_emission := 2.0
+	check("landmarks never out-glow the gate markers",
+		Tuning.LANDMARK_EMISSION < gate_emission,
+		"%.2f vs gate %.2f" % [Tuning.LANDMARK_EMISSION, gate_emission])
+	# But bright enough to survive the fog -- at 0.55 a skyline landmark four
+	# cells out was a dim grey speck.
+	check("landmarks glow enough to read through fog",
+		Tuning.LANDMARK_EMISSION > 0.8, "%.2f" % Tuning.LANDMARK_EMISSION)
+
+	# Every maze must actually get some, or the feature silently switches off in
+	# exactly the big braided mazes that need it most.
+	for i in Tuning.MAZES.size():
+		var density := float(Tuning.MAZES[i].get("landmarks", Tuning.LANDMARK_DENSITY))
+		check("maze %d has a landmark density" % i, density > 0.0,
+			"%s is %.2f" % [Tuning.MAZES[i]["name"], density])
+
+
+# Movement must be bit-identical whether landmarks exist or not.
+#
+# Driven side by side rather than checked structurally, because the failure this
+# guards against is a rule QUIETLY starting to read `landmarks` -- which a
+# structural check would not see. Two racers on the same maze, one decorated and
+# one not, must trace the same path forever.
+func _test_landmarks_do_not_move_the_racer() -> void:
+	var cfg: Dictionary = Tuning.MAZES[0]
+
+	var bare := Maze.new()
+	bare.generate(20, 20, 77, cfg["braid"], cfg["dead_ends"], 3,
+		cfg.get("straighten", 0.0), cfg.get("shallow_keep", 1.0), 0.0)
+
+	var decorated := Maze.new()
+	decorated.generate(20, 20, 77, cfg["braid"], cfg["dead_ends"], 3,
+		cfg.get("straighten", 0.0), cfg.get("shallow_keep", 1.0), 0.6)
+
+	var a := _make_racer(bare)
+	var b := _make_racer(decorated)
+
+	var diverged := false
+	for i in 400:
+		# Same inputs to both, including turns, so the comparison exercises turn
+		# resolution and the buffer rather than just straight-line travel.
+		if i % 37 == 0:
+			a.request_turn(1)
+			b.request_turn(1)
+		elif i % 53 == 0:
+			a.request_turn(-1)
+			b.request_turn(-1)
+
+		a.step(0.02)
+		b.step(0.02)
+
+		if a.cell != b.cell or absf(a.progress - b.progress) > 0.0001 or a.facing != b.facing:
+			diverged = true
+			break
+
+	check("landmarks do not change how the racer moves", not diverged)
+	check("landmarks do not change speed", absf(a.speed - b.speed) < 0.0001,
+		"%.4f vs %.4f" % [a.speed, b.speed])
+	check("landmarks do not change the barrier", absf(a.barrier - b.barrier) < 0.0001)

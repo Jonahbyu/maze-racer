@@ -2,7 +2,7 @@
 
 A fast-paced 3D first-person maze racer with roguelike progression. You move forward
 automatically down a grid corridor at ever-increasing speed. Arrow keys commit turns.
-Survive three increasingly complex mazes, taking upgrades at gates along the way.
+Survive five increasingly complex mazes, taking upgrades at gates along the way.
 
 Built in **Godot 4.7**. The Godot project lives in this same folder — `project.godot`,
 `scenes/`, and `scripts/` sit alongside these design docs. **The `.md` files are the
@@ -91,7 +91,7 @@ table above governs instead. **When a skill and these docs conflict, the docs wi
 spawn → auto-forward at 1.0x → read junctions → turn cleanly → speed climbs
    → hit a gate → timer pauses, pick 1 of 3 upgrades → resume
    → repeat ×8 gates → maze exit → next maze (upgrades carry)
-   → clear maze 3 → run complete
+   → clear maze 5 → run complete
 ```
 
 The tension: speed climbs on its own and never stops climbing. Going fast is not a
@@ -120,8 +120,23 @@ is what makes precise-but-fair input possible at 8x speed. This is the contract 
 | `←` | Turn left at the next left-opening |
 | `→` | Turn right at the next right-opening |
 | `↓` | 180° reversal / un-stick from a crash |
+| `Esc` / `P` | Pause |
 
-That is the entire control scheme. No accelerator, no brake. Speed is systemic.
+That is the entire *driving* control scheme. No accelerator, no brake. Speed is systemic.
+
+**Pause is not a fourth driving input.** The three-key contract is about what steers the
+racer, and pause steers nothing — it is the same category as closing the window. It stops
+the simulation *and* the run timer, because the timer is the score (§8) and a pause that let
+it run would penalise stepping away from the keyboard.
+
+**It blurs the minimap**, for exactly the reason a gate does (§7). A paused, static,
+zoomed-out map is a free solve of the entire maze — without the blur, pause would be a
+strictly better gate screen: available any time, at no cost, for as long as you like.
+
+One interaction worth knowing: the crash prompt is a *held* HUD message, so pausing while
+parked overwrites it, and unpausing clears it — which would leave the player stopped with
+nothing on screen telling them why, the exact failure the held message exists to prevent.
+Unpausing re-shows it if the crash is still current.
 
 ### Turn resolution
 
@@ -160,6 +175,51 @@ still counts toward the next boundary.
 The one exception is escaping a scrape, where `progress` is pinned at 1.0 to mean "hard
 against the wall" rather than to mean a position at all (§12, the `progress` trap). Pivoting
 out of a scrape starts from the cell centre because that is where the player actually is.
+
+**That reset has to happen on both escape paths**, and for a long time it only happened on
+one. A turn pressed *while already scraping* went through `request_turn`'s immediate path,
+which cleared `scraping` but left `progress` at 1.0 — so the pivot interpolated that 1.0
+down the newly-opened corridor and threw the marker **a full cell forward in a single
+frame**, landing it hard against the next boundary. That is the "I turn and I'm suddenly at
+the front of the cell" bug, and it fired on the majority of measured turns, because pressing
+a direction while brushing a wall is ordinary play, not an edge case.
+
+Resetting to the cell centre is a real reposition — about 1.4m — and there is **no
+continuous alternative**. Carrying the drawn wall-face position through the pivot instead
+was tried and measured *worse* (1.95m), because the wall face is 1.38m along the **old**
+heading, so reusing that number sends the marker the same distance down the **new** one. The
+two are not the same point. The freeze below is what makes the reposition readable rather
+than something to hide.
+
+### The turn freeze
+
+**A turn holds the player still for a beat before the new corridor starts moving.** Base
+**0.10s**, and **0.16s** for a 180 — longer because a reversal swings the view through a
+full half-turn, and the corridor behind you is the one thing you have not been looking at.
+
+A pivot is not a continuous motion. Facing changes in one frame, and the drawn position can
+move with it. Trying to *hide* that discontinuity was the wrong instinct — the scrape-escape
+measurement above shows there is no formulation that removes it. Freezing on it turns the
+jump into **a beat the player can see**: the world holds still, the camera swings onto the
+new heading at **3.5x** its normal rate, and travel resumes once the view agrees with the
+facing. A freeze the camera does not spend would just be a stutter.
+
+It also pays for itself against the ramp. At 8x a corner arrives and is gone inside 125ms;
+the freeze buys a **fixed, speed-independent** moment to read the new corridor, which is the
+one thing the ramp otherwise takes away.
+
+**The clock keeps running.** The freeze is a pause in *position*, not in the systemic
+pressure of §3 — the speed ramp advances throughout, because a freeze that stopped it would
+make cornering a way to duck the game's central mechanic. And the run timer advances, so the
+freeze is a real cost in the currency §8 says the player is fighting. Snap Turn (§7) buys it
+back down.
+
+**It consumes only as much of the frame as it needs.** Swallowing the whole `delta` and
+returning was wrong twice: a 0.10s freeze ends *inside* the frame that crosses it but still
+ate that frame whole, leaking up to a frame of travel per corner; and any frame longer than
+the freeze — a hitch, or a slow machine — was discarded entirely, which makes the same
+stutter last longer on worse hardware. `RulesTest` caught this as zero travel after the
+window, and it is a frame-rate-independence bug, not a tuning one.
 
 **A turn always takes the NEXT opening, never the one behind.** After a turn, the corridor
 just left is locked out of turn resolution until the player leaves that cell. At a
@@ -348,7 +408,7 @@ meaningfully cheaper than reversing — the decision the 180 exists to create.
 - **100 HP.** Base wall damage is **1**, so the early game is extremely forgiving — 100
   crashes to die. Intentional: HP is not the early-game pressure, **the timer is.** Every
   crash costs parked time plus the full speed reset, and that is the real cost.
-- HP exists to become relevant in maze 3, and to give the deferred hazards (§10) something
+- HP exists to become relevant in the late mazes, and to give the deferred hazards (§10) something
   to bite into.
 - **No death in v1.** HP may reach 0 and the run continues. Wire the death path but leave
   it behind a disabled flag from Phase 2 onward, so enabling it later is a one-line change
@@ -440,6 +500,9 @@ matter.
    remove to hit the per-maze target density.
 7. **Cap straight runs** — bound the longest corridor with no turn available. Runs
    **last**, after every other wall-knocking stage.
+8. **Place landmarks** — decorative structures in sealed pockets, dead ends, and outside
+   the boundary. Runs after everything, on its own RNG stream, and reads nothing the
+   rules depend on.
 
 ### Straight runs are capped at 8 cells
 
@@ -478,7 +541,8 @@ leaves (337), so ordering the density pass to drain stubs first gave it only 13 
 spend and cleared almost none of them. Culling stubs in a dedicated pass first, then
 letting density tuning take whatever is still over target, is what actually works.
 
-`shallow_keep` is the fraction of stubs *kept* — 0.15 / 0.25 / 0.35 across the three mazes.
+`shallow_keep` is the fraction of stubs *kept*, and it is **not** the share that survives —
+see §8. Tuned against `DeadEndProbe`, the five mazes run 0.15 / 0.20 / 0.12 / 0.11 / 0.10.
 Keeping some matters: at zero the maze reads as uniformly safe, and the occasional stub is
 what stops the player trusting every opening blindly. **It was the frequency that was
 wrong, not the existence.** Measured after the cull (8 seeds each):
@@ -502,6 +566,88 @@ off it — which, in a maze full of loops, happens constantly and is often the c
 **Seeding:** every maze generates from an explicit seed, and the run seed is stored. This
 makes bugs reproducible and makes a future daily-run mode nearly free.
 
+### Landmarks make a looped maze legible
+
+Randomly generated decorative structures — spires, monoliths, trees, arches, rings,
+rubble — placed through the maze so a corridor has an identity beyond "corridor". Full
+spec in `docs/specs/landmarks.md`.
+
+**They answer "have I been here before?", never "which way should I go?"** Placement
+ignores the solve path, the distance field, the gates and the exit entirely, and nothing
+about a landmark's type, height or colour correlates with any of them. That line is the
+whole reason the feature is safe: Path Indicator, Gate Compass and Golden Trail are all
+*paid* lines sold on answering "which way", and free scenery that hinted at the route
+would cannibalise three upgrades at once — the same trap the wall indicator would have
+fallen into if it had been allowed to mark correct turns rather than only true dead ends
+(§5.6).
+
+Recognising a landmark is worth something only because the player remembers what they did
+last time they saw it. That is player-supplied knowledge, not a given answer.
+
+The problem it fixes is real and gets worse with the escalation levers: §8 makes loop
+density "the most interesting knob", and §11.2 wants bad routing punished by distance and
+time. Both assume the player can *notice* they have looped. In a 25%-braided 90×90 maze of
+uniform corridors they cannot — a re-crossed junction is indistinguishable from a fresh
+one, so the punishment lands without the lesson.
+
+**Two tiers, answering different questions.** *Local* landmarks stay under the wall line
+and are seen only from the corridor they sit in, so they make one junction recognisable.
+*Skyline* landmarks tower over the walls and make a whole region recognisable.
+
+**Skyline landmarks are seen as spires past the wall tops, never from above.** The camera
+is capped below `WALL_HEIGHT` on purpose (§12), so a landmark earns distant visibility by
+being tall itself, from a low eye. Only its *upper* portion is ever seen far off, which is
+why each skyline type is shaped to be identifiable from its top alone. Measured: at 1.5×
+`WALL_HEIGHT` a landmark satisfies "clears the wall" and still fails the purpose — a few
+pixels of top edge through fog. They sit at 3–4× instead.
+
+**Never in a cell the player drives through.** Collision is deliberately not modelled —
+the barrier and crash rules are defined against maze walls only (§5), and a second class
+of solid thing would mean two collision systems disagreeing at speed. So landmarks go only
+in sealed pockets, at the far end of dead ends, and outside the boundary.
+
+The dead-end case is the most valuable: §6 makes dead ends the punishment for a misread,
+and a dead end with a statue in it is a punishment the player *remembers*. Turning around
+at the same broken pillar twice is unambiguous evidence of a re-tried route.
+
+**Density is a per-maze knob (`landmarks` in `Tuning.MAZES`), not a parallel array.** An
+array indexed by maze number goes stale the moment a maze is added — the same failure as a
+test restating a tuning number (§12). A first pass scaled density down hard as mazes grew
+and measured 0.19 landmarks per 100 cells in maze 5: a player could cross the biggest,
+loopiest maze and never meet one, switching the feature off exactly where it is needed
+most. `LandmarkProbe.gd` is the instrument.
+
+**Colour is fixed across all mazes**, joining gates, the exit, the player marker and the
+HUD (§8) — a landmark seen in maze 1 and again in maze 3 should read as the same kind of
+object. The six hues sit in the gaps left by everything that already owns a colour: amber→red
+is the wall indicator, amber-yellow is gates, white is the exit and the marker, green/red is
+Path Indicator, and the five palettes own cyan, magenta, green, ember and violet. **That
+reserved list runs in both directions** — a future colourway in deep blue would put the
+spire's hue on every wall.
+
+**Emission is tuned between two measured failures**, not guessed. At 0.55 a skyline
+landmark four cells out was a grey speck, because fog sits between the camera and
+everything. At 1.25 one filling a dead end blew out to flat white — the silhouette, which
+is the entire way a landmark is recognised, was lost exactly where the player is closest to
+it, and it washed over the no-entry wall indicator on that same end wall. A decoration must
+never outshout a navigation signal.
+
+**Nothing in the simulation may read a landmark.** Movement, turn resolution, the buffer,
+the barrier, penalties and the distance field behave identically whether landmarks exist or
+not. Placement runs on its **own RNG stream** — sharing the carve's generator would mean
+the density knob silently redrew every maze, since each extra draw shifts the whole
+downstream sequence — and it runs **last**, after every wall-knocking stage, because the
+dead-end passes open walls and a cell that was a sealed pocket mid-pipeline may not be one
+at the end.
+
+`RulesTest` asserts the separation directly by driving two racers side by side on the same
+seed, one maze decorated and one not, and requiring they never diverge. This is the failure
+mode hardest to notice: landmark data hangs off the `Maze`, so it is *reachable* from the
+rules layer even though it must never be *used* there — the same trap lanes have (§12).
+
+`LandmarkShot.gd` is the visual check, and it **seeks a landmark** rather than shooting on
+a timer, for the reason `PaletteShot` seeks a junction.
+
 ---
 
 ## 7. Upgrades
@@ -514,8 +660,20 @@ per maze**.
 Eight rather than five: at five, a three-maze run handed out 15 picks against nine upgrade
 lines, so a build barely got past one rank in the lines it cared about and the cards stopped
 being a *choice* between strategies and started being a scramble to start anything at all.
-Twenty-four picks is enough to actually max two or three lines and feel the compounding that
+Twenty-four picks was enough to actually max two or three lines and feel the compounding that
 §7 is built around, while still being far short of taking everything.
+
+> **At five mazes that headroom is gone, and this needs a decision.** Forty gates against a
+> tree holding 38 total ranks means a clean run maxes *everything* and the last two picks
+> have nothing left to take — `RunTest` prints a `note:` line when gates exceed capacity, and
+> currently does. That breaks the §11.5 promise that upgrades change *decisions*: if every
+> line ends maxed, the choice was only ever about ordering.
+>
+> Deliberately **not** fixed by quietly cutting gates per maze — gates are also the pacing
+> beat and the timer pause, so thinning them changes the rhythm of a maze to solve a problem
+> in the upgrade tree. The honest options are more upgrade lines, higher `max_rank` on the
+> lines that can carry it, or fewer gates on the late mazes; which one is a design call worth
+> making on purpose.
 
 **Why gates rather than distance-travelled:** gates sit on the optimal route, so
 collecting them *is* engagement with the solve. A player who routes well reaches them
@@ -550,6 +708,7 @@ meta-progression (§10).
 | **Barrier Capacity** | +0.25s of wall-contact grace per rank | Directly widens the skill-expression window |
 | **Barrier Regen** | Faster barrier refill | Pairs with capacity; matters most in tight twisty sections |
 | **Gate Compass** | Points toward the next gate | A soft directional hint — weaker than Path Indicator, but always on |
+| **Snap Turn** | Shortens the post-turn freeze: 0.10s → 0.075 → 0.055 → 0.04 | Buys back time, the currency of §8. Never removes the freeze — see below |
 | **Golden Trail** | On a timer, a golden streak shoots from the player along the optimal route, travelling at 2x player speed and lingering 2s | Periodic, not continuous — it answers "where does this go" a few times a minute rather than at every junction |
 | **Wall Armor** | Reduces crash HP damage | Near-useless in v1 (no death). Reserved for when hazards land |
 
@@ -584,7 +743,7 @@ instead of ending, there is no far wall to paint on, and the panel falls back to
 of that cell — a panel with no wall behind it is the floating-in-air problem this whole
 change exists to fix. `SceneTest` asserts every lit panel is flush against a real wall face.
 
-The HUD keeps a **fixed** palette across all three mazes. Speed, barrier and integrity are
+The HUD keeps a **fixed** palette across every maze. Speed, barrier and integrity are
 read under pressure, and the barrier bar already uses colour to mean something — it goes red
 when low — which only works if the resting colour never moves.
 
@@ -615,6 +774,17 @@ this whole corridor go*, a few times a minute, and says nothing in between. One
 is a continuous readout, the other is an occasional map. Taking both is meant to
 be strong; taking either alone leaves a real gap.
 
+### Snap Turn reduces the freeze, never removes it
+
+At max rank the freeze is still **40% of base**. The freeze is what makes a corner readable
+at speed (§2), so zeroing it would hand the maxed build back the unreadable pivot the freeze
+exists to fix — an upgrade that makes the game worse the more you take it. What the line
+buys is *time*: the freeze runs on the clock, and the clock is the score.
+
+This is §11.5 in practice. Snap Turn changes a decision rather than a stat — it makes
+committing to a turn-heavy route cheaper, which shifts routing strategy, instead of just
+making a number bigger.
+
 **Card presentation:** 3 weighted-random cards from the available pool. Never offer a
 maxed line. If the player has fewer than 3 lines started, guarantee at least one *new*
 line among the three — early picks should feel like they open options, not deepen one
@@ -622,30 +792,75 @@ stat.
 
 ---
 
-## 8. Progression — Three Mazes
+## 8. Progression — Five Mazes
 
 Upgrades carry forward. Each maze escalates **complexity**, not merely size.
 
-| | Maze 1 | Maze 2 | Maze 3 |
-|---|---|---|---|
-| Grid | 60×60 | 75×75 | 90×90 |
-| Braid factor (loops) | 12% | 18% | 25% |
-| Dead-end density | Low | Medium | High |
-| One-cell stubs kept | 15% | 25% | 35% |
-| Gates | 8 | 8 | 8 |
-| Target solve time | ~2 min | ~3 min | ~4–5 min |
+| | Maze 1 | Maze 2 | Maze 3 | Maze 4 | Maze 5 |
+|---|---|---|---|---|---|
+| Name | The Grid | The Ember | The Tangle | The Labyrinth | The Vault |
+| Grid | 60×60 | 70×70 | 80×80 | 90×90 | 100×100 |
+| Braid factor (loops) | 6% | 12% | 18% | 25% | 30% |
+| One-cell stubs kept | 15% | 20% | 12% | 11% | 10% |
+| Gates | 8 | 8 | 8 | 8 | 8 |
+| Measured solve time | ~54s | ~55s | ~59s | ~57s | ~56s |
+
+Solve times are from a full `RunTest` autopilot — an optimal router, so they are a floor
+rather than a target. A five-maze run takes the autopilot ~280s.
+
+**Grid size steps by a constant 10 rather than accelerating.** The size lever is the blunt
+one (see below), and with five mazes it gets used five times; a geometric ladder would have
+put maze 5 somewhere absurd while adding nothing the braid factor does not add better.
+
+### The dead-end density target is inert on the later mazes, and that is a trap
+
+`dead_ends` reads like the main knob and mostly is not. `_tune_dead_ends` **only removes** —
+it returns early when a maze is already under target. Carve-plus-braid plus the stub cull
+leaves the big late mazes *below* their target, so the number does nothing there: lowering
+maze 4's target from 0.036 to 0.030 and maze 5's from 0.042 to 0.032 changed the measured
+output **not at all, on any seed**.
+
+So on the later mazes the real levers are **`braid`** (more loops open more walls, which
+*removes* dead ends) and **`shallow_keep`**. Density consequently *falls* across the back
+half — 2.8% at maze 2 down to 1.1% at maze 5 — and that predates the five-maze ladder: the
+original three had the same shape, peaking at maze 2 (2.78%) and falling at maze 3 (2.32%).
+
+`shallow_keep` is likewise **not** the measured stub share. The cull runs before the density
+pass, which then has no budget to drain what is left, so the fraction that survives runs
+well above the number set. At the original 0.25/0.35 the late mazes measured 34% and 46%
+stubs; the values in the table are tuned *against `DeadEndProbe`* to land at 20/22/24%.
+**Set these by measuring, never by writing the share you want.**
 
 ### Each maze has its own palette
 
-| | Maze 1 | Maze 2 | Maze 3 |
-|---|---|---|---|
-| Neon | cyan | magenta / violet | acid green |
+| | Maze 1 | Maze 2 | Maze 3 | Maze 4 | Maze 5 |
+|---|---|---|---|---|---|
+| Neon | cyan | ember (red-orange) | magenta / violet | acid green | deep violet |
 
 Arriving in a new maze should read as **arriving somewhere**, not as the same corridor with
 a bigger grid. Hue carries all of it; value and saturation stay in the same band across all
-three, because brightness is already doing a job elsewhere — the wall indicator ramps
+five, because brightness is already doing a job elsewhere — the wall indicator ramps
 amber-to-red by distance (§5.6), the barrier bar goes red when low — and a dim maze would
 make those reads land differently maze to maze.
+
+**The order is not the order they were added.** Ember sits second and deep violet last so no
+two adjacent mazes share a neighbourhood on the wheel — appending the two new hues to the end
+would have run magenta straight into violet, the one adjacency in this set that reads as the
+same maze twice. Green separates them instead.
+
+**Ember is red-orange, never amber.** Amber is spoken for twice over: the gate markers are
+amber-yellow and the wall indicator's far end is amber (§5.6), so an amber maze would put the
+two things the player most needs to pick out into the same hue as every wall around them.
+
+**A warm palette drives the ambient warm, and warm ambient reads as a lit surface.** Ambient
+is mixed from the palette's `grid` colour, so ember's first grid — a bright yellow — pushed
+ambient to warm-neutral where every other palette lands cool. Cool ambient on a dark wall
+reads as *shadow*; warm-neutral ambient reads as *lit*, and every wall face turned milky
+brown with the floor grid washed out against it. This is the §8 green-ambient failure and the
+§12 "too bright" failure arriving by a third route — through the **grid colour**, two steps
+removed from anything that looks like a light. The check is the sign of R−B on the resulting
+ambient: every palette must land negative. Ember's grid was pulled back to a desaturated
+gold, separating from the wall by *value* rather than hue.
 
 **Fog, ambient and the headlight move with the palette.** They sit *between* the camera and
 every surface, so leaving them blue pushes a cyan haze over a magenta maze and greys the
@@ -711,12 +926,168 @@ seeding. Full 60×60. *Goal: a real maze that is solvable and genuinely loops.*
 **Phase 4 — Gates and upgrades.** Gate placement, pause, card UI, the upgrade system, all
 nine lines. *Goal: a complete single-maze run.*
 
-**Phase 5 — Full run.** Three mazes, escalating params, upgrade carry-over, run timer,
+**Phase 5 — Full run.** All five mazes, escalating params, upgrade carry-over, run timer,
 completion screen.
 
 **Phase 6 — Feel and polish.** Neon aesthetic, bloom, speed-scaled FOV, motion streaks,
 audio (engine pitch tracking speed is the single highest-value cue), crash shake, minimap
 rendering and blur.
+
+---
+
+## 9b. The Menu and the Trailer
+
+Full spec in `docs/specs/trailer.md`. The design decisions worth keeping here:
+
+**The trailer is seeded from a checked-in constant, never the clock.** It is the first
+thing a new player sees, so a reel that generated a fresh maze each time would sometimes
+open on a blank corridor and sometimes drive into a dead end on camera. This is the same
+"did we get lucky" failure §12 flags for tests, and it matters more here because there is
+no second take.
+
+**Each segment carries its own pre-built upgrade set and opening speed**, rebuilt from
+scratch rather than carried forward. The reel is *cut*, not continuous, so a segment is a
+statement about what that maze looks like with that build — carrying ranks forward would
+make the later entries depend on the order the earlier ones happen to be written in. Maze 1
+shows the bare game; maze 5 shows Path Indicator panels, a wide minimap and the Golden Trail
+at 6.4x, because a trailer that showed the last maze with a rank-0 HUD would be advertising
+the wrong game.
+
+**A gate segment cuts to just short of a real gate.** Gates sit at even intervals along the
+solve path (§6), so the first is far more than five seconds of driving from the start — a
+reel that waited for one would spend its whole runtime in plain corridor. The racer is
+placed a few cells back and drives into a genuine gate cell, so nothing about the gate
+itself is faked; only where the segment starts.
+
+**The caption sits in the lower third, never centred.** Centred, it lands exactly on the
+corridor vanishing point, which is where the Path Indicator panels, the Golden Trail and the
+wall indicator all draw — the reel would have been captioning over its own subject matter,
+hiding the upgrades the later segments exist to show.
+
+**The trailer adds no rules.** It drives the real `Game` through its ordinary public
+surface with the same distance-field autopilot `RunTest` uses, and nothing in `Racer` knows
+it exists.
+
+---
+
+## 9c. Music
+
+Full spec in `docs/specs/music.md`. The decisions worth keeping here:
+
+**One autoload, because `Shell._swap` frees the entire live child.** A player
+parented under the menu or the game dies with it on every mode change, which
+restarts the track from zero each time the player presses a button and cuts the
+audio dead at the swap frame. `Music` sits above the shell and is never freed,
+which is also what lets "the same track across a transition does not restart" be
+expressible at all — it needs one player that remembers what it is playing.
+
+**A track is named by the thing that plays it, never by a parallel array.** A
+maze names its track in its own `Tuning.MAZES` entry, exactly as it names its
+`landmarks` density and for exactly the reason in §6: an array indexed by maze
+number goes stale the moment a maze is added, and it fails *silently* — maze 6
+reads index 5 of a 5-entry array and plays nothing, with no error. The menu and
+trailer name theirs as constants on `Music`, since neither is a maze.
+
+**All five mazes share one track today, and that is placement, not design.**
+There are two tracks in hand. Point a maze at a different name and it plays it.
+
+**Looping is set in code, not in the `.import` file.** Godot's mp3 importer
+defaults `loop=false`, so every track added would need its import file hand-edited
+— a per-file step whose failure mode is music that simply stops a minute in with
+no error anywhere. `Music` sets it on the stream at load, so anything dropped in
+the table loops because it is music. The stream is `duplicate()`d first: `load()`
+returns a shared cached resource, and both players can hold the same file
+mid-crossfade.
+
+**Pause ducks; it does not stop.** Music continuing quietly says the game is held
+rather than gone, and a volume change keeps the track's position where a stop
+would lose it. This is the one audio behaviour tied to a game rule — it hangs off
+the same `_set_paused` that blurs the minimap (§2).
+
+**Nothing in the simulation may read `Music`.** Movement, turn resolution, the
+buffer, the barrier and the penalties behave identically with the audio server
+absent, which is what `--headless` gives every harness. Same separation landmarks
+have (§6): the rules layer can *reach* the autoload and must never *use* it.
+
+**The trailer keeps its own track across its cuts.** `Game._start_maze` requests
+the maze's music, and the trailer calls that method five times in thirty seconds
+— so the call is gated on `trailer_seed`, the same flag that already suppresses
+the HUD maze banner for the same reason.
+
+---
+
+## 9d. Mobile Controls
+
+On-screen pads so the game is playable on a phone, toggled from the main menu.
+
+**The pads add no rules.** Each one calls the same `_on_turn_input` /
+`_on_reverse_input` / `_on_pause_input` on `Game` that the keyboard path calls —
+which is why the keyboard branches were pulled out of `_unhandled_input` into
+named methods rather than the pads getting their own copy. The phase gating lives
+in those methods now, so a tap and a key press cannot diverge on it. That is the
+part that would have rotted silently: a pad that still turned during an upgrade
+pick would be driving the racer while the timer is stopped, and no harness driving
+only the keyboard would ever see it.
+
+**Three pads and a pause, mirroring §2 exactly.** Left, right, 180 — there is no
+accelerator or brake to add, because speed is systemic. Pause gets a pad despite
+§2 calling it "not a fourth driving input" for the reason that section already
+gives: it steers nothing, it is the same category as closing the window, and on a
+phone there is no `Esc` key to fall back to.
+
+**A pad fires on PRESS, not release**, so it is a `Panel` rather than a `Button`.
+A `Button` emits on release, and at 8x a cell is 125ms — a press-to-release round
+trip is a meaningful fraction of the buffer (§4). The turn should be armed the
+instant the thumb lands.
+
+**The setting is an override, not a detection.** `DisplayServer.is_touchscreen_available()`
+picks the *default* only. Making it the switch would leave a phone player no way to
+recover if the probe read wrong, and would give a desktop tester no way to see the
+pads at all — the pads handle mouse clicks as well as touch for exactly that reason.
+
+**`Settings` is an autoload for the same reason `Music` is** (§9c): `Shell._swap`
+frees the entire live child on every mode change, and this preference is set on the
+menu and read by the game — the menu is freed on the way there. It persists to
+`user://settings.cfg`, so the choice survives a restart.
+
+**Writing goes through `set_touch_controls()`, never a bare property setter.** A
+setter was tried and is wrong: loading from disk assigns the same field, and a
+setter cannot tell a restore from a choice — it re-saved the file it had just read
+and fired the change signal before the menu existed to hear it.
+
+**Nothing in the simulation may read `Settings`.** Movement, turn resolution, the
+buffer, the barrier and the penalties behave identically with the autoload absent,
+which is what every harness that instantiates `Game.tscn` bare gets. Same separation
+landmarks (§6) and music (§9c) have, and every read is guarded rather than assumed —
+a missing preference must never be what stops the game starting.
+
+### The pads must clear the bands the HUD already owns
+
+Three collisions, all of them found by a rendered frame and none of them visible to
+any headless assertion:
+
+- **The left pad sat on top of the barrier and integrity bars.** The barrier bar is
+  the most important element on screen (§5.1); a tap target over it is strictly
+  worse than a pad an inch higher. The steering pads now stop short of the HUD's
+  bottom 120px band.
+- **The pause pad was drawn through the timer.** The timer is right-aligned in the
+  HUD's top row and its width *changes as the run passes a minute*, so anything
+  sharing that line collides with it eventually. Pause sits below the row, not
+  beside it.
+- **The pads ran off the bottom edge**, because a screen fraction alone does not
+  bound anything.
+
+The bands are constants on `TouchControls` rather than measured off the live HUD,
+because the HUD builds its layout from literals too and a queried rect is only
+correct after a frame has been laid out. If either moves, both move — they are one
+screen.
+
+**Sized as a screen fraction with a pixel cap.** A fixed pixel size that suits a
+1600x900 desktop window is a third of the width of a small phone; an uncapped
+fraction hands a large desktop window a pad the size of a playing card. The menu
+row has the same shape of fix — its height is now derived from the button count,
+because the literal `180` fitted three buttons by luck and a fourth overflowed it
+outright (the §12 hard-coded-layout-band trap, again).
 
 ---
 
@@ -729,7 +1100,7 @@ HP reaching 0 ends the run. The code path should exist behind a disabled flag fr
 onward.
 
 ### Hazards / bosses
-Intended for later stages or as maze-3 encounters. The theme is *pressure that makes the
+Intended for later stages or as final-maze encounters. The theme is *pressure that makes the
 maze itself hostile*, not a health-bar enemy:
 
 - **The Burner** — ignites the player's trail on a delay, burning cells they occupied ~5
@@ -799,7 +1170,15 @@ the separation directly — a lane kick must not move `cell` or `progress` — b
 value that started influencing movement would be invisible in every other test.
 
 **A turn throws you wide** toward the outside of the corner, and you then **settle onto the
-nearest lane line and stay there**. That is the entire mechanic: a corner reads as an arc
+nearest lane line and stay there**. The kick is **one lane, eased in** — not two, and not
+instant. At a two-lane kick it equalled `LANE_MAX`, so every corner slammed the marker from
+dead centre to hard against the outer wall: the lateral position was binary with no middle,
+the "arc" had no shape, and coming out of a corner already touching the wall meant the
+barrier was draining before the player had done anything wrong. And applying it as a single
+`lane += KICK` step made it a *second* snap stapled to the 90° pivot — the weight this
+mechanic exists to convey is only visible if the kick takes time. One lane also leaves the
+outer lane as somewhere a **second** turn the same way can take you, which is what makes the
+sub-grid read as a range of positions rather than a toggle. That is the entire mechanic: a corner reads as an arc
 with weight instead of an instant 90° snap. **No new input** — lane is a consequence of
 turning, never something the player steers, which keeps the three-key contract in §2 intact.
 
@@ -832,7 +1211,7 @@ the player most needs: where they actually sit in the corridor, and which way th
 The ring answers position and wall clearance, the arrow answers facing, and the marker
 turns red as the barrier drains so danger reads without looking away from the corridor.
 
-Three constraints on that camera, each learned the hard way:
+Four constraints on that camera, each learned the hard way:
 
 - **Trail distance stays under one cell.** Further back and the camera lands in the
   previous cell, which is solid whenever the player just turned, sits in a dead end, or
@@ -844,20 +1223,67 @@ Three constraints on that camera, each learned the hard way:
   of frames clipped, because a camera swinging through a turn also moves *sideways* into
   corners it never pointed at. `SceneTest` asserts zero clipped frames over 2000 frames of
   autopilot.
+- **The marker is never obscured.** A third pass, and the only one that asks about the
+  marker at all — see below.
+
+### The player marker must never be hidden
+
+**No wall may ever come between the camera and the player token.** It is the thing the
+player steers with — it answers position, wall clearance and facing at once, and it carries
+the barrier state as colour — so a hidden marker is strictly worse than an awkward camera
+angle. This is a hard rule, not a preference.
+
+The two anti-clip passes above do **not** deliver it, and the gap between them is the whole
+bug: they keep the *eye* out of walls, which is a different question from whether the
+*segment* from eye to marker is clear. Swinging through a corner, the camera sits in
+perfectly open space while the line to the marker cuts the inside corner of the turn — so
+the wall just rounded wipes across the marker for a few frames, exactly when the player most
+needs to see where they landed.
+
+**Pull in, don't slide sideways.** Sliding the eye around an obstruction changes the viewing
+angle mid-corner, which reads as the camera lurching on its own, and it swings the corridor
+being entered out of frame just as it is needed. Closing the distance keeps the camera on
+the axis it already holds and shortens the segment until it fits the open space: the view
+tightens through a corner and opens again after, which reads as hugging the turn.
+
+**Lifting does not work here**, which is worth recording because it is the obvious next move
+and the crash camera's success with it makes it look right. Walls run floor to `WALL_HEIGHT`
+with no gap and the camera is capped below that, so a level sight line is blocked at *every*
+height the camera can legally hold — raising the eye only tilts the view down, it never
+clears the wall. (The crash camera lifts to show the player *what they hit*, which is a
+different goal from seeing *past* it.) So when the normal pull-in floor is not enough, the
+last resort is to close the distance the rest of the way. A very tight camera for a frame or
+two is a far smaller failure than the marker disappearing.
+
+`SceneTest` asserts **zero blind frames over the same 2000-frame autopilot** — folded into
+the existing clipping loop rather than a second one, since a separate pass would double the
+harness runtime to assert over identical play. It caught a real residual case at the
+pull-in floor, which is what the last-resort branch exists for.
 
 ### Layout
 
 ```
 project.godot
-scenes/          # .tscn files
+scenes/
+  Main.tscn      # the Shell -- boots to the menu
+  Game.tscn      # the run controller, on its own so harnesses can load it bare
+audio/
+  music/         # looping tracks, one file per entry in Tuning.TRACKS
 scripts/
   core/          # movement, speed, generation, upgrades, run state
-  ui/            # HUD, upgrade cards, minimap
+  ui/            # HUD, upgrade cards, minimap, menu, trailer overlay, touch pads
 tools/           # launch + export scripts, godot-path.txt
 docs/plans/      # implementation plans
 docs/specs/      # design specs
 logs/            # errors.log + history/ (gitignored)
 ```
+
+**`Main.tscn` is the shell, not the game.** It used to boot `Game.gd` directly,
+which left nowhere to put a menu and nowhere to launch the trailer from.
+`Shell.gd` now owns exactly one of { menu, game, trailer } at a time, and the
+game lives in its own `Game.tscn` — so every harness instantiates the game
+*bare*, with no menu in front of it, exactly as before. A harness that loaded
+`Main.tscn` would now get a `Shell` and find no `racer` on it.
 
 ### Running the game
 
@@ -934,19 +1360,40 @@ script builds into `$env:TEMP`; CI is unaffected.
 powershell -ExecutionPolicy Bypass -File tools\launch.ps1 -Headless -Script res://scripts/core/<Name>Test.gd
 ```
 
-Three harnesses, each answering a different question:
+Six harnesses, each answering a different question:
 
 | Harness | Question it answers |
 |---|---|
-| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades. 134 assertions. |
-| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall- and path-indicator placement, the crash camera. 47 assertions. |
-| `RunTest.gd` | Is the game finishable? Plays a complete three-maze run on an autopilot and reports speed, time, crashes, and the final build. |
+| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, landmark placement. 174 assertions. |
+| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall- and path-indicator placement, the crash camera, pause, landmark mesh winding, marker sight lines. 61 assertions. |
+| `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, and the final build. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, and the mobile-controls toggle survives the menu-to-game swap. 24 assertions. |
+| `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 21 assertions. |
+| `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 39 assertions. |
+
+`TrailerShot.gd` is the picture half of `TrailerTest` — it renders the reel and
+saves a frame per segment plus each gate moment, which is the only way to check
+captions, palettes and card layout without watching it.
 
 `RunLengthProbe.gd` reports straight-run lengths, which is how the 8-cell cap in §6 is
 verified; "over cap" must always read 0.
 
+`LandmarkProbe.gd` reports landmark counts, tier split and dead-end coverage per maze,
+which is how the `landmarks` density knob gets tuned. `LandmarkShot.gd` shoots a frame
+next to a landmark in each maze, seeking one rather than shooting on a timer.
+
 `DeadEndProbe.gd` is not a test either — it reports dead-end density and one-cell-stub
 frequency per maze, which is how the two knobs in §6 get tuned without guessing.
+
+`MusicProbe.gd` is not a test either -- it boots the real project **with audio**
+and reports each player's volume and playback head across a menu -> PLAY ->
+pause -> resume script. It exists because `MusicTest` runs headless with no
+audio driver and so passed a system that was silent in play; only a real device
+shows the fade actually arriving.
+
+`TouchShot.gd` is the picture half of the mobile-controls work: it shoots the menu and
+the pads in play. Pad layout is precisely what no headless harness can check, and it
+caught all three HUD collisions above.
 
 `Screenshot.gd` is not a test — it runs the real game with rendering and saves frames to
 `logs/`, which is how the visuals get checked without anyone opening the editor.
@@ -975,7 +1422,7 @@ a rule needs the renderer, the rule is in the wrong place.
   declared" — the same symptom as the missing-cache trap, but on an up-to-date project.
   Re-run `--import` after adding one.
 - **Node references captured before a maze change go stale.** `_start_maze` builds a new
-  `Racer` *and* a new `Maze` for each of the three mazes, so a harness that grabs
+  `Racer` *and* a new `Maze` for each maze in the run, so a harness that grabs
   `game.racer` once and loops is inspecting an orphan from maze 2 onward. This produced a
   test failure that looked exactly like an indicator bug and cost two wrong hypotheses —
   re-read both from `game` every frame.
@@ -1052,6 +1499,22 @@ a rule needs the renderer, the rule is in the wrong place.
   having failed. It looked exactly like a camera regression and is not one. This is the
   autopilot trap below in reverse: there the test had to *seek* a failure state, here it has
   to actively steer to **avoid** one.
+- **A knob that is only ever a removal target goes inert the moment the source undershoots
+  it.** `_tune_dead_ends` returns early when a maze is already under target, so on the big
+  late mazes — where braiding and the stub cull have already opened more walls than the
+  target allows — the `dead_ends` number does nothing at all. Two rounds of tuning it
+  produced byte-identical probe output on every seed, which reads exactly like a caching bug
+  or a stale log and is neither. **Check whether a stage is even binding before tuning its
+  input**: one `print` of the early-return branch answers in a second what re-running the
+  probe cannot answer at all.
+- **A palette can wash out the lighting without containing a single bright colour.** Ambient
+  is mixed from the palette's `grid` entry, so a grid hue chosen purely for floor legibility
+  silently sets how every wall face is lit. A yellow grid — picked so the timing lines would
+  not vanish into an orange wall — drove ambient warm, and warm ambient reads as a lit
+  surface where cool ambient reads as shadow: every wall turned milky brown. The wall
+  albedo was in band the whole time and was the natural suspect. **The diagnostic is the
+  sign of R−B on the mixed ambient, not the wall colours**; all five palettes must land
+  negative.
 - **A test that restates a tuning number is a transcription check, not an assertion.**
   `check("five gates", gates.size() == 5)` failed the moment the gate count became a knob
   worth turning, and told you nothing except that two literals had drifted apart. Read the
@@ -1098,6 +1561,16 @@ a rule needs the renderer, the rule is in the wrong place.
   runs `--import` once when the cache is missing.
 - **`Start-Process -ArgumentList` does not quote array elements**, so the space in
   "Maze Racer" truncated the project path. The path is quoted explicitly in `launch.ps1`.
+- **A revolved shape and a box wind in opposite directions from the same-looking code.**
+  The landmark drums (spire, tree, rings) were emitted `lo0 -> lo1 -> hi1 -> hi0`, which
+  reads as the obvious quad order and is **clockwise seen from outside** with +Y up and
+  the angle sweeping +X toward +Z — so every revolved landmark was inward-wound while
+  every box-built one (monolith, arch, rubble) was correct. Nothing looked wrong, because
+  the material is unshaded; the signed-volume assertion is what caught it, reporting
+  −1415 and naming the three surfaces. Same root cause as the wall-box trap below, and the
+  same lesson: **winding cannot be eyeballed, it has to be asserted.** Reuse the
+  divergence-theorem check for any new closed geometry rather than trusting the vertex
+  order looks sensible.
 - **Inverted triangle winding is invisible until culling is enabled.** The wall boxes were
   built with all five faces wound inward. Nothing looked wrong while the material was
   `CULL_DISABLED`; switching to `CULL_BACK` made every wall see-through at close range.
@@ -1128,6 +1601,27 @@ a rule needs the renderer, the rule is in the wrong place.
   overridden to `gl_compatibility` so the desktop build keeps Forward+ while the web build
   targets WebGL2. A per-platform override, not a downgrade — the two builds want different
   renderers and the `.web` suffix is how one project ships both.
+- **`process_mode` says WHEN a node may process; `set_process` says that it
+  should.** `Music` set `PROCESS_MODE_ALWAYS` in `_ready` and never called
+  `set_process(true)`, so its fade loop never ticked and every player sat at the
+  -80dB it starts at: `playing == true`, a decoded 158s stream, a live WASAPI
+  device, and total silence. Nothing errors, and **no headless harness can catch
+  it** — `--headless` has no audio driver, so the assertion has to be
+  `is_processing()`, not anything about sound. The reason the fix is a one-liner
+  and the diagnosis was not is that every *obvious* suspect reports healthy.
+- **A node's `name` set before `add_child` does not stick.** Godot assigns a
+  generated name on entry to the tree, so `n.name = "Music"; root.add_child(n)`
+  lands the node at `/root/@Node@2`. This is silent, and it is worse when an
+  autoload of the same name exists: `get_node("/root/Music")` then resolves to a
+  **different, real** node, so the probe reported the music dead while the game
+  was in fact playing it correctly. Set the name *after* adding, and in a probe
+  that runs under the real project, look the autoload up rather than
+  constructing a second copy — `--script` replaces the main scene but autoloads
+  still load.
+- **`--headless` proves the wiring, never the sound.** `MusicTest` passed 35
+  assertions against a system that was completely inaudible. Anything about
+  audio that matters to a player needs a real device and a probe that reports
+  the playback head advancing; `MusicProbe.gd` is that instrument.
 - **Correct outward normals make corridor interiors darker.** The inside faces then point
   away from the directional light and receive ambient only. A `DirectionalLight3D` cannot
   reach into a corridor at all; the `OmniLight3D` headlight in `Game.gd` is what gives

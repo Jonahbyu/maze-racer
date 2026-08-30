@@ -15,7 +15,7 @@ extends Node3D
 # maze reads as arriving somewhere. Defaults to maze 1's so a mesh built without
 # an explicit palette -- SceneTest does this -- still looks right.
 #
-# Gate and exit stay FIXED across all three: they are navigation, not
+# Gate and exit stay FIXED across every palette: they are navigation, not
 # decoration, and a gate has to be identifiable as a gate on sight rather than
 # re-learned once per maze.
 var _palette: Dictionary = Tuning.PALETTES[0]
@@ -37,6 +37,7 @@ func build(maze: Maze, palette_index: int = 0) -> void:
 	_build_floor()
 	_build_walls()
 	_build_grid_lines()
+	_build_landmarks()
 	_build_gates()
 	_build_exit()
 
@@ -451,3 +452,248 @@ func clear_gate(index: int) -> void:
 	var node := get_node_or_null("Gate%d" % index)
 	if node:
 		node.queue_free()
+
+
+# --- Landmarks (docs/specs/landmarks.md) -------------------------------------
+
+# Decorative structures that give a corridor an identity beyond "corridor".
+#
+# ONE MERGED SURFACE PER TYPE, not one node per landmark. A 90x90 maze can carry
+# a few hundred of these, and the whole reason walls, grid lines and lane lines
+# are built with SurfaceTool is that per-object nodes at that count are not
+# affordable. Six types means at most six extra draw calls for the entire maze.
+#
+# They emit through material emission only, never as real lights. The corridor
+# is lit by exactly one dim OmniLight3D headlight, kept dim on purpose because
+# turning it up flattens the near wall into a colour field (CLAUDE.md section
+# 12) -- scattering light sources through the maze would undo that tuning
+# everywhere at once.
+func _build_landmarks() -> void:
+	if _maze.landmarks.is_empty():
+		return
+
+	# One SurfaceTool per type, since each type has its own colour and they
+	# cannot share a material.
+	var tools: Array[SurfaceTool] = []
+	var used: Array[bool] = []
+	for i in Tuning.LANDMARK_TYPES.size():
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		tools.append(st)
+		used.append(false)
+
+	for landmark in _maze.landmarks:
+		var type_index := int(landmark["type"])
+		if type_index < 0 or type_index >= tools.size():
+			continue
+
+		var cell: Vector2i = landmark["cell"]
+		var anchor: Vector2 = landmark["anchor"]
+		var origin := Vector3(
+			(cell.x + anchor.x) * Tuning.CELL_SIZE,
+			0.0,
+			(cell.y + anchor.y) * Tuning.CELL_SIZE
+		)
+
+		# Free rotation about Y. Every shape below is built axis-aligned, so
+		# without this a field of them lines up like a parade and stops reading
+		# as scenery.
+		var basis := Basis(Vector3.UP, float(landmark["yaw"]))
+		var scaled := basis.scaled(Vector3.ONE * float(landmark["scale"]))
+
+		_emit_landmark(tools[type_index], type_index, Transform3D(scaled, origin))
+		used[type_index] = true
+
+	for i in tools.size():
+		if not used[i]:
+			continue
+
+		var config: Dictionary = Tuning.LANDMARK_TYPES[i]
+		var colour: Color = config["colour"]
+
+		tools[i].generate_normals()
+
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = colour
+		mat.emission_enabled = true
+		mat.emission = colour
+		# Well under the neon's 2.2. A landmark must be visible but never
+		# brighter than a gate: gates and the exit stay the most eye-catching
+		# things in the maze because they are navigation and landmarks are not.
+		mat.emission_energy_multiplier = Tuning.LANDMARK_EMISSION
+		mat.roughness = 0.75
+
+		var instance := MeshInstance3D.new()
+		instance.mesh = tools[i].commit()
+		instance.material_override = mat
+		instance.name = "Landmarks_%s" % String(config["name"])
+		add_child(instance)
+
+
+func _emit_landmark(st: SurfaceTool, type_index: int, xf: Transform3D) -> void:
+	match type_index:
+		Tuning.LANDMARK_SPIRE:
+			_emit_spire(st, xf)
+		Tuning.LANDMARK_MONOLITH:
+			_emit_monolith(st, xf)
+		Tuning.LANDMARK_TREE:
+			_emit_tree(st, xf)
+		Tuning.LANDMARK_ARCH:
+			_emit_arch(st, xf)
+		Tuning.LANDMARK_RINGS:
+			_emit_rings(st, xf)
+		Tuning.LANDMARK_RUBBLE:
+			_emit_rubble(st, xf)
+
+
+# A tapering column. The taper is the identity: at distance only the top clears
+# the wall line, and a narrowing point reads as a spire where a constant-width
+# column would read as a monolith.
+func _emit_spire(st: SurfaceTool, xf: Transform3D) -> void:
+	var h: float = float(Tuning.LANDMARK_TYPES[Tuning.LANDMARK_SPIRE]["height"])
+	# Squared off rather than round, so it silhouettes as built rather than grown
+	# -- the tree is the round one and the two must not converge at distance.
+	_emit_drum(st, xf, 0.0, h * 0.70, 1.15, 0.55, 4)
+	_emit_drum(st, xf, h * 0.70, h, 0.55, 0.05, 4)
+
+
+# A fat slab with a flat top -- the deliberate opposite of the spire, so the two
+# cannot be confused from their tops alone, which is all that is visible of
+# either at distance.
+func _emit_monolith(st: SurfaceTool, xf: Transform3D) -> void:
+	var h: float = float(Tuning.LANDMARK_TYPES[Tuning.LANDMARK_MONOLITH]["height"])
+	_emit_box(st, xf, Vector3(-1.15, 0.0, -0.75), Vector3(1.15, h, 0.75))
+	# A slight overhanging cap, so the flat top reads as deliberate rather than
+	# as a spire that was cut off.
+	_emit_box(st, xf, Vector3(-1.35, h, -0.95), Vector3(1.35, h + 0.4, 0.95))
+
+
+# A thin trunk under a wide canopy. The canopy is faceted rather than a sphere:
+# flat facets catch the headlight in bands, which reads as foliage mass at a
+# glance, and it costs a fraction of the triangles.
+func _emit_tree(st: SurfaceTool, xf: Transform3D) -> void:
+	var h: float = float(Tuning.LANDMARK_TYPES[Tuning.LANDMARK_TREE]["height"])
+	var trunk_top := h * 0.5
+
+	_emit_drum(st, xf, 0.0, trunk_top, 0.45, 0.28, 5)
+
+	# Two stacked drums, wider below, so it silhouettes as a rounded mass rather
+	# than as a cylinder on a stick.
+	var mid := trunk_top + (h - trunk_top) * 0.5
+	_emit_drum(st, xf, trunk_top - 0.3, mid, 2.0, 2.35)
+	_emit_drum(st, xf, mid, h, 2.35, 0.45)
+
+
+# Two legs and a lintel. The GAP is the silhouette -- it is the only landmark
+# you can see through, which is what makes it recognisable in a corridor where
+# everything else is solid.
+func _emit_arch(st: SurfaceTool, xf: Transform3D) -> void:
+	var h: float = float(Tuning.LANDMARK_TYPES[Tuning.LANDMARK_ARCH]["height"])
+	var leg := 0.22
+	var span := 0.95
+	var lintel := h * 0.24
+
+	_emit_box(st, xf, Vector3(-span, 0.0, -leg), Vector3(-span + leg * 2.0, h - lintel, leg))
+	_emit_box(st, xf, Vector3(span - leg * 2.0, 0.0, -leg), Vector3(span, h - lintel, leg))
+	_emit_box(st, xf, Vector3(-span, h - lintel, -leg), Vector3(span, h, leg))
+
+
+# Stacked concentric rings, widest at the base. Built as thin drums rather than
+# real torii: at this size the difference is invisible and a torus is an order
+# of magnitude more triangles.
+func _emit_rings(st: SurfaceTool, xf: Transform3D) -> void:
+	var h: float = float(Tuning.LANDMARK_TYPES[Tuning.LANDMARK_RINGS]["height"])
+	var count := 3
+
+	for i in count:
+		var t := float(i) / float(count)
+		var y0 := h * t
+		var radius := lerpf(1.05, 0.4, t)
+		_emit_drum(st, xf, y0, y0 + h * 0.2, radius, radius * 0.8, 7)
+
+
+# Scattered low blocks at irregular angles.
+#
+# Deterministic despite looking random: the offsets are a FIXED table, not RNG
+# draws. Pulling from a generator here would make the mesh differ between two
+# builds of the same seed, which breaks the reproducibility the whole generator
+# rests on -- and it would be invisible until someone compared two runs.
+func _emit_rubble(st: SurfaceTool, xf: Transform3D) -> void:
+	var blocks := [
+		[Vector3(-0.55, 0.0, -0.35), Vector3(0.05, 0.55, 0.25), 0.4],
+		[Vector3(0.10, 0.0, -0.60), Vector3(0.70, 0.34, 0.05), -0.7],
+		[Vector3(-0.30, 0.0, 0.15), Vector3(0.35, 0.80, 0.62), 0.15],
+		[Vector3(0.30, 0.0, 0.30), Vector3(0.75, 0.28, 0.70), 1.1],
+	]
+
+	for block in blocks:
+		var spin := Transform3D(Basis(Vector3.UP, float(block[2])), Vector3.ZERO)
+		_emit_box(st, xf * spin, block[0], block[1])
+
+
+# --- Landmark primitives -----------------------------------------------------
+
+# An axis-aligned box between two corners, transformed into place.
+func _emit_box(st: SurfaceTool, xf: Transform3D, lo: Vector3, hi: Vector3) -> void:
+	var p := [
+		xf * Vector3(lo.x, lo.y, lo.z),
+		xf * Vector3(hi.x, lo.y, lo.z),
+		xf * Vector3(hi.x, lo.y, hi.z),
+		xf * Vector3(lo.x, lo.y, hi.z),
+		xf * Vector3(lo.x, hi.y, lo.z),
+		xf * Vector3(hi.x, hi.y, lo.z),
+		xf * Vector3(hi.x, hi.y, hi.z),
+		xf * Vector3(lo.x, hi.y, hi.z),
+	]
+
+	# Wound counter-clockwise seen from OUTSIDE, so normals face outward and the
+	# faces light correctly. Inverted winding is invisible until culling is on --
+	# the wall boxes shipped that way once and every wall went see-through the
+	# moment CULL_BACK was enabled (CLAUDE.md section 12). SceneTest asserts the
+	# signed volume of this mesh is positive for the same reason.
+	_add_quad(st, p[7], p[6], p[5], p[4])   # top
+	_add_quad(st, p[0], p[1], p[2], p[3])   # bottom
+	_add_quad(st, p[0], p[4], p[5], p[1])   # -Z
+	_add_quad(st, p[2], p[6], p[7], p[3])   # +Z
+	_add_quad(st, p[3], p[7], p[4], p[0])   # -X
+	_add_quad(st, p[1], p[5], p[6], p[2])   # +X
+
+
+# A prism between two heights with independent lower and upper radii. Every
+# rounded landmark shape reduces to this plus boxes.
+func _emit_drum(st: SurfaceTool, xf: Transform3D, y0: float, y1: float,
+		r0: float, r1: float, sides: int = 8) -> void:
+	for i in sides:
+		var a0 := TAU * float(i) / float(sides)
+		var a1 := TAU * float(i + 1) / float(sides)
+
+		var lo0 := xf * Vector3(cos(a0) * r0, y0, sin(a0) * r0)
+		var lo1 := xf * Vector3(cos(a1) * r0, y0, sin(a1) * r0)
+		var hi0 := xf * Vector3(cos(a0) * r1, y1, sin(a0) * r1)
+		var hi1 := xf * Vector3(cos(a1) * r1, y1, sin(a1) * r1)
+
+		# Side face, wound so the normal points AWAY from the axis.
+		#
+		# The order matters and is easy to get backwards: with +Y up and the
+		# angle sweeping from +X toward +Z, going lo0 -> lo1 -> hi1 -> hi0 winds
+		# CLOCKWISE seen from outside, i.e. inward. Reversing to lo1 -> lo0 is
+		# what puts the normal outward. SceneTest asserts the signed volume of
+		# the finished landmark meshes is positive, which is what caught this --
+		# inverted winding renders identically until backface culling is on.
+		_add_quad(st, lo1, lo0, hi0, hi1)
+
+		# Cap the top when the shape closes to a non-zero radius, so a drum seen
+		# from above is not hollow. A tip that tapers to nothing needs no cap.
+		if r1 > 0.02:
+			var top_centre := xf * Vector3(0.0, y1, 0.0)
+			st.add_vertex(top_centre)
+			st.add_vertex(hi1)
+			st.add_vertex(hi0)
+
+		# And the bottom, so a landmark seen through an opening below its base
+		# -- the exterior ring, viewed from inside the maze -- is not open.
+		if r0 > 0.02:
+			var base_centre := xf * Vector3(0.0, y0, 0.0)
+			st.add_vertex(base_centre)
+			st.add_vertex(lo0)
+			st.add_vertex(lo1)

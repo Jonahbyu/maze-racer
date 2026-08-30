@@ -9,7 +9,7 @@
 class_name HUD
 extends Control
 
-# The HUD keeps a FIXED palette across all three mazes.
+# The HUD keeps a FIXED palette across every maze.
 #
 # The world recolours per maze (Tuning.PALETTES); the readouts deliberately do
 # not. Speed, barrier and integrity are the numbers the player checks under
@@ -222,8 +222,12 @@ func update_hud(racer: Racer, upgrades: Upgrades, elapsed: float, maze_name: Str
 	# maze.gates is the full placed set; the racer tracks the remaining ones on
 	# its own duplicate, so this stays the total rather than the leftovers.
 	var gate_total: int = racer.maze.gates.size() if racer.maze else 0
-	_maze_label.text = "%s   %d/3   GATES %d/%d" % [
-		maze_name, maze_index + 1, racer.gates_taken, gate_total
+	# The maze-count denominator comes from Tuning.MAZES for the same reason the
+	# gate one comes from the maze: it is a knob, and a literal "3" here quietly
+	# lied to the player about how much run was left the moment two more mazes
+	# were added.
+	_maze_label.text = "%s   %d/%d   GATES %d/%d" % [
+		maze_name, maze_index + 1, Tuning.MAZES.size(), racer.gates_taken, gate_total
 	]
 
 	var barrier_fraction := racer.barrier_fraction()

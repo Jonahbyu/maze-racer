@@ -28,7 +28,7 @@ func _init() -> void:
 
 
 func _setup() -> void:
-	var scene: PackedScene = load("res://scenes/Main.tscn")
+	var scene: PackedScene = load("res://scenes/Game.tscn")
 	_game = scene.instantiate()
 	root.add_child(_game)
 

@@ -1,3 +1,9 @@
 # Normalize line endings
 * text=auto eol=lf
 *.ps1 text eol=crlf
+
+# Audio is binary. The blanket `* text=auto eol=lf` above would rewrite CRLF
+# byte pairs inside an mp3 frame on checkout and silently corrupt the file.
+*.mp3 binary
+*.ogg binary
+*.wav binary

@@ -44,6 +44,22 @@ jobs:
           godot --headless --script res://scripts/core/SceneTest.gd 2>&1 | tee scene.log
           grep -qiE '(^| )FAIL|assertion failed' scene.log && exit 1 || true
 
+      # Catches a track named but never shipped: the web export would build
+      # fine and be silent in the browser, which nothing else here notices.
+      - name: Music harness
+        run: |
+          godot --headless --script res://scripts/core/MusicTest.gd 2>&1 | tee music.log
+          grep -qiE '(^| )FAIL|assertion failed' music.log && exit 1 || true
+
+      # The menu is the only way into the game, and the web build is the one
+      # players actually reach -- a break here ships a title screen that goes
+      # nowhere, which no other harness notices because they all load
+      # Game.tscn directly.
+      - name: Shell harness
+        run: |
+          godot --headless --script res://scripts/core/ShellTest.gd 2>&1 | tee shell.log
+          grep -qiE '(^| )FAIL|assertion failed' shell.log && exit 1 || true
+
   build:
     needs: test
     runs-on: ubuntu-latest

@@ -1,5 +1,5 @@
-# Captures one frame in each of the three mazes, to check the per-maze palettes
-# and the wall-mounted Path Indicator actually render.
+# Captures one frame in each maze in Tuning.MAZES, to check the per-maze
+# palettes and the wall-mounted Path Indicator actually render.
 #
 # Not a test -- there is no assertion that can tell you a maze looks magenta.
 # It jumps straight to each maze rather than playing through, because the normal
@@ -20,7 +20,7 @@ func _init() -> void:
 
 
 func _setup() -> void:
-	var scene: PackedScene = load("res://scenes/Main.tscn")
+	var scene: PackedScene = load("res://scenes/Game.tscn")
 	_game = scene.instantiate()
 	root.add_child(_game)
 

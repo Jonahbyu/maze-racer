@@ -45,6 +45,17 @@ var barrier: float = Tuning.BASE_BARRIER
 # arc with weight rather than an instant snap.
 var lane: float = 0.0
 
+# Where the lane is heading. A turn sets this; `lane` eases toward it over the
+# following frames rather than jumping. Keeping the target separate from the
+# position is what turns the kick from a sideways snap into an arc -- see
+# _kick_lane() and _recover_lane().
+var lane_target: float = 0.0
+
+# Seconds left in the post-turn freeze. While positive the racer holds station:
+# no travel, no buffer consumption, no barrier drain. The camera uses the same
+# window to swing onto the new heading (CLAUDE.md section 2).
+var freeze: float = 0.0
+
 var pending_turn: int = -1
 var pending_buffer: float = 0.0
 
@@ -106,6 +117,8 @@ func setup(p_maze: Maze, p_upgrades: Upgrades) -> void:
 	pending_turn = -1
 	pending_buffer = 0.0
 	lane = 0.0
+	lane_target = 0.0
+	freeze = 0.0
 	scraping = false
 	_turned_in_cell = false
 	_entry_lockout = -1
@@ -133,9 +146,18 @@ func request_turn(direction_key: int) -> void:
 	# through to the buffer below and resolves at the next boundary like any
 	# other early input -- see _turned_in_cell.
 	if _may_turn_into(direction) and not _turned_in_cell:
-		_turn_into(direction)
+		# Escaping a scrape resets progress, for the same reason the boundary
+		# path in _press_into_wall() does: while scraping, progress is pinned at
+		# 1.0 to mean "hard against the wall", which is NOT a position. Pivoting
+		# out of it and then interpolating that 1.0 down the newly-opened
+		# corridor threw the marker a full cell forward in a single frame -- the
+		# player turned out of a wall and was teleported to the front of the next
+		# cell. The racer is at the cell centre when it turns out of a scrape,
+		# so that is where the new corridor starts.
 		if scraping:
+			progress = 0.0
 			scraping = false
+		_turn_into(direction)
 		return
 
 	pending_turn = direction
@@ -161,6 +183,7 @@ func request_reverse() -> void:
 	# lockout lifts too.
 	_turned_in_cell = false
 	_entry_lockout = -1
+	freeze = upgrades.reverse_freeze()
 	reversed.emit()
 
 
@@ -177,6 +200,27 @@ func step(delta: float) -> void:
 
 	_advance_speed(delta)
 	_recover_lane(delta)
+
+	# Held on a turn. The speed ramp above still runs -- the freeze is a pause in
+	# POSITION, not in the systemic pressure section 3 describes, and stopping
+	# the ramp would make cornering a way to duck the game's central mechanic.
+	# Travel, the buffer and the barrier are all suspended: the racer is not
+	# moving, so it is not covering buffer distance and it cannot be grinding
+	# against anything.
+	#
+	# The freeze consumes only as much of the frame as it NEEDS, and travel gets
+	# the rest. Swallowing the whole delta and returning was wrong twice over: a
+	# 0.10s freeze ended somewhere inside the frame that crossed it but still ate
+	# that frame entirely, so every corner leaked up to a frame of travel; and
+	# any frame longer than the freeze -- a hitch, or a low-framerate machine --
+	# was discarded whole, which turns a stutter into a much longer stop on a
+	# slow machine than on a fast one. Frame-rate independence is the point.
+	if freeze > 0.0:
+		var spent := minf(freeze, delta)
+		freeze -= spent
+		delta -= spent
+		if delta <= 0.0:
+			return
 
 	var moved := speed * Tuning.BASE_CELL_RATE * delta
 
@@ -270,10 +314,18 @@ func _press_into_wall(_moved: float, delta: float) -> void:
 	# A pending turn still resolves while scraping -- that is exactly how a good
 	# player escapes without paying.
 	if pending_turn != -1 and _may_turn_into(pending_turn):
-		# A scrape is the one place progress SHOULD reset: the racer is pinned
-		# at 1.0 against the wall, which is not a real position (see
-		# world_position()). Pivoting out starts the new corridor from the cell
-		# centre because that is where the racer actually is.
+		# A scrape is the one place progress must be REWRITTEN before pivoting:
+		# it is pinned at 1.0 to mean "hard against the wall", which is not a
+		# real position (see world_position()). Pivoting on that literal 1.0
+		# interpolates a full cell down the newly-opened corridor and teleports
+		# the marker to the front of the next cell.
+		#
+		# It resets to the wall-face distance rather than to 0, because that is
+		# precisely where world_position() has been DRAWING the racer all through
+		# the scrape. Resetting to the cell centre is self-consistent in the
+		# rules but visibly snaps the marker backwards at the moment of escape;
+		# carrying the drawn position through makes the pivot a pure rotation,
+		# which is what section 2 promises a turn always is.
 		progress = 0.0
 		_turn_into(pending_turn)
 		scraping = false
@@ -300,6 +352,10 @@ func _crash() -> void:
 	# A crash is a hard stop: recentre in the corridor rather than leaving the
 	# marker parked against a wall from whatever turn preceded it.
 	lane = 0.0
+	lane_target = 0.0
+	# PARKED already holds position, and a freeze left running would silently
+	# eat the first frames after un-stick.
+	freeze = 0.0
 
 	crashed.emit()
 
@@ -308,6 +364,10 @@ func _unstick() -> void:
 	facing = int(Maze.OPPOSITE[facing])
 	progress = 0.0
 	state = State.RUNNING
+	# No freeze here. Un-sticking is a 180, but the player has already been sat
+	# still for as long as it took them to press the key -- charging a freeze on
+	# top would hold them motionless again the instant they asked to move.
+	freeze = 0.0
 
 	# Start the climb back from below the floor so the 2.5x recovery ramp has
 	# something to do -- otherwise un-sticking would restore full base speed
@@ -399,6 +459,7 @@ func _turn_into(direction: int) -> void:
 	pending_turn = -1
 	pending_buffer = 0.0
 	_apply_speed_cost(Tuning.TURN_COST)
+	freeze = upgrades.turn_freeze()
 	turned.emit(facing)
 
 
@@ -411,7 +472,10 @@ func _kick_lane(direction: int) -> void:
 	var turning_left: bool = direction == left_direction()
 	# Outside of a left turn is +lane (right of the new heading).
 	var kick: float = Tuning.LANE_TURN_KICK if turning_left else -Tuning.LANE_TURN_KICK
-	lane = clampf(lane + kick, -float(Tuning.LANE_MAX), float(Tuning.LANE_MAX))
+	# Sets the TARGET, not the position. `lane` eases toward it in _recover_lane()
+	# over the following frames, which is what makes the corner read as an arc
+	# instead of a sideways teleport stapled to the 90-degree pivot.
+	lane_target = clampf(lane_target + kick, -float(Tuning.LANE_MAX), float(Tuning.LANE_MAX))
 
 
 # Settle the lane onto the nearest whole lane line and HOLD it there.
@@ -427,11 +491,21 @@ func _kick_lane(direction: int) -> void:
 # leaves you in is where you ride, so the floor lines mean something: you are on
 # one of them, not sliding between them.
 func _recover_lane(delta: float) -> void:
-	var target := roundf(clampf(lane, -float(Tuning.LANE_MAX), float(Tuning.LANE_MAX)))
+	# The target is a whole lane line -- the kick moves it in whole lanes and a
+	# crash zeroes it, so it is already integral. Rounding here is belt-and-braces
+	# against float drift, and it is what pins the racer ON a line rather than
+	# between two.
+	var target := roundf(clampf(lane_target, -float(Tuning.LANE_MAX), float(Tuning.LANE_MAX)))
+	lane_target = target
+
 	if is_equal_approx(lane, target):
 		lane = target
 		return
-	var step := Tuning.LANE_RECOVER_PER_SEC * delta
+
+	# Approaching a fresh kick is fast (the throw); settling the last of it is
+	# slow (the weight). Same direction, two rates, so the corner has a shape.
+	var rate := Tuning.LANE_KICK_PER_SEC if absf(target - lane) > 0.5 else Tuning.LANE_RECOVER_PER_SEC
+	var step := rate * delta
 	if absf(target - lane) <= step:
 		lane = target
 	else:
@@ -457,14 +531,23 @@ func right_direction() -> int:
 #
 # So a blocked facing clamps to the wall FACE instead: half a cell out, less the
 # wall's own half-thickness and a little clearance for the marker's radius.
+# How far across the cell the wall FACE sits, in progress units.
+#
+# The single source of truth for "pinned against the wall ahead": world_position()
+# clamps the drawn position to it during a scrape, and a turn out of a scrape
+# resets progress to it so the pivot does not jump. Half a cell out, less the
+# wall's own half-thickness and clearance for the marker's radius.
+func _wall_face_progress() -> float:
+	return (Tuning.CELL_SIZE * 0.5 - Tuning.WALL_THICKNESS * 0.5
+		- Tuning.MARKER_RADIUS) / Tuning.CELL_SIZE
+
+
 func world_position() -> Vector3:
 	var v: Vector2i = Maze.DIR_VECTORS[facing]
 	var travel := progress
 
 	if not maze.is_open(cell, facing):
-		var face_distance := (Tuning.CELL_SIZE * 0.5 - Tuning.WALL_THICKNESS * 0.5
-			- Tuning.MARKER_RADIUS) / Tuning.CELL_SIZE
-		travel = minf(progress, face_distance)
+		travel = minf(progress, _wall_face_progress())
 
 	var fx := float(cell.x) + float(v.x) * travel
 	var fy := float(cell.y) + float(v.y) * travel

@@ -61,10 +61,37 @@ var solve_path: Array[Vector2i] = []
 # Gate cells, spaced along solve_path.
 var gates: Array[Vector2i] = []
 
+# Decorative landmarks (docs/specs/landmarks.md). Each entry is a Dictionary:
+#
+#   cell     Vector2i   the cell it occupies (may be OUTSIDE the grid, for the
+#                       exterior ring -- so never index the maze with it)
+#   type     int        an index into Tuning.LANDMARK_TYPES
+#   yaw      float      rotation about Y, radians
+#   scale    float      per-instance size variation
+#   anchor   Vector2    offset from the cell centre in CELL units, so a dead-end
+#                       landmark can sit against the far wall rather than on the
+#                       point the player stops at
+#
+# This is DISPLAY DATA ONLY. Nothing in the simulation may read it: movement,
+# turn resolution, the buffer, the barrier, penalties and the distance field all
+# have to behave identically whether it is populated or empty. RulesTest asserts
+# that directly, because this is the failure mode hardest to notice -- the data
+# hangs off the maze, so it is reachable from the rules layer even though it must
+# never be used there.
+var landmarks: Array[Dictionary] = []
+
 var start_cell: Vector2i
 var exit_cell: Vector2i
 
 var _rng := RandomNumberGenerator.new()
+
+# Landmarks draw from their OWN stream, seeded from the maze seed but separate
+# from the carve's generator.
+#
+# Sharing _rng would mean that changing the landmark density silently redraws
+# every maze in the game, because each extra draw shifts the whole downstream
+# sequence. A decoration knob must not be able to alter the maze it decorates.
+var _decor_rng := RandomNumberGenerator.new()
 
 # 0.0 = pure random DFS. Higher values bias the carve toward continuing in the
 # direction it was already going, which lengthens straight corridors.
@@ -73,12 +100,14 @@ var _straighten := 0.0
 
 func generate(p_width: int, p_height: int, p_seed: int, braid_factor: float,
 		dead_end_target: float, gate_count: int, straighten: float = 0.0,
-		shallow_keep: float = 1.0) -> void:
+		shallow_keep: float = 1.0, landmark_density: float = 0.0) -> void:
 	width = p_width
 	height = p_height
 	seed_value = p_seed
 	_straighten = straighten
 	_rng.seed = p_seed
+	# Offset so the two streams never run in lockstep on the same seed.
+	_decor_rng.seed = p_seed ^ 0x5EED_DEC0
 
 	# Start every cell fully walled; the carve knocks walls down.
 	cells = PackedInt32Array()
@@ -100,6 +129,10 @@ func generate(p_width: int, p_height: int, p_seed: int, braid_factor: float,
 	_build_distance_field()
 	_build_solve_path()
 	_place_gates(gate_count)
+	# LAST, after every wall-knocking stage, for the same reason the straight-run
+	# cap is: the dead-end passes open walls, so a cell that was a sealed pocket
+	# or a dead end mid-pipeline may well not be one in the finished maze.
+	_place_landmarks(landmark_density)
 
 
 # --- Generation stages -------------------------------------------------------
@@ -459,6 +492,148 @@ func _place_gates(count: int) -> void:
 		var index := int(step * i)
 		index = clampi(index, 1, solve_path.size() - 2)
 		gates.append(solve_path[index])
+
+
+# --- Landmarks (docs/specs/landmarks.md) -------------------------------------
+
+# Decorative structures that make a corridor recognisable.
+#
+# PLACEMENT IGNORES THE SOLVE PATH, THE DISTANCE FIELD, THE GATES AND THE EXIT.
+# That is the whole safety argument for the feature: a landmark says "you have
+# been here", never "go this way", so it cannot substitute for Path Indicator,
+# Gate Compass or Golden Trail. Nothing here may start consulting
+# `distance_field` or `solve_path` -- if a first-time player gains anything from
+# a landmark before passing it once, this function is wrong.
+#
+# Landmarks occupy a whole cell and are never collided with -- the barrier and
+# crash rules are defined against maze WALLS only (section 5), and a second
+# class of solid thing would mean two collision systems disagreeing at speed. So
+# they go only where the player cannot drive through them:
+#
+#   - sealed pockets: fully-walled leftover cells, glimpsed from outside
+#   - dead ends: pushed against the far wall, past where the player stops
+#   - outside the boundary: skyline tier only, giving the maze an exterior
+func _place_landmarks(density: float) -> void:
+	landmarks.clear()
+	if density <= 0.0:
+		return
+
+	var interior: Array[Vector2i] = []
+	var anchors := {}
+
+	for y in height:
+		for x in width:
+			var cell := Vector2i(x, y)
+			if cell == start_cell or cell == exit_cell:
+				continue
+			if gates.has(cell):
+				continue
+
+			var open: Array = open_directions(cell)
+			if open.is_empty():
+				# A sealed pocket. Centred, since it is seen from outside.
+				interior.append(cell)
+				anchors[cell] = Vector2.ZERO
+			elif open.size() == 1:
+				# A dead end. The player drives in and stops against the end
+				# wall, so a landmark on the cell centre is geometry the marker
+				# visibly drives through. Push it to the back -- it becomes the
+				# thing BEYOND the stopping point, which is both correct and the
+				# better image.
+				var back: Vector2i = -DIR_VECTORS[open[0]]
+				interior.append(cell)
+				anchors[cell] = Vector2(back.x, back.y) * 0.28
+
+	_shuffle_decor(interior)
+
+	var count := int(interior.size() * clampf(density, 0.0, 1.0))
+	for i in count:
+		var cell: Vector2i = interior[i]
+		landmarks.append(_make_landmark(cell, anchors[cell], _pick_interior_type()))
+
+	_place_exterior_landmarks()
+
+
+# Which type an INTERIOR landmark gets, biased toward the local tier.
+#
+# A uniform draw over the type table looks balanced and is not, because the
+# exterior ring is skyline-only and lands on top of it -- measured, that pushed
+# the finished maze to ~2/3 skyline. Skyline landmarks answer "which REGION am I
+# in", which is the coarse read; the local tier is what distinguishes two
+# adjacent T-junctions from each other, and that is the finer and more useful
+# half of the feature (docs/specs/landmarks.md section 3).
+#
+# Biasing here rather than by adding local types keeps the vocabulary small.
+# Six shapes is already near the limit of what a player can learn to tell apart
+# at speed through fog.
+func _pick_interior_type() -> int:
+	var want_skyline := _decor_rng.randf() < 0.35
+
+	var candidates: Array[int] = []
+	for i in Tuning.LANDMARK_TYPES.size():
+		if bool(Tuning.LANDMARK_TYPES[i]["skyline"]) == want_skyline:
+			candidates.append(i)
+
+	if candidates.is_empty():
+		return _decor_rng.randi_range(0, Tuning.LANDMARK_TYPES.size() - 1)
+	return candidates[_decor_rng.randi_range(0, candidates.size() - 1)]
+
+
+# A ring of skyline landmarks beyond the outer wall, so the maze has an exterior
+# rather than ending in fog at the boundary.
+#
+# Skyline tier ONLY: a local landmark out here sits below the boundary wall and
+# would never be seen at all.
+func _place_exterior_landmarks() -> void:
+	var skyline: Array[int] = []
+	for i in Tuning.LANDMARK_TYPES.size():
+		if bool(Tuning.LANDMARK_TYPES[i]["skyline"]):
+			skyline.append(i)
+	if skyline.is_empty():
+		return
+
+	var centre := Vector2(width - 1, height - 1) * 0.5
+	# Half the diagonal, so the ring clears a rectangular maze on every side.
+	var radius := centre.length()
+
+	for i in Tuning.LANDMARK_EXTERIOR_COUNT:
+		# Even angular spacing with a jitter, so the ring does not read as a
+		# clock face while still never clumping.
+		var slice := TAU / float(Tuning.LANDMARK_EXTERIOR_COUNT)
+		var angle := slice * i + _decor_rng.randf_range(-slice * 0.35, slice * 0.35)
+		var out := radius + _decor_rng.randf_range(
+			Tuning.LANDMARK_EXTERIOR_MIN_CELLS, Tuning.LANDMARK_EXTERIOR_MAX_CELLS)
+
+		var at := centre + Vector2(cos(angle), sin(angle)) * out
+		var type_index: int = skyline[_decor_rng.randi_range(0, skyline.size() - 1)]
+		# Rounded to a cell so exterior entries look like every other landmark;
+		# the fractional part rides in `anchor`, which the mesh adds back.
+		var cell := Vector2i(roundi(at.x), roundi(at.y))
+		landmarks.append(_make_landmark(
+			cell, at - Vector2(cell.x, cell.y), type_index, 1.35))
+
+
+func _make_landmark(cell: Vector2i, anchor: Vector2, type_index: int,
+		scale_bias: float = 1.0) -> Dictionary:
+	return {
+		"cell": cell,
+		"type": type_index,
+		# Free rotation. Every type is built axis-aligned, so without this a
+		# field of them lines up like a parade and stops reading as scenery.
+		"yaw": _decor_rng.randf_range(0.0, TAU),
+		"scale": scale_bias * _decor_rng.randf_range(0.85, 1.2),
+		"anchor": anchor,
+	}
+
+
+# Fisher-Yates against the DECOR stream, so shuffling the candidate list cannot
+# perturb the carve. Mirrors _shuffle, deliberately rather than sharing it.
+func _shuffle_decor(array: Array) -> void:
+	for i in range(array.size() - 1, 0, -1):
+		var j := _decor_rng.randi_range(0, i)
+		var tmp = array[i]
+		array[i] = array[j]
+		array[j] = tmp
 
 
 # --- Queries -----------------------------------------------------------------

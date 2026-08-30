@@ -6,7 +6,7 @@
 # tested headlessly (CLAUDE.md section 12).
 extends Node3D
 
-enum Phase { RACING, UPGRADING, TRANSITION, COMPLETE }
+enum Phase { RACING, UPGRADING, TRANSITION, COMPLETE, PAUSED }
 
 var maze: Maze
 var racer: Racer
@@ -15,6 +15,13 @@ var upgrades: Upgrades
 var phase: int = Phase.RACING
 var maze_index := 0
 var run_seed := 0
+
+# Set before the node enters the tree to force a specific seed, overriding the
+# clock. The trailer needs this (docs/specs/trailer.md): it starts a maze during
+# its own _ready, so pinning run_seed afterwards -- the way SceneTest does --
+# would come one maze too late. 0 means "use the clock", which is every normal
+# run.
+var trailer_seed := 0
 
 # The run timer. Pauses during upgrade picks -- it is the score, and the whole
 # optimisation target, so it must never tick while the player is reading cards.
@@ -31,6 +38,7 @@ var _mesh: MazeMesh
 var _hud: HUD
 var _minimap: Minimap
 var _upgrade_screen: UpgradeScreen
+var _touch: TouchControls
 var _world: Node3D
 var _transition_time := 0.0
 
@@ -44,7 +52,8 @@ var _shake := 0.0
 
 
 func _ready() -> void:
-	run_seed = int(Time.get_unix_time_from_system())
+	run_seed = trailer_seed if trailer_seed != 0 \
+		else int(Time.get_unix_time_from_system())
 	upgrades = Upgrades.new(run_seed)
 
 	_build_world()
@@ -208,6 +217,37 @@ func _build_ui() -> void:
 	_upgrade_screen.upgrade_chosen.connect(_on_upgrade_chosen)
 	ui_root.add_child(_upgrade_screen)
 
+	# Added LAST so the pads sit above the HUD and the upgrade cards in draw
+	# order. They are transparent panels over a corner each, so what matters is
+	# not what they cover but that a tap reaches them rather than the card
+	# behind -- and the topmost STOP control wins that.
+	_touch = TouchControls.new()
+	_touch.name = "TouchControls"
+	_touch.turn_requested.connect(_on_turn_input)
+	_touch.reverse_requested.connect(_on_reverse_input)
+	_touch.pause_requested.connect(_on_pause_input)
+	ui_root.add_child(_touch)
+	_apply_touch_setting()
+
+	# Settings is an autoload and so is absent from a harness that instantiates
+	# this scene directly rather than booting the project. Guarded for the same
+	# reason Shell guards Music: a missing preference must never be what stops
+	# the game starting.
+	var settings := get_node_or_null("/root/Settings")
+	if settings != null:
+		settings.touch_controls_changed.connect(
+			func(_enabled: bool) -> void: _apply_touch_setting())
+
+
+# The pads exist whether or not they are shown, and visibility is the only
+# thing the setting changes. A hidden Control takes no input in Godot, so this
+# is also what stops an invisible pad swallowing a click on the upgrade cards.
+func _apply_touch_setting() -> void:
+	if _touch == null:
+		return
+	var settings := get_node_or_null("/root/Settings")
+	_touch.visible = settings != null and bool(settings.touch_controls)
+
 
 func _start_maze(index: int) -> void:
 	maze_index = index
@@ -222,7 +262,8 @@ func _start_maze(index: int) -> void:
 		float(config["dead_ends"]),
 		int(config["gates"]),
 		float(config.get("straighten", 0.0)),
-		float(config.get("shallow_keep", 1.0))
+		float(config.get("shallow_keep", 1.0)),
+		_landmark_density(index)
 	)
 
 	if _golden_trail:
@@ -239,6 +280,11 @@ func _start_maze(index: int) -> void:
 	racer.turned.connect(_on_turned)
 	racer.reversed.connect(_on_turned.bind(-1))
 
+	# The track is named on the maze config, so a maze changes its own music the
+	# same way it changes its own palette (docs/specs/music.md). Shared across all
+	# five today; this call does not care.
+	_music_for_maze(index)
+
 	var palette_index := int(config.get("palette", 0))
 	_mesh.build(maze, palette_index)
 	_apply_palette(palette_index)
@@ -249,8 +295,24 @@ func _start_maze(index: int) -> void:
 	_cam_yaw = _cam_target_yaw
 
 	phase = Phase.RACING
-	_hud.show_message("%s" % String(config["name"]).to_upper(),
-		Tuning.PALETTES[palette_index]["wall"])
+	# The trailer prints the maze name itself, larger and clear of the corridor
+	# (docs/specs/trailer.md), so letting the HUD announce it too put the name on
+	# screen twice in two different places.
+	if trailer_seed == 0:
+		_hud.show_message("%s" % String(config["name"]).to_upper(),
+			Tuning.PALETTES[palette_index]["wall"])
+
+
+# Landmark density for a maze, from its own config (docs/specs/landmarks.md).
+#
+# Read off the maze entry rather than a parallel per-maze array, so adding a
+# sixth maze cannot leave the array short and silently hand it a density of
+# zero -- the same reason the gate count is read from MAZES rather than being
+# restated (CLAUDE.md section 12).
+func _landmark_density(index: int) -> float:
+	if index < 0 or index >= Tuning.MAZES.size():
+		return Tuning.LANDMARK_DENSITY
+	return float(Tuning.MAZES[index].get("landmarks", Tuning.LANDMARK_DENSITY))
 
 
 # Retint the fog and the headlight to match the maze's palette.
@@ -278,7 +340,7 @@ func _apply_palette(index: int) -> void:
 		# arriving through the light instead of the material.
 		#
 		# It also has to stay desaturated so the gate and exit markers keep their
-		# own colour across all three mazes.
+		# own colour across every maze.
 		_environment.ambient_light_color = palette["grid"].lerp(Color(0.62, 0.66, 0.76), 0.8)
 
 	if _headlight:
@@ -296,7 +358,11 @@ func _process(delta: float) -> void:
 			_transition_time -= delta
 			if _transition_time <= 0.0:
 				_start_maze(maze_index + 1)
-		Phase.UPGRADING, Phase.COMPLETE:
+		Phase.UPGRADING, Phase.COMPLETE, Phase.PAUSED:
+			# PAUSED stops `elapsed` along with the simulation. The timer IS the
+			# score (CLAUDE.md section 8), so a pause that let it run would be a
+			# penalty for stepping away, and one that let the sim run would be
+			# no pause at all.
 			pass
 
 	_update_camera(delta)
@@ -307,17 +373,50 @@ func _process(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if phase != Phase.RACING:
-		return
 	if not event.is_pressed() or event.is_echo():
 		return
 
+	# Every branch here just forwards to the shared handler below, which owns
+	# the phase gating. The touch pads call the same methods.
+	if event.is_action("pause_game"):
+		_on_pause_input()
+		return
+
 	if event.is_action("turn_left"):
-		racer.request_turn(-1)
+		_on_turn_input(-1)
 	elif event.is_action("turn_right"):
-		racer.request_turn(1)
+		_on_turn_input(1)
 	elif event.is_action("turn_around"):
-		racer.request_reverse()
+		_on_reverse_input()
+
+
+# The three driving inputs and pause, as methods rather than inline branches.
+#
+# The touch pads raise these too, so a tap and a key press cannot diverge --
+# including on the phase gating, which is the part that would rot silently if it
+# were duplicated. A pad that turned during an upgrade pick would be driving the
+# racer while the timer is stopped.
+
+func _on_turn_input(direction: int) -> void:
+	if phase != Phase.RACING:
+		return
+	racer.request_turn(direction)
+
+
+func _on_reverse_input() -> void:
+	if phase != Phase.RACING:
+		return
+	racer.request_reverse()
+
+
+# Not gated on RACING, unlike the three above: the whole point of pause is that
+# it works when the game is not racing, since an unpause has to be reachable
+# from the paused phase itself.
+func _on_pause_input() -> void:
+	if phase == Phase.RACING:
+		_set_paused(true)
+	elif phase == Phase.PAUSED:
+		_set_paused(false)
 
 
 # --- Camera ------------------------------------------------------------------
@@ -369,7 +468,14 @@ func _update_camera(delta: float) -> void:
 	_cam_target_yaw = _yaw_for(racer.facing)
 	# Rotate the short way round, so a west-to-north turn does not spin 270.
 	var difference := wrapf(_cam_target_yaw - _cam_yaw, -PI, PI)
-	_cam_yaw += difference * minf(1.0, delta * 12.0)
+	# The turn freeze exists so the view can catch up to a pivot the world made
+	# instantly -- so the camera swings FASTER while it runs, not at its usual
+	# trailing rate. A freeze the camera does not spend is just a stutter: the
+	# player would be held still and still be looking the old way when released.
+	var yaw_rate := 12.0
+	if racer.freeze > 0.0:
+		yaw_rate *= Tuning.TURN_FREEZE_CAM_MULTIPLIER
+	_cam_yaw += difference * minf(1.0, delta * yaw_rate)
 
 	# Ease toward the crash view rather than snapping, both in and out.
 	var crash_target := 1.0 if racer.state == Racer.State.PARKED else 0.0
@@ -411,6 +517,14 @@ func _update_camera(delta: float) -> void:
 	# when the camera has drifted into a wall band.
 	eye = _push_out_of_walls(eye)
 
+	# THIRD pass, and the only one that asks about the marker at all. The two
+	# above keep the EYE out of walls; this one keeps the LINE from the eye to
+	# the marker clear, which is a different question -- swinging through a
+	# corner, the camera sits in open space while the segment to the marker cuts
+	# the inside corner, and the wall just passed wipes across the marker for a
+	# few frames. The marker must never be obscured (CLAUDE.md section 12).
+	eye = _clear_sight_to(eye, ground)
+
 	# Crashed, the aim drops toward the player's own level. Lifting the eye while
 	# still aiming at normal look height points the view straight INTO the wall
 	# that was just hit, filling the frame with one flat face and hiding the
@@ -448,6 +562,112 @@ func _update_camera(delta: float) -> void:
 # Works per-axis against the cell the point sits in: if the point has crossed
 # that cell's wall band on a side that is closed, pull it back to the band edge.
 # Cheap, and unlike the ray march it does not care HOW the camera got there.
+# Pull the eye in until nothing stands between it and the marker.
+#
+# The camera is capped below WALL_HEIGHT, so it can never see over a wall and
+# sight is a pure floor-plane problem: if the segment crosses a solid wall band,
+# the marker is hidden, full stop.
+#
+# Pulling IN rather than pushing sideways is deliberate. Sliding the eye around
+# an obstruction changes the viewing angle mid-corner, which reads as the camera
+# lurching sideways on its own -- and the corridor the player is about to enter
+# swings out of frame just as they need it. Closing the distance keeps the
+# camera on the axis it already holds and shortens the segment until it fits in
+# the open space; the view tightens through a corner and opens again after,
+# which reads as the camera hugging the turn rather than fighting it.
+func _clear_sight_to(eye: Vector3, target: Vector3) -> Vector3:
+	var aim := target
+	aim.y = eye.y
+
+	if not _sight_blocked(eye, aim):
+		return eye
+
+	# Binary search the fraction of the way in that first clears. Bisection
+	# rather than fixed steps so a deep intrusion costs no more work than a
+	# shallow one, and the camera never gets pulled further in than it must --
+	# an over-eager pull-in is its own artifact.
+	var span := eye - aim
+	if span.length() < 0.001:
+		return eye
+
+	# Fractions along the segment from the marker (0.0) to the eye (1.0). The
+	# eye is known blocked -- that is why we are here -- and the marker end is
+	# taken as clear, since a camera sitting on the marker has nothing between
+	# them by definition.
+	var blocked := 1.0
+	var clear := 0.0
+
+	for _i in range(12):
+		var mid := (blocked + clear) * 0.5
+		if _sight_blocked(aim + span * mid, aim):
+			blocked = mid
+		else:
+			clear = mid
+
+	var distance: float = maxf(Tuning.CAM_SIGHT_MIN_DISTANCE, span.length() * clear)
+	var settled := aim + span.normalized() * distance
+
+	if not _sight_blocked(settled, aim):
+		return settled
+
+	# Pulling in along this axis bottomed out and sight is still blocked.
+	#
+	# LIFTING DOES NOT HELP HERE, which is worth writing down because it is the
+	# obvious next move and it is wrong: walls run floor to WALL_HEIGHT with no
+	# gap and the camera is capped below that, so a level sight line is blocked
+	# at every height the camera can legally hold. Raising the eye only tilts the
+	# view; it never clears the wall. (The crash camera lifts to show the player
+	# WHAT they hit, which is a different goal from seeing past it.)
+	#
+	# So the last resort is to close the remaining gap entirely and sit on the
+	# marker. A very tight camera for a frame or two is a far smaller failure
+	# than the marker disappearing -- section 12 makes that a hard rule, and this
+	# is the branch that keeps it true when the geometry allows nothing better.
+	return aim + span.normalized() * Tuning.CAM_SIGHT_HARD_MIN
+
+
+# Does a solid wall stand between these two points on the floor plane?
+#
+# Asks the maze grid rather than physics, for the same reason _camera_clearance
+# does: the walls are pure geometry with no collision bodies, and the grid
+# answers the same question for free.
+func _sight_blocked(from: Vector3, to: Vector3) -> bool:
+	var to_face: float = Tuning.CELL_SIZE * 0.5 - Tuning.WALL_THICKNESS * 0.5 - Tuning.CAM_SIGHT_MARGIN
+	var span := to - from
+	var length := span.length()
+	if length < 0.001:
+		return false
+
+	# Step well under the cell size so the walk cannot straddle a wall band and
+	# report clear -- the same failure the 0.1m step in _camera_clearance avoids.
+	var steps := int(ceil(length / 0.12))
+
+	for i in range(steps + 1):
+		var p := from + span * (float(i) / float(steps))
+		var cell := Vector2i(
+			int(round(p.x / Tuning.CELL_SIZE)),
+			int(round(p.z / Tuning.CELL_SIZE))
+		)
+		if not maze._in_bounds(cell):
+			return true
+
+		var ox: float = p.x - float(cell.x) * Tuning.CELL_SIZE
+		var oz: float = p.z - float(cell.y) * Tuning.CELL_SIZE
+
+		# In the wall band on one side of this cell? Only legal if that side is
+		# an actual opening.
+		var dir := 0
+		if absf(ox) > to_face:
+			dir = Maze.E if ox > 0.0 else Maze.W
+		elif absf(oz) > to_face:
+			dir = Maze.S if oz > 0.0 else Maze.N
+
+		if dir != 0 and not maze.is_open(cell, dir):
+			return true
+
+	return false
+
+
 func _push_out_of_walls(eye: Vector3) -> Vector3:
 	var to_face: float = Tuning.CELL_SIZE * 0.5 - Tuning.WALL_THICKNESS * 0.5
 	var margin := 0.25
@@ -540,6 +760,35 @@ func _yaw_for(direction: int) -> float:
 	return 0.0
 
 
+# --- Pause -------------------------------------------------------------------
+
+# Enter or leave the paused phase.
+#
+# The minimap blurs, for exactly the reason it blurs at a gate (CLAUDE.md
+# section 7): a paused, static, zoomed-out map is a free solve of the whole
+# maze, and pause would otherwise be a strictly better version of the gate
+# screen -- available any time, at no cost, for as long as you like.
+func _set_paused(on: bool) -> void:
+	if on:
+		phase = Phase.PAUSED
+		_minimap.blurred = true
+		# Ducked, not stopped. Music continuing quietly is what says the game is
+		# held rather than gone, and a volume change keeps the track's position.
+		_music_duck(true)
+		_hud.show_message("PAUSED  -  press ESC or P to resume", Color(0.7, 0.85, 1.0), true)
+	else:
+		phase = Phase.RACING
+		_minimap.blurred = false
+		_music_duck(false)
+		_hud.clear_held_message()
+		# Pausing while parked overwrote the crash prompt with the pause prompt,
+		# and clearing it here would leave the player stopped with nothing on
+		# screen telling them why -- the exact failure the held message exists to
+		# prevent. Put it back if the crash it describes is still current.
+		if racer and racer.state == Racer.State.PARKED:
+			_hud.show_message("CRASH  -  press DOWN to recover", Color(1.0, 0.35, 0.3), true)
+
+
 # --- Events ------------------------------------------------------------------
 
 func _on_turned(_direction: int) -> void:
@@ -591,3 +840,29 @@ func _on_exit_reached() -> void:
 		phase = Phase.COMPLETE
 		_hud.show_message("RUN COMPLETE  -  %s" % _hud._format_time(elapsed),
 			Color(0.35, 1.0, 0.45))
+
+
+# --- Music -------------------------------------------------------------------
+#
+# Both guarded: Music is an autoload, so it is absent whenever a harness loads
+# Game.tscn directly instead of booting the project, and every harness runs
+# --headless with no audio driver. Nothing in the simulation reads these
+# (docs/specs/music.md) -- they are called from phase changes only.
+
+func _music_for_maze(index: int) -> void:
+	# The trailer cuts between all five mazes in thirty seconds and owns its own
+	# track. Letting each cut re-request that maze's music would restart the
+	# soundtrack five times across one reel -- and crossfade through four of
+	# them. trailer_seed is already the "am I the trailer" test here; it is what
+	# suppresses the HUD maze banner for the same reason.
+	if trailer_seed != 0:
+		return
+	var music := get_node_or_null("/root/Music")
+	if music != null:
+		music.play_for_maze(index)
+
+
+func _music_duck(on: bool) -> void:
+	var music := get_node_or_null("/root/Music")
+	if music != null:
+		music.set_ducked(on)
