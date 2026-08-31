@@ -195,21 +195,10 @@ func _build_ui() -> void:
 	_hud.name = "HUD"
 	ui_root.add_child(_hud)
 
-	# Bottom left, directly above the barrier/HP bars. It sits near the player
-	# marker rather than in the far corner: the map and the corridor are read
-	# together at speed, and a diagonal glance across the whole screen costs the
-	# read it exists to give. The bars occupy the bottom 120px, so the map stacks
-	# above them with a small gap.
+	# Positioned by _place_minimap, which is called once the touch pads exist --
+	# the map's corner depends on whether they are up.
 	_minimap = Minimap.new()
 	_minimap.name = "Minimap"
-	_minimap.anchor_left = 0.0
-	_minimap.anchor_right = 0.0
-	_minimap.anchor_top = 1.0
-	_minimap.anchor_bottom = 1.0
-	_minimap.offset_left = 24
-	_minimap.offset_right = 24 + Minimap.SIZE
-	_minimap.offset_top = -(140 + Minimap.SIZE)
-	_minimap.offset_bottom = -140
 	ui_root.add_child(_minimap)
 
 	_upgrade_screen = UpgradeScreen.new()
@@ -239,6 +228,62 @@ func _build_ui() -> void:
 			func(_enabled: bool) -> void: _apply_touch_setting())
 
 
+# The minimap sits bottom-left on desktop and BELOW THE PLAYER on mobile.
+#
+# Bottom-left is the right corner on a keyboard, for the reason section 12
+# gives: the map and the corridor are read together at speed, so the map wants
+# to be near the marker rather than in a far corner. With touch controls on,
+# that corner is a thumb pad -- the map would sit underneath it, covered by the
+# hand holding the phone, which is the same "read it together" argument
+# arriving at a different answer because the screen now has hands on it.
+#
+# Centred under the marker keeps the short glance the corner placement was
+# chosen for, and it is the one part of the bottom edge no thumb occupies:
+# the pads are hard against the left and right margins.
+func _place_minimap() -> void:
+	if _minimap == null:
+		return
+
+	var touch: bool = _touch != null and _touch.visible
+
+	# Minimap.SIZE is a desktop pixel figure, and on a small phone a fixed
+	# 210px square is over half the screen height. Shrink it to fit rather than
+	# let it run off the bottom -- same failure the pads' pixel caps had, and
+	# the same fix.
+	var view: Vector2 = _minimap.get_parent().size
+	var span: float = Minimap.SIZE
+	if touch and view.y > 0.0:
+		span = min(span, view.y * 0.5)
+
+	# Minimap sets custom_minimum_size to its nominal SIZE, and a Control
+	# cannot shrink below its minimum -- so the offsets below would be silently
+	# ignored on a small screen without this. Its _draw already centres on the
+	# control's actual size, so a smaller box draws a smaller map correctly.
+	_minimap.custom_minimum_size = Vector2(span, span)
+
+	if touch:
+		# Centred horizontally, above the bottom edge. The player marker sits
+		# slightly below screen centre, so the map tucks under it without
+		# reaching the pads on either side.
+		_minimap.anchor_left = 0.5
+		_minimap.anchor_right = 0.5
+		_minimap.offset_left = -span * 0.5
+		_minimap.offset_right = span * 0.5
+	else:
+		_minimap.anchor_left = 0.0
+		_minimap.anchor_right = 0.0
+		_minimap.offset_left = 24
+		_minimap.offset_right = 24 + span
+
+	# Bottom-anchored either way. On desktop it stacks above the barrier/HP
+	# bars; on mobile those bars are to its left, so it can sit lower.
+	_minimap.anchor_top = 1.0
+	_minimap.anchor_bottom = 1.0
+	var bottom_gap: float = 24.0 if touch else 140.0
+	_minimap.offset_top = -(bottom_gap + span)
+	_minimap.offset_bottom = -bottom_gap
+
+
 # The pads exist whether or not they are shown, and visibility is the only
 # thing the setting changes. A hidden Control takes no input in Godot, so this
 # is also what stops an invisible pad swallowing a click on the upgrade cards.
@@ -247,6 +292,8 @@ func _apply_touch_setting() -> void:
 		return
 	var settings := get_node_or_null("/root/Settings")
 	_touch.visible = settings != null and bool(settings.touch_controls)
+	# The map moves out from under the thumb pads with the setting.
+	_place_minimap()
 
 
 func _start_maze(index: int) -> void:

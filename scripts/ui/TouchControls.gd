@@ -36,25 +36,51 @@ const COL_GLYPH := Color(0.85, 0.95, 1.0, 0.92)
 const HUD_BOTTOM_BAND := 120.0   # barrier + integrity, bottom-left
 const HUD_TOP_BAND := 70.0       # speed / maze / timer row
 
+# ...but never more than this share of a short screen.
+#
+# Those two are desktop pixel measurements, and on a 390px-tall phone the
+# bottom band alone is nearly a third of the display -- reserving it whole
+# pushed the pads clean off the bottom edge. The bars are drawn at a fixed
+# pixel height whatever the screen, so on a small one the pads simply have to
+# overlap the far left of that band; they are hard against the margins and the
+# bars are only ~320px wide, so what they overlap is empty space beside them.
+const MAX_BAND_SHARE := 0.18
+
 # Steering pads, anchored to the bottom corners -- where thumbs are on a phone
 # held in landscape, and nowhere else.
 #
-# Sized as a fraction of the screen, because a pixel size that suits a 1600x900
-# desktop window is a third of the width of a small phone. Capped in pixels as
-# well, so a big desktop window does not hand back a pad the size of a playing
-# card for a mouse to hit.
-const PAD_W_FRACTION := 0.20
-const PAD_H_FRACTION := 0.26
-const PAD_W_MAX := 260.0
-const PAD_H_MAX := 200.0
+# Sized against the SHORTER screen dimension, never in pixels.
+#
+# They were a fraction capped at a pixel maximum, and the cap is what made them
+# unusably small on a phone: a phone reports a large pixel viewport, so the cap
+# won every time and handed the smallest screen the same 260px pad as a desktop
+# window. A pixel is not a size -- it is a count, and how big it is depends
+# entirely on the device. The short edge is the honest reference because it is
+# the one a thumb has to span in landscape.
+const PAD_SHORT_FRACTION := 0.42   # of the shorter viewport edge
+const PAD_ASPECT := 1.15           # width / height, slightly wider than tall
 
-const PAUSE_SIZE := Vector2(70.0, 52.0)
+# A floor in pixels, not a ceiling. On a very small window the fraction alone
+# can produce a target too small to hit; nothing needs protecting at the top
+# end, since a big screen genuinely wants a big thumb target.
+const PAD_MIN := Vector2(120.0, 100.0)
 
-# The two bars of the pause icon. Weight is chosen for the pad rather than
-# inherited from a font -- a text glyph drew them as hairlines.
-const PAUSE_BAR_W := 5.0
-const PAUSE_BAR_H := 20.0
-const PAUSE_BAR_GAP := 7.0
+# Pause is the one control that is NOT a driving input (section 2), so it stays
+# deliberately smaller than the steering pads -- but it still scales, because a
+# fixed 70px box is a smudge on a phone.
+const PAUSE_SHORT_FRACTION := 0.13
+const PAUSE_ASPECT := 1.35
+const PAUSE_MIN := Vector2(70.0, 52.0)
+
+# The pause bars, as a fraction of the pad that holds them, for the same reason
+# the pad itself is not in pixels.
+const PAUSE_BAR_W_FRAC := 0.11
+const PAUSE_BAR_H_FRAC := 0.42
+const PAUSE_BAR_GAP_FRAC := 0.14
+
+# The steering triangles, as a fraction of the pad that holds them.
+const ARROW_W_FRAC := 0.34
+const ARROW_H_FRAC := 0.44
 
 const MARGIN := 18.0
 
@@ -74,8 +100,11 @@ func _ready() -> void:
 	# take input.
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-	_build_pad("left", "◀", func(): _steer(-1), -1)
-	_build_pad("right", "▶", func(): _steer(1), 1)
+	# Both icons are drawn, not lettered -- see _build_arrow_icon.
+	_build_pad("left", "", func(): _steer(-1), -1)
+	_build_pad("right", "", func(): _steer(1), 1)
+	_build_arrow_icon(_pads["left"], -1)
+	_build_arrow_icon(_pads["right"], 1)
 	# Pause is drawn, not lettered -- see _build_pause_icon.
 	_build_pad("pause", "", func(): emit_signal("pause_requested"))
 	_build_pause_icon(_pads["pause"])
@@ -152,6 +181,7 @@ func _build_pad(key: String, glyph: String, handler: Callable,
 # the device happens to have.
 func _build_pause_icon(pad: Panel) -> void:
 	var holder := Control.new()
+	holder.name = "icon"
 	holder.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pad.add_child(holder)
@@ -160,19 +190,89 @@ func _build_pause_icon(pad: Panel) -> void:
 		var bar := ColorRect.new()
 		bar.color = COL_GLYPH
 		bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		# Centred as a pair: each bar sits half a gap out from the middle.
 		bar.anchor_left = 0.5
 		bar.anchor_right = 0.5
 		bar.anchor_top = 0.5
 		bar.anchor_bottom = 0.5
+		holder.add_child(bar)
+
+	_size_pause_bars(PAUSE_MIN)
+
+
+# The bars are re-offset whenever the pad resizes, since their size is a
+# fraction OF THE PAD and the pad is a fraction of the screen.
+func _size_pause_bars(pad_size: Vector2) -> void:
+	var pause: Panel = _pads.get("pause")
+	if pause == null:
+		return
+	var holder := pause.get_node_or_null("icon")
+	if holder == null:
+		return
+
+	var bar_w: float = pad_size.x * PAUSE_BAR_W_FRAC
+	var bar_h: float = pad_size.y * PAUSE_BAR_H_FRAC
+	var gap: float = pad_size.x * PAUSE_BAR_GAP_FRAC
+
+	var bars := holder.get_children()
+	for i in bars.size():
+		var bar: Control = bars[i]
+		# Centred as a pair: each bar sits half a gap out from the middle.
 		var dir := -1.0 if i == 0 else 1.0
-		var near_edge := PAUSE_BAR_GAP * 0.5 * dir
-		var far_edge := near_edge + PAUSE_BAR_W * dir
+		var near_edge := gap * 0.5 * dir
+		var far_edge := near_edge + bar_w * dir
 		bar.offset_left = min(near_edge, far_edge)
 		bar.offset_right = max(near_edge, far_edge)
-		bar.offset_top = -PAUSE_BAR_H * 0.5
-		bar.offset_bottom = PAUSE_BAR_H * 0.5
-		holder.add_child(bar)
+		bar.offset_top = -bar_h * 0.5
+		bar.offset_bottom = bar_h * 0.5
+
+
+# A steering arrow, drawn as a filled triangle rather than typed as a glyph.
+#
+# The pads used U+25C0 / U+25B6, and they broke on mobile for the same reason
+# the pause glyph did: a character is only as reliable as the font behind it,
+# and the web export on a phone falls back to whatever that device happens to
+# ship. A missing glyph renders as a blank or a tofu box -- so the one control
+# the player steers with can simply vanish, on a device we cannot test from
+# here and cannot predict.
+#
+# A Polygon2D owes nothing to a font. It also scales exactly with the pad,
+# which a font size cannot do without re-measuring text.
+func _build_arrow_icon(pad: Panel, direction: int) -> void:
+	var holder := Control.new()
+	holder.name = "icon"
+	holder.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pad.add_child(holder)
+
+	var arrow := Polygon2D.new()
+	arrow.name = "arrow"
+	arrow.color = COL_GLYPH
+	arrow.set_meta("direction", direction)
+	holder.add_child(arrow)
+
+
+# Re-points the triangle for the current pad size, for the same reason the
+# pause bars are re-offset.
+func _size_arrow(key: String, pad_size: Vector2) -> void:
+	var pad: Panel = _pads.get(key)
+	if pad == null:
+		return
+	var arrow := pad.get_node_or_null("icon/arrow")
+	if arrow == null:
+		return
+
+	var direction: int = int(arrow.get_meta("direction", -1))
+	var half_w: float = pad_size.x * ARROW_W_FRAC * 0.5
+	var half_h: float = pad_size.y * ARROW_H_FRAC * 0.5
+	var centre := pad_size * 0.5
+	var dir := float(direction)
+
+	# Apex on the side it points to, flat base opposite.
+	arrow.polygon = PackedVector2Array([
+		centre + Vector2(half_w * dir, 0.0),
+		centre + Vector2(-half_w * dir, -half_h),
+		centre + Vector2(-half_w * dir, half_h),
+	])
 
 
 # A steering press: a turn, or the second half of a 180.
@@ -255,25 +355,35 @@ func _layout() -> void:
 	if view.x <= 0.0 or view.y <= 0.0:
 		return
 
-	var pad := Vector2(
-		min(view.x * PAD_W_FRACTION, PAD_W_MAX),
-		min(view.y * PAD_H_FRACTION, PAD_H_MAX))
+	# The shorter edge is the reference: in landscape that is the height, and it
+	# is what a thumb actually has to span.
+	var short_edge: float = min(view.x, view.y)
+
+	var pad_h: float = max(short_edge * PAD_SHORT_FRACTION, PAD_MIN.y)
+	var pad := Vector2(max(pad_h * PAD_ASPECT, PAD_MIN.x), pad_h)
 
 	# The steering pads stop short of the HUD's bottom band so the barrier and
-	# integrity bars stay both visible and untappable.
-	var pad_top := view.y - HUD_BOTTOM_BAND - pad.y
+	# integrity bars stay both visible and untappable -- clamped, because the
+	# band is a desktop pixel figure and a phone screen cannot spare it whole.
+	var bottom_band: float = min(HUD_BOTTOM_BAND, view.y * MAX_BAND_SHARE)
+	var pad_top := view.y - bottom_band - pad.y
 
 	_place(_pads.get("left"), Rect2(MARGIN, pad_top, pad.x, pad.y))
 	_place(_pads.get("right"), Rect2(
 		view.x - pad.x - MARGIN, pad_top, pad.x, pad.y))
+	_size_arrow("left", pad)
+	_size_arrow("right", pad)
 
 	# Below the timer, not beside it. The timer is right-aligned in the HUD's
 	# top row and its width changes as the run passes a minute, so anything
 	# sharing that line eventually collides with it -- which the first rendered
 	# frame showed happening.
+	var top_band: float = min(HUD_TOP_BAND, view.y * MAX_BAND_SHARE)
+	var pause_h: float = max(short_edge * PAUSE_SHORT_FRACTION, PAUSE_MIN.y)
+	var pause := Vector2(max(pause_h * PAUSE_ASPECT, PAUSE_MIN.x), pause_h)
 	_place(_pads.get("pause"), Rect2(
-		view.x - PAUSE_SIZE.x - MARGIN, HUD_TOP_BAND + MARGIN,
-		PAUSE_SIZE.x, PAUSE_SIZE.y))
+		view.x - pause.x - MARGIN, top_band + MARGIN, pause.x, pause.y))
+	_size_pause_bars(pause)
 
 
 func _place(node: Variant, rect: Rect2) -> void:

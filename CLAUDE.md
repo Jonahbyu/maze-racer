@@ -1126,12 +1126,49 @@ because the HUD builds its layout from literals too and a queried rect is only
 correct after a frame has been laid out. If either moves, both move — they are one
 screen.
 
-**Sized as a screen fraction with a pixel cap.** A fixed pixel size that suits a
-1600x900 desktop window is a third of the width of a small phone; an uncapped
-fraction hands a large desktop window a pad the size of a playing card. The menu
-row has the same shape of fix — its height is now derived from the button count,
+**Sized against the shorter screen edge, never in pixels.** The pads were a screen
+fraction *capped at a pixel maximum*, and the cap is what made them unusably small
+on a phone: a handset reports a large pixel viewport, so the cap won every time and
+handed the smallest screen the same 260px pad as a desktop window. **A pixel is a
+count, not a size** — how big it is depends entirely on the device. The short edge
+is the honest reference because it is the one a thumb has to span in landscape. The
+minimum is now a floor rather than a ceiling: a small window needs protecting from
+a target too small to hit, while a big screen genuinely wants a big one.
+
+**The HUD bands need the same clamp.** `HUD_BOTTOM_BAND` is 120px measured off a
+desktop layout, which on a 390px-tall phone is nearly a third of the display —
+reserving it whole pushed the pads clean off the bottom edge. Clamped to a share of
+the viewport, the pads overlap the far left of that band on a small screen, which
+costs nothing: they sit hard against the margins and the bars are only ~320px wide,
+so what they overlap is the empty space beside them.
+
+**Every icon is drawn, never typed.** The steering arrows were `◀`/`▶` and broke on
+mobile for exactly the reason the pause glyph did — a character is only as reliable
+as the font behind it, and the web export on a phone falls back to whatever that
+device ships. A missing glyph renders blank or as a tofu box, so *the control the
+player steers with can simply vanish*, on hardware that cannot be tested from here.
+`Polygon2D` owes nothing to a font and scales exactly with the pad.
+
+**The minimap moves below the player on mobile.** Bottom-left is right on a desktop
+for the §12 reason — map and corridor are read together, so the map belongs near the
+marker. With pads up that corner *is* a thumb, and the map would sit under the hand
+holding the phone: the same argument reaching a different answer because the screen
+now has hands on it. Centred under the marker keeps the short glance and is the one
+part of the bottom edge no thumb occupies. It also has to shrink, and
+`custom_minimum_size` must be cleared to let it — a Control cannot go below its
+minimum, so the offsets are silently ignored otherwise.
+
+The menu row has the same shape of fix — its height is derived from the button count,
 because the literal `180` fitted three buttons by luck and a fourth overflowed it
 outright (the §12 hard-coded-layout-band trap, again).
+
+**`TouchShot` shoots at phone dimensions and must not write the saved preference.**
+A desktop-sized shot cannot show any of the above, since every size above is derived
+from the short edge. And an instrument that flipped the setting through `Settings`
+persisted it to `user://settings.cfg` and left the player's own choice changed — a
+later desktop `Screenshot.gd` run then came back full of thumb pads, which reads
+exactly like a layout regression and is not one. It sets `pads.visible` directly
+instead. **A tool must not write the state it is inspecting.**
 
 ---
 
@@ -1411,7 +1448,7 @@ Six harnesses, each answering a different question:
 | `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, landmark placement. 174 assertions. |
 | `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall- and path-indicator placement, the crash camera, pause, landmark mesh winding, marker sight lines. 61 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, and the final build. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard. 31 assertions. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, and the pads scale to a phone screen. 34 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 21 assertions. |
 | `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 39 assertions. |
 
@@ -1436,7 +1473,8 @@ audio driver and so passed a system that was silent in play; only a real device
 shows the fade actually arriving.
 
 `TouchShot.gd` is the picture half of the mobile-controls work: it shoots the menu and
-the pads in play. Pad layout is precisely what no headless harness can check, and it
+the pads in play, **at phone dimensions** (844x390), since every mobile size is derived
+from the short screen edge and a desktop-sized shot shows none of it. Pad layout is precisely what no headless harness can check, and it
 caught all three HUD collisions above.
 
 `Screenshot.gd` is not a test — it runs the real game with rendering and saves frames to

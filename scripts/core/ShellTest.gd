@@ -142,6 +142,37 @@ func _go() -> void:
 				int(seen["turns"]) == 2 and int(seen["reverses"]) == 1,
 				"turns %d reverses %d" % [seen["turns"], seen["reverses"]])
 
+		# Pads must SCALE with the screen, not sit at a fixed pixel size.
+		#
+		# They were a screen fraction capped at a pixel maximum, and the cap won
+		# on a phone -- which reports a large pixel viewport -- so the smallest
+		# screen got the same small pad as a desktop window. A pixel is a count,
+		# not a size. Driving _layout at two viewport sizes is the only way to
+		# catch that without a device.
+		if pads != null:
+			pads.size = Vector2(1600, 900)
+			pads._layout()
+			var big: Vector2 = pads._pads["left"].size
+
+			pads.size = Vector2(844, 390)
+			pads._layout()
+			var small: Vector2 = pads._pads["left"].size
+
+			check("pads scale with the screen", big.y > small.y,
+				"900px screen -> %.0f, 390px screen -> %.0f" % [big.y, small.y])
+
+			# And they must stay ON the screen at phone size, which the fixed
+			# 120px HUD band broke: it is nearly a third of a 390px display.
+			var pad_bottom: float = pads._pads["left"].position.y + small.y
+			check("pads fit a phone screen", pad_bottom <= 390.0,
+				"bottom edge at %.0f of 390" % pad_bottom)
+
+			# The icons are drawn, never typed -- a font fallback on an unknown
+			# device can render a glyph as blank or tofu, and these are the
+			# controls the player steers with.
+			check("the arrows are drawn, not lettered",
+				pads._pads["left"].get_node_or_null("icon/arrow") != null)
+
 		# The chord is MOBILE ONLY. The keyboard keeps its own reverse key and
 		# must not acquire a left+right gesture along the way -- pressing both
 		# arrows at once on a desktop is an ordinary thing to do by accident,

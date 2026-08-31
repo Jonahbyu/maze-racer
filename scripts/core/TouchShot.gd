@@ -13,6 +13,7 @@ var _shell: Node
 var _frame := 0
 var _stage := 0
 var _last_cell := Vector2i(-999, -999)
+var _want_minimap := false
 
 
 func _init() -> void:
@@ -20,13 +21,20 @@ func _init() -> void:
 
 
 func _setup() -> void:
-	var settings := root.get_node_or_null("/root/Settings")
-	if settings != null:
-		settings.set_touch_controls(true)
+	# Shoot at PHONE dimensions, not the desktop default.
+	#
+	# A 1600x900 window cannot show the thing this instrument exists to check:
+	# the pads are sized off the shorter screen edge, so a desktop shot says
+	# nothing about whether a thumb can hit them on a handset. 844x390 is an
+	# ordinary phone in landscape.
+	var window := root.get_window()
+	if window != null:
+		window.size = Vector2i(844, 390)
 
 	# Through the real shell, so the menu shot is the menu a player sees.
 	_shell = load("res://scenes/Main.tscn").instantiate()
 	root.add_child(_shell)
+	_want_minimap = true
 	process_frame.connect(_on_frame)
 
 
@@ -38,6 +46,22 @@ func _on_frame() -> void:
 			if _frame >= 30:
 				_capture("touch_01_menu")
 				_shell.start_game()
+				var g = _shell._current
+				# The minimap only draws once its line has a rank, and its
+				# placement is one of the things these shots exist to check.
+				if _want_minimap:
+					g.upgrades.take(Upgrades.Line.MINIMAP)
+				# Show the pads WITHOUT touching the saved preference.
+				#
+				# Going through Settings would persist to user://settings.cfg
+				# and leave the player's own choice flipped -- a later desktop
+				# Screenshot.gd run then came back full of thumb pads, which
+				# reads exactly like a layout regression and is not one. An
+				# instrument must not write the state it is inspecting.
+				var pads = g.get_node_or_null("UI/UIRoot/TouchControls")
+				if pads != null:
+					pads.visible = true
+					g._place_minimap()
 				_frame = 0
 				_stage = 1
 		1:
@@ -90,3 +114,4 @@ func _capture(label: String) -> void:
 		print("saved %s" % path)
 	else:
 		printerr("FAILED to save %s (error %d)" % [path, err])
+
