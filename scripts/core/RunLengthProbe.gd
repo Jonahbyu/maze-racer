@@ -21,7 +21,8 @@ func _init() -> void:
 			var maze := Maze.new()
 			maze.generate(cfg["width"], cfg["height"], 1000 + s,
 				cfg["braid"], cfg["dead_ends"], cfg["gates"],
-				cfg.get("straighten", 0.0), cfg.get("shallow_keep", 1.0))
+				cfg.get("straighten", 0.0), cfg.get("shallow_keep", 1.0), 0.0,
+				cfg.get("zigzag_keep", 1.0))
 
 			for r in _runs(maze):
 				total += r

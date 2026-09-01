@@ -100,7 +100,8 @@ var _straighten := 0.0
 
 func generate(p_width: int, p_height: int, p_seed: int, braid_factor: float,
 		dead_end_target: float, gate_count: int, straighten: float = 0.0,
-		shallow_keep: float = 1.0, landmark_density: float = 0.0) -> void:
+		shallow_keep: float = 1.0, landmark_density: float = 0.0,
+		zigzag_keep: float = 1.0) -> void:
 	width = p_width
 	height = p_height
 	seed_value = p_seed
@@ -121,6 +122,10 @@ func generate(p_width: int, p_height: int, p_seed: int, braid_factor: float,
 	_braid(braid_factor)
 	_cull_shallow_dead_ends(shallow_keep)
 	_tune_dead_ends(dead_end_target)
+	# After both dead-end stages, because those open walls and so create new
+	# corners; before the straight-run cap, because this one opens walls too and
+	# the cap has to be the last word on corridor length.
+	_cull_zigzags(zigzag_keep)
 	# LAST of the wall-knocking stages. Both dead-end passes open walls, which
 	# can merge corridors into a new over-long run, so capping before them
 	# leaves runs over the limit in the finished maze (measured: no effect at
@@ -352,6 +357,103 @@ func _cull_shallow_dead_ends(keep: float) -> void:
 				options.append(dir)
 		if not options.is_empty():
 			_knock_wall(cell, options[_rng.randi_range(0, options.size() - 1)])
+
+
+# Thin out CORNER-INTO-CORNER zigzags: a forced 90 whose exit leads straight
+# into another forced 90, with no cell in between to read the second one.
+#
+# A corner is a cell with exactly two perpendicular openings -- you come in one
+# side and the only way on is a turn. It is not a junction: a junction offers a
+# CHOICE, which is the decision the game is built on, while a corner offers only
+# an obligation. Chaining two obligations is the shape being thinned here.
+#
+# It is a timing problem, not a routing one, and it gets worse exactly as the
+# ramp climbs. At 6x a cell passes in 167ms, so a zigzag demands two commits
+# inside a third of a second with nothing straight between them to read the
+# second from. That is the one thing CLAUDE.md section 11.3 forbids: the turn IS
+# visible on the grid, but the player is still inside the freeze from the first
+# turn when the second arrives. Long staircases are worse still -- measured, the
+# unbiased mazes carried 300-500 chains of three or more per maze.
+#
+# The fix OPENS a wall rather than closing one, like every other stage in this
+# pipeline: knocking the wall ahead of the second corner turns the forced turn
+# into an optional one. The player may still take it; they are no longer made
+# to. That is the important distinction -- this pass removes obligations, not
+# corners, so the maze keeps its shape and loses only the coercion.
+#
+# `keep` is the fraction of zigzags left alone, and like `shallow_keep` it is
+# NOT the share that survives: opening one wall can resolve a neighbouring
+# zigzag at the same time, and it can create a fresh corner elsewhere. Measure
+# with ZigzagProbe, never assume the number is the outcome.
+func _cull_zigzags(keep: float) -> void:
+	if keep >= 1.0:
+		return
+
+	var zigzags: Array[Vector2i] = []
+	for y in height:
+		for x in width:
+			var cell := Vector2i(x, y)
+			if _is_corner(cell) and _leads_into_corner(cell):
+				zigzags.append(cell)
+
+	_shuffle(zigzags)
+
+	var to_remove := int(zigzags.size() * (1.0 - clampf(keep, 0.0, 1.0)))
+	var removed := 0
+	for cell in zigzags:
+		if removed >= to_remove:
+			break
+		# Re-check: an earlier removal may have opened this cell or its
+		# neighbour already, in which case there is nothing left to fix here.
+		if not (_is_corner(cell) and _leads_into_corner(cell)):
+			continue
+		if _relieve_corner(cell):
+			removed += 1
+
+
+# Exactly two openings, perpendicular. A straight-through corridor and a
+# junction are both excluded.
+func _is_corner(cell: Vector2i) -> bool:
+	var dirs := open_directions(cell)
+	if dirs.size() != 2:
+		return false
+	return int(dirs[0]) != int(OPPOSITE[dirs[1]])
+
+
+func _leads_into_corner(cell: Vector2i) -> bool:
+	for dir in open_directions(cell):
+		if _is_corner(cell + DIR_VECTORS[dir]):
+			return true
+	return false
+
+
+# Give a corner a third opening, so arriving from either side leaves a straight
+# option instead of a mandatory turn.
+#
+# Prefers the wall OPPOSITE an existing opening, since that is what actually
+# relieves the obligation -- opening the fourth side of a corner adds a route
+# but still leaves both approaches forced to turn. Falls back to any available
+# wall, and returns false when the cell is boxed in by the boundary, which the
+# caller must not count as progress.
+func _relieve_corner(cell: Vector2i) -> bool:
+	var straight: Array = []
+	var other: Array = []
+
+	for dir in DIRS:
+		var neighbour: Vector2i = cell + DIR_VECTORS[dir]
+		if not _in_bounds(neighbour) or not _has_wall(cell, dir):
+			continue
+		if is_open(cell, OPPOSITE[dir]):
+			straight.append(dir)
+		else:
+			other.append(dir)
+
+	var options: Array = straight if not straight.is_empty() else other
+	if options.is_empty():
+		return false
+
+	_knock_wall(cell, options[_rng.randi_range(0, options.size() - 1)])
+	return true
 
 
 # Nudge dead-end density toward a target. Dead ends are the punishment for a

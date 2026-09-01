@@ -41,7 +41,7 @@ func _init() -> void:
 			maze.generate(cfg["width"], cfg["height"], 1000 + s,
 				cfg["braid"], cfg["dead_ends"], cfg["gates"],
 				cfg.get("straighten", 0.0), cfg.get("shallow_keep", 1.0),
-				density)
+				density, cfg.get("zigzag_keep", 1.0))
 
 			cells += maze.width * maze.height
 			for y in maze.height:
