@@ -406,26 +406,43 @@ func _add_floor_strip(st: SurfaceTool, from: Vector3, to: Vector3) -> void:
 func _build_gates() -> void:
 	for i in _maze.gates.size():
 		var gate: Vector2i = _maze.gates[i]
-		var marker := _make_marker(gate, Tuning.NEON_GATE, 0.9)
+		var marker := _make_marker(gate, Tuning.NEON_GATE, Tuning.GATE_MARKER_HEIGHT)
 		marker.name = "Gate%d" % i
 		add_child(marker)
 
 
 func _build_exit() -> void:
-	var marker := _make_marker(_maze.exit_cell, Tuning.NEON_EXIT, 1.6)
+	var marker := _make_marker(_maze.exit_cell, Tuning.NEON_EXIT, Tuning.EXIT_MARKER_HEIGHT)
 	marker.name = "Exit"
 	add_child(marker)
 
 
 # A glowing pillar marking a cell. Deliberately tall: at speed the player needs
 # to see a gate coming from several corridors away.
+#
+# TWO CROSSED SLABS, not one. A single flat slab is nearly invisible edge-on, so
+# a gate approached down a perpendicular corridor showed as a thin vertical
+# sliver -- which is exactly the approach a player most needs the warning on,
+# since a gate straight ahead is already obvious. Crossing them means there is
+# always a broad face turned toward the camera whatever direction it is seen
+# from, at a cost of one extra quad-set per marker.
+#
+# The whole marker rises ABOVE the wall line (see GATE_MARKER_HEIGHT). The part
+# below the walls is what the player drives through; the part above is the only
+# part visible from anywhere else, so it has to be tall enough to clear and wide
+# enough to read once it does.
 func _make_marker(cell: Vector2i, colour: Color, height_scale: float) -> MeshInstance3D:
-	var box := BoxMesh.new()
-	box.size = Vector3(
-		Tuning.CELL_SIZE * 0.75,
-		Tuning.WALL_HEIGHT * height_scale,
-		Tuning.CELL_SIZE * 0.12
-	)
+	var height := Tuning.WALL_HEIGHT * height_scale
+	var wide := Tuning.CELL_SIZE * 0.75
+	var thin := Tuning.CELL_SIZE * 0.14
+
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	_add_marker_slab(st, Vector3(wide, height, thin))
+	_add_marker_slab(st, Vector3(thin, height, wide))
+
+	st.generate_normals()
 
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = colour
@@ -435,16 +452,42 @@ func _make_marker(cell: Vector2i, colour: Color, height_scale: float) -> MeshIns
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.albedo_color.a = 0.55
+	# Seen from both sides: the player passes THROUGH a gate, so the far face has
+	# to draw on the way in and the near face on the way out.
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 
 	var instance := MeshInstance3D.new()
-	instance.mesh = box
+	instance.mesh = st.commit()
 	instance.material_override = mat
 	instance.position = Vector3(
 		cell.x * Tuning.CELL_SIZE,
-		Tuning.WALL_HEIGHT * height_scale * 0.5,
+		0.0,
 		cell.y * Tuning.CELL_SIZE
 	)
 	return instance
+
+
+# One box of the crossed pair, sitting on the floor and rising to `size.y`.
+func _add_marker_slab(st: SurfaceTool, size: Vector3) -> void:
+	var hx := size.x * 0.5
+	var hz := size.z * 0.5
+	var lo := Vector3(-hx, 0.0, -hz)
+	var hi := Vector3(hx, size.y, hz)
+
+	var p := [
+		Vector3(lo.x, lo.y, lo.z), Vector3(hi.x, lo.y, lo.z),
+		Vector3(hi.x, lo.y, hi.z), Vector3(lo.x, lo.y, hi.z),
+		Vector3(lo.x, hi.y, lo.z), Vector3(hi.x, hi.y, lo.z),
+		Vector3(hi.x, hi.y, hi.z), Vector3(lo.x, hi.y, hi.z),
+	]
+
+	# Outward-wound, same convention as the landmark boxes.
+	_add_quad(st, p[7], p[6], p[5], p[4])
+	_add_quad(st, p[0], p[1], p[2], p[3])
+	_add_quad(st, p[0], p[4], p[5], p[1])
+	_add_quad(st, p[2], p[6], p[7], p[3])
+	_add_quad(st, p[3], p[7], p[4], p[0])
+	_add_quad(st, p[1], p[5], p[6], p[2])
 
 
 # Remove a gate marker once its gate is taken, so the corridor reads as cleared.
