@@ -47,7 +47,16 @@ func _run() -> void:
 	check("maze generated", game.maze != null)
 	check("racer created", game.racer != null)
 	check("upgrades created", game.upgrades != null)
-	check("starts racing", game.phase == 0)
+	# The run now OPENS on a loadout pick rather than straight into motion
+	# (CLAUDE.md section 7): every maze begins by asking what you want to be for
+	# it. So the boot state is UPGRADING, and racing starts once a card is taken.
+	check("starts on the loadout pick", game.phase == 1)
+	check("loadout blurs the minimap", game._minimap.blurred)
+	var loadout: Array = game._upgrade_screen._lines
+	check("loadout offered cards", loadout.size() > 0, "got %d" % loadout.size())
+	if loadout.size() > 0:
+		game._on_upgrade_chosen(loadout[0])
+	check("racing begins after the loadout pick", game.phase == 0)
 
 	if game.maze != null:
 		check("maze is maze 1 size", game.maze.width == 60 and game.maze.height == 60,
@@ -116,6 +125,7 @@ func _run() -> void:
 	game._on_exit_reached()
 	check("exit advances phase", game.phase == 2 or game.phase == 3)
 
+	_check_flying_vision(game)
 	_check_wall_winding()
 	_check_path_indicator(game)
 	_check_wall_indicator(game)
@@ -609,6 +619,11 @@ func _check_crash_camera(game) -> void:
 	racer.cell = target
 	racer.facing = blocked
 	racer.progress = 0.0
+	# This check is about the CRASH path, and by now the harness has taken every
+	# upgrade line -- including Wall Smasher, which correctly breaks through a
+	# wall instead of crashing into it. Hold it on cooldown so the racer is
+	# actually testing what this check is named for.
+	racer.legendary_cooldown = 999.0
 
 	var before_height: float = game._camera.position.y
 	var crashed := false
@@ -818,3 +833,67 @@ func _check_landmark_meshes(game) -> void:
 	# They must not reach so high they read as a ceiling over the corridor.
 	check("landmarks stay under a sane ceiling", tallest < Tuning.WALL_HEIGHT * 8.0,
 		"tallest %.2f" % tallest)
+
+
+# Flying Vision: the double-tap gesture, the held world, the raised camera, and
+# the return to racing (CLAUDE.md section 7).
+#
+# The camera lift is the part no headless rule check can see, so what is
+# asserted here is the CONTRACT: the eye goes above the wall line, which is the
+# one place section 12's height cap is deliberately suspended.
+func _check_flying_vision(game) -> void:
+	game.upgrades.take(Upgrades.Line.FLYING_VISION)
+	game.phase = 0
+	game.racer.state = Racer.State.RUNNING
+	game.racer.legendary_cooldown = 0.0
+	game._vision_time = 0.0
+	game._vision_countdown = 0.0
+	game._last_reverse_time = -999.0
+
+	var elapsed_before: float = game.elapsed
+	var maze_time_before: float = game.score.maze_time
+
+	# A single tap must NOT trigger it -- that is an ordinary 180.
+	game._on_reverse_input()
+	check("a single reverse does not trigger the vision", game.phase == 0)
+
+	# Two in quick succession do. elapsed does not advance between these calls,
+	# so they fall inside the double-tap window by construction.
+	game._on_reverse_input()
+	check("a double-tap starts flying vision", game.phase == 6,
+		"phase %d" % game.phase)
+	check("the vision blurs the minimap", game._minimap.blurred)
+
+	var height_before: float = game._camera.position.y
+	for i in 30:
+		game._process(1.0 / 60.0)
+	check("the camera rises above the wall line",
+		game._camera.position.y > Tuning.WALL_HEIGHT,
+		"%.1f vs wall %.1f" % [game._camera.position.y, Tuning.WALL_HEIGHT])
+	check("the camera rose from where it was",
+		game._camera.position.y > height_before)
+
+	# Both clocks are held: this is a genuine reprieve, deliberately free.
+	check("the run timer is held", absf(game.elapsed - elapsed_before) < 0.001,
+		"%.4f vs %.4f" % [game.elapsed, elapsed_before])
+	check("the maze budget is held",
+		absf(game.score.maze_time - maze_time_before) < 0.001,
+		"%.4f vs %.4f" % [game.score.maze_time, maze_time_before])
+
+	# It ends on its own and hands control back.
+	for i in 1200:
+		game._process(1.0 / 60.0)
+		if game.phase == 0:
+			break
+	check("the vision ends and racing resumes", game.phase == 0,
+		"phase %d" % game.phase)
+	check("the minimap unblurs afterwards", not game._minimap.blurred)
+
+	# A parked racer must never lose the ability to a recovery mash.
+	game.racer.state = Racer.State.PARKED
+	game.racer.legendary_cooldown = 0.0
+	game._last_reverse_time = -999.0
+	game._on_reverse_input()
+	game._on_reverse_input()
+	check("a parked racer cannot trigger the vision", game.phase == 0)
+	game.racer.state = Racer.State.RUNNING

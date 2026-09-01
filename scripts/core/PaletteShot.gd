@@ -63,6 +63,17 @@ func _on_frame() -> void:
 # start facing a wall.
 func _autopilot() -> void:
 	var racer: Racer = _game.racer
+	# These tools are INSTRUMENTS, not players: a card screen up is a stall, not
+	# a decision. Take whatever is offered so the shot happens. Covers the
+	# maze-start loadout as well as a gate pick.
+	if int(_game.phase) == 1:
+		var _offered: Array = _game._upgrade_screen._lines
+		if _offered.is_empty():
+			_game._on_upgrade_chosen(-1)
+		else:
+			_game._on_upgrade_chosen(_offered[0])
+		return
+
 	if racer == null or _game.phase != 0:
 		return
 

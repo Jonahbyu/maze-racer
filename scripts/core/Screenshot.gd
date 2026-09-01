@@ -65,6 +65,17 @@ func _on_frame() -> void:
 # and gate paths with the renderer attached.
 func _autopilot() -> void:
 	var racer: Racer = _game.racer
+
+	# Take any card that is up -- the maze-start loadout pick as well as a gate.
+	# Without this the tool stalls forever on the screen the run now opens with.
+	if _game.phase == 1:
+		var offered: Array = _game._upgrade_screen._lines
+		if offered.is_empty():
+			_game._on_upgrade_chosen(-1)
+		else:
+			_game._on_upgrade_chosen(offered[0])
+		return
+
 	if racer == null or _game.phase != 0:
 		return
 

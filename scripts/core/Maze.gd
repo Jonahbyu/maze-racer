@@ -861,6 +861,50 @@ func loop_count() -> int:
 
 # --- Mutation ----------------------------------------------------------------
 
+# Permanently remove a wall and rebuild everything that routes through it.
+#
+# Wall Smasher's mutation (CLAUDE.md section 7). The distance field, the solve
+# path and anything reading them -- Path Indicator, Gate Compass, Golden Trail,
+# the minimap -- must all agree that the hole is there, or the indicator points
+# the player around a wall that no longer exists.
+#
+# Returns false at the maze boundary, which is the one wall that must never
+# break: there is no cell beyond it, so every downstream query would return
+# garbage. The caller turns the player around instead.
+func smash_wall(cell: Vector2i, dir: int) -> bool:
+	if not _in_bounds(cell):
+		return false
+	var neighbour: Vector2i = cell + DIR_VECTORS[dir]
+	if not _in_bounds(neighbour):
+		return false
+	if not _has_wall(cell, dir):
+		return false
+
+	_knock_wall(cell, dir)
+	# A plain BFS over the grid, cheap at a maximum of once per 20s.
+	_build_distance_field()
+	_rebuild_solve_path()
+	return true
+
+
+# Re-walk the solve path from the start by descending the distance field.
+#
+# The canonical path is baked at generation, so a smashed wall would otherwise
+# leave it describing a route around a hole the player just made.
+func _rebuild_solve_path() -> void:
+	solve_path.clear()
+	var current := start_cell
+	var guard := width * height
+	while current != exit_cell and guard > 0:
+		solve_path.append(current)
+		var step := best_direction(current)
+		if step == -1:
+			return
+		current += DIR_VECTORS[step]
+		guard -= 1
+	solve_path.append(exit_cell)
+
+
 func _knock_wall(cell: Vector2i, dir: int) -> void:
 	var neighbour: Vector2i = cell + DIR_VECTORS[dir]
 	if not _in_bounds(neighbour):

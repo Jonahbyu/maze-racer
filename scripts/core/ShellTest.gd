@@ -56,6 +56,13 @@ func _go() -> void:
 	check("PLAY starts a game", int(shell.mode) == Shell.Mode.GAME)
 	var game = shell._current
 	check("the game has a racer", game != null and game.get("racer") != null)
+	# A game opens on the maze-1 loadout pick (CLAUDE.md section 7), so PLAY
+	# lands in UPGRADING and racing starts once a card is taken. Every input
+	# check below has to come AFTER that -- the pads and the keyboard are both
+	# correctly inert during a pick, which is the behaviour section 9d requires.
+	check("PLAY opens the loadout pick",
+		game != null and int(game.get("phase")) == 1)
+	_take_loadout(game)
 	check("the game is racing", game != null and int(game.get("phase")) == 0)
 	check("a normal run is NOT trailer-seeded",
 		game != null and int(game.get("run_seed")) != TrailerDirector.TRAILER_SEED,
@@ -81,6 +88,9 @@ func _go() -> void:
 		# Into a game, and the pads must agree with what the menu was left on.
 		shell.start_game()
 		var g = shell._current
+		# Clear the loadout pick before driving any input: steering is gated off
+		# during a pick, for both the pads and the keyboard.
+		_take_loadout(g)
 		var pads = g.get_node_or_null("UI/UIRoot/TouchControls")
 		check("the game builds touch controls", pads != null)
 		check("the pads honour the setting",
@@ -229,3 +239,17 @@ func _finish() -> void:
 	print("passed: %d   failed: %d" % [_passed, _failed])
 	print("RESULT: %s" % ("PASS" if _failed == 0 else "FAIL"))
 	quit(1 if _failed > 0 else 0)
+
+
+# Dismiss a maze-start loadout pick by taking the first card offered.
+#
+# Harnesses that drive input have to clear this first: a game boots into the
+# pick, and steering is deliberately gated off while it is up.
+func _take_loadout(game) -> void:
+	if game == null or int(game.get("phase")) != 1:
+		return
+	var offered: Array = game._upgrade_screen._lines
+	if offered.is_empty():
+		game._on_upgrade_chosen(-1)
+	else:
+		game._on_upgrade_chosen(offered[0])

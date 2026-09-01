@@ -16,6 +16,9 @@ signal crashed()
 signal unstuck()
 signal gate_entered(index: int)
 signal exit_reached()
+signal died()              # HP reached 0 with Tuning.DEATH_ENABLED
+signal wall_smashed(cell: Vector2i, direction: int)
+signal legendary_ready()   # a legendary cooldown finished
 
 enum State { RUNNING, PARKED }
 
@@ -62,6 +65,15 @@ var pending_buffer: float = 0.0
 # True while the player is pressed into a wall and the barrier is draining.
 var scraping := false
 
+# Whether the turn that just resolved came OUT of a scrape.
+#
+# The scrape-escape path clears `scraping` before pivoting, so a listener on
+# `turned` cannot tell a clean corner from a wall escape by reading `scraping`
+# -- it is already false by then. Recorded here at the moment of the turn so the
+# score can price the two differently (CLAUDE.md section 8b) without the rules
+# layer knowing anything about scoring.
+var last_turn_scraped := false
+
 # Set when a turn resolved instantly inside the current cell, cleared on entering
 # a new one. An immediate turn CONSUMES the cell: a second press before the next
 # boundary must arm the buffer instead of firing again. Without this, two fast
@@ -93,15 +105,47 @@ var _gate_cells: Array[Vector2i] = []
 
 var finished := false
 
+# True once HP has hit 0 with death enabled. The run is over; Game reads this
+# and stops the simulation.
+var dead := false
 
-func setup(p_maze: Maze, p_upgrades: Upgrades) -> void:
+# Which maze of the run this racer is driving, 0-based. Wall damage scales with
+# it (Tuning.WALL_DAMAGE_PER_MAZE), so the racer has to know -- but nothing else
+# reads it, and it is NOT part of the build (see Upgrades.wall_damage).
+var maze_index := 0
+
+# Fractional HP carried between frames. HP is an integer to the player and on
+# the HUD, but Repair Field restores well under one point per frame, so
+# truncating every frame would regenerate exactly nothing.
+var _hp_fraction := 0.0
+
+# --- Legendaries (CLAUDE.md section 7) ---------------------------------------
+
+# Seconds until the held legendary can fire again. Counts down on clean travel
+# the same way everything else does.
+var legendary_cooldown := 0.0
+
+# Seconds left of an Auto-Steer burst; 0.0 when not running. While positive the
+# racer drives itself down the distance field at doubled speed and is immune to
+# wall contact.
+var auto_steer := 0.0
+
+
+func setup(p_maze: Maze, p_upgrades: Upgrades, p_maze_index: int = 0) -> void:
 	maze = p_maze
 	upgrades = p_upgrades
+	maze_index = p_maze_index
 
 	cell = maze.start_cell
 	progress = 0.0
 	state = State.RUNNING
 	finished = false
+	dead = false
+	_hp_fraction = 0.0
+	# A legendary starts ready: the cooldown is a limit on repeat use, not an
+	# entry fee on the maze.
+	legendary_cooldown = 0.0
+	auto_steer = 0.0
 
 	# Face whichever way is actually open from the start cell, preferring the
 	# route toward the exit so the player never begins staring at a wall.
@@ -190,16 +234,22 @@ func request_reverse() -> void:
 # --- Simulation --------------------------------------------------------------
 
 func step(delta: float) -> void:
-	if finished:
+	if finished or dead:
 		return
 
 	if state == State.PARKED:
 		# Parked: no ramp, no movement. The barrier holds until un-stick so the
 		# player is not punished twice for sitting where the game put them.
+		#
+		# No HP regen either: Repair Field pays for CLEAN TRAVEL, and a parked
+		# racer is doing the opposite. Regenerating here would let a player farm
+		# HP by sitting in the crash they just caused.
 		return
 
 	_advance_speed(delta)
 	_recover_lane(delta)
+	_regen_hp(delta)
+	_tick_legendary(delta)
 
 	# Held on a turn. The speed ramp above still runs -- the freeze is a pause in
 	# POSITION, not in the systemic pressure section 3 describes, and stopping
@@ -222,12 +272,83 @@ func step(delta: float) -> void:
 		if delta <= 0.0:
 			return
 
-	var moved := speed * Tuning.BASE_CELL_RATE * delta
+	# Auto-Steer drives at a multiple of the player's own speed, so it stays
+	# legible: a fixed rate would feel slow to a 6x racer and violent to a 1x one.
+	var rate := speed
+	if auto_steer > 0.0:
+		rate *= Tuning.AUTOSTEER_SPEED_MULTIPLIER
+	var moved := rate * Tuning.BASE_CELL_RATE * delta
 
 	if maze.is_open(cell, facing):
 		_travel(moved, delta)
+	elif auto_steer > 0.0:
+		# Invulnerable while the burst runs: the router takes the optimal turn
+		# every time so this should be unreachable, but at doubled speed a single
+		# mistimed frame would be brutal, and an escape button that can kill you
+		# is not one (CLAUDE.md section 7). Re-aim rather than grind.
+		var out := maze.best_direction(cell)
+		if out != -1 and out != facing:
+			facing = out
 	else:
 		_press_into_wall(moved, delta)
+
+
+# Legendary cooldowns and any Auto-Steer burst in flight.
+#
+# The cooldown runs on the same clean-travel clock as everything else, so a
+# parked racer is not quietly recharging its ability while it sits.
+func _tick_legendary(delta: float) -> void:
+	if legendary_cooldown > 0.0:
+		var was_cooling := legendary_cooldown > 0.0
+		legendary_cooldown = maxf(0.0, legendary_cooldown - delta)
+		if was_cooling and legendary_cooldown <= 0.0:
+			legendary_ready.emit()
+
+	if auto_steer > 0.0:
+		auto_steer = maxf(0.0, auto_steer - delta)
+		# Steer down the distance field. Requested rather than forced, so the
+		# turn goes through the ordinary resolution path and pays the ordinary
+		# turn cost -- the burst is an autopilot, not a separate movement mode.
+		var want := maze.best_direction(cell)
+		if want != -1 and want != facing and pending_turn == -1:
+			var rel := (want - facing + 4) % 4
+			if rel == 1:
+				request_turn(1)
+			elif rel == 3:
+				request_turn(-1)
+
+
+# Start an Auto-Steer burst. Returns false if the legendary is not held or is
+# still cooling.
+func start_auto_steer() -> bool:
+	if not upgrades.has_auto_steer() or legendary_cooldown > 0.0:
+		return false
+	if state == State.PARKED or dead:
+		return false
+	auto_steer = upgrades.auto_steer_duration()
+	legendary_cooldown = upgrades.legendary_cooldown()
+	return true
+
+
+# Repair Field: HP back on clean travel only.
+#
+# Accumulated as a float and spent in whole points, because the regen rates are
+# well under one HP per frame -- truncating each frame would restore precisely
+# nothing at every rank. Scraping does not count as clean: the barrier is
+# draining, which is the moment the player is closest to taking the damage this
+# would be undoing.
+func _regen_hp(delta: float) -> void:
+	if hp >= Tuning.MAX_HP or scraping:
+		return
+	var rate := upgrades.hp_regen()
+	if rate <= 0.0:
+		return
+
+	_hp_fraction += rate * delta
+	if _hp_fraction >= 1.0:
+		var whole := int(_hp_fraction)
+		_hp_fraction -= float(whole)
+		hp = mini(Tuning.MAX_HP, hp + whole)
 
 
 # Speed accrues with time-not-crashing. Recovery from a crash climbs at 2.5x
@@ -305,6 +426,11 @@ func _travel(moved: float, delta: float) -> void:
 # Pressed into a wall. The barrier drains; turning out before it empties costs
 # nothing at all, which is the skill expression (CLAUDE.md section 5.1).
 func _press_into_wall(_moved: float, delta: float) -> void:
+	# Auto-Steer is invulnerable, so wall contact cannot even begin to drain.
+	# Reached only if the router had nowhere better to aim.
+	if auto_steer > 0.0:
+		return
+
 	progress = 1.0
 
 	if not scraping:
@@ -327,6 +453,7 @@ func _press_into_wall(_moved: float, delta: float) -> void:
 		# carrying the drawn position through makes the pivot a pure rotation,
 		# which is what section 2 promises a turn always is.
 		progress = 0.0
+		last_turn_scraped = true
 		_turn_into(pending_turn)
 		scraping = false
 		return
@@ -336,7 +463,40 @@ func _press_into_wall(_moved: float, delta: float) -> void:
 
 	barrier -= delta
 	if barrier <= 0.0:
+		# Wall Smasher fires at the moment a crash WOULD have happened, so it is
+		# a save rather than a bypass: the barrier still drained, the player
+		# still felt the scrape, and the ability turns the ending into a
+		# breakthrough (CLAUDE.md section 7).
+		if _try_smash():
+			return
 		_crash()
+
+
+# Wall Smasher. Returns true if the wall gave way (or the boundary turned the
+# player around), meaning no crash happens.
+func _try_smash() -> bool:
+	if not upgrades.has_wall_smasher() or legendary_cooldown > 0.0:
+		return false
+
+	legendary_cooldown = upgrades.legendary_cooldown()
+
+	if maze.smash_wall(cell, facing):
+		# Through the hole with speed intact. The barrier refills because the
+		# scrape that led here is over and the player is back in open corridor;
+		# leaving it empty would drop them straight into a second crash.
+		barrier = upgrades.barrier_capacity()
+		scraping = false
+		progress = 0.0
+		wall_smashed.emit(cell, facing)
+		return true
+
+	# The maze boundary: nothing to break, so turn around instead. Still costs
+	# the cooldown -- the ability fired, it simply met the one wall that cannot
+	# go (CLAUDE.md section 7).
+	scraping = false
+	barrier = upgrades.barrier_capacity()
+	request_reverse()
+	return true
 
 
 func _crash() -> void:
@@ -345,7 +505,7 @@ func _crash() -> void:
 	state = State.PARKED
 	crash_count += 1
 
-	hp = maxi(0, hp - upgrades.wall_damage())
+	hp = maxi(0, hp - upgrades.wall_damage(maze_index))
 	speed = upgrades.speed_floor()
 	pending_turn = -1
 	pending_buffer = 0.0
@@ -358,6 +518,14 @@ func _crash() -> void:
 	freeze = 0.0
 
 	crashed.emit()
+
+	# Death is checked AFTER crashed.emit(), so the crash still reads as a crash
+	# -- the HUD message, the camera pull-back and the sound all fire normally,
+	# and the death lands on top of it. Emitting death first would leave the
+	# player looking at a stopped racer with no explanation of what hit them.
+	if Tuning.DEATH_ENABLED and hp <= 0:
+		dead = true
+		died.emit()
 
 
 func _unstick() -> void:
@@ -392,7 +560,7 @@ func _consume_buffer(distance: float) -> void:
 		pending_turn = -1
 		pending_buffer = 0.0
 		slowdown_count += 1
-		_apply_speed_cost(Tuning.SLOWDOWN_PENALTY)
+		_apply_speed_cost(upgrades.slowdown_penalty())
 		slowdown.emit()
 
 
@@ -449,6 +617,11 @@ func _may_turn_into(direction: int) -> bool:
 # the distance already covered in this cell still counts against the next
 # boundary.
 func _turn_into(direction: int) -> void:
+	# Anything reaching here that did NOT come from the scrape-escape path above
+	# is a clean corner. The escape path sets the flag immediately before
+	# calling, so this default runs for every ordinary turn.
+	if not scraping:
+		last_turn_scraped = false
 	_kick_lane(direction)
 	# Lock out the corridor being left, so the next press cannot fold straight
 	# back into it. `facing` still points the old way here, so the way back is
@@ -458,7 +631,7 @@ func _turn_into(direction: int) -> void:
 	_turned_in_cell = true
 	pending_turn = -1
 	pending_buffer = 0.0
-	_apply_speed_cost(Tuning.TURN_COST)
+	_apply_speed_cost(upgrades.turn_cost())
 	freeze = upgrades.turn_freeze()
 	turned.emit(facing)
 

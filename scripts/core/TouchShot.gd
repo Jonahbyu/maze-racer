@@ -80,7 +80,20 @@ func _on_frame() -> void:
 
 func _autopilot() -> void:
 	var game = _shell._current
-	if game == null or game.get("racer") == null or int(game.phase) != 0:
+	if game == null:
+		return
+
+	# An instrument, not a player: take whatever card is up rather than stalling
+	# on it. The run opens on a maze-start loadout pick.
+	if int(game.phase) == 1:
+		var offered: Array = game._upgrade_screen._lines
+		if offered.is_empty():
+			game._on_upgrade_chosen(-1)
+		else:
+			game._on_upgrade_chosen(offered[0])
+		return
+
+	if game.get("racer") == null or int(game.phase) != 0:
 		return
 	var racer: Racer = game.racer
 

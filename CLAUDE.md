@@ -326,8 +326,11 @@ The player has a **barrier**: a small regenerating pool that absorbs wall contac
 
 - Moving into a wall **drains the barrier continuously**.
 - **Base capacity: 0.5 seconds** of sustained wall contact.
-- **Regenerates** when not in contact — base 0.25/sec, so a full refill takes 2s of clean
-  travel.
+- **Regenerates** when not in contact — base **0.15/sec**, so a full refill takes ~3.3s of
+  clean travel. It was 0.25, and that was too generous: the pool was effectively always full
+  by the next corridor, so the interesting question — *can I afford this brush?* — never got
+  asked, and consecutive scrapes cost nothing extra. At 0.15 scrapes **compound**, which is
+  what makes Barrier Regen a line worth taking rather than a rounding error.
 - **If the player turns out of the wall before the barrier empties, nothing happens.** No
   damage, no speed loss, no crash. This is the skill expression: a good player brushes
   walls constantly and never pays for it.
@@ -405,14 +408,36 @@ meaningfully cheaper than reversing — the decision the 180 exists to create.
 - The barrier begins regenerating immediately on un-stick.
 ### 5.5 HP
 
-- **100 HP.** Base wall damage is **1**, so the early game is extremely forgiving — 100
-  crashes to die. Intentional: HP is not the early-game pressure, **the timer is.** Every
-  crash costs parked time plus the full speed reset, and that is the real cost.
-- HP exists to become relevant in the late mazes, and to give the deferred hazards (§10) something
-  to bite into.
-- **No death in v1.** HP may reach 0 and the run continues. Wire the death path but leave
-  it behind a disabled flag from Phase 2 onward, so enabling it later is a one-line change
-  rather than a refactor.
+- **100 HP**, and **death is ON**: HP reaching 0 ends the run.
+- **Wall damage scales per maze: 3, 5, 7, 9, 11** (`WALL_DAMAGE` + `WALL_DAMAGE_PER_MAZE`
+  × maze). Against 100 HP that is ~33 crashes on maze 1 and ~9 on maze 5, measured.
+
+**This reverses the original "no death in v1" call, deliberately, and it is a change of genre
+rather than a tuning tweak.** §8 said the timer was the *only* thing the player fights, and
+that is no longer true — a run can now end. Recorded plainly because the rest of these docs
+were written against the old assumption, and anything that reads "there is no death" predates
+this decision.
+
+**The two halves only make sense as a pair.** Damage was a flat 1, which made HP decorative:
+100 crashes to die in a game whose longest run is a few minutes, so the number on the HUD
+never meant anything. §5.5 always intended HP to "become relevant in the late mazes", but a
+flat rate cannot do that — the same damage against a fixed pool is the same pressure
+everywhere. Scaling per maze is what turns HP into an escalation lever alongside size and
+loop density (§8). Equally, death against a flat 1 would essentially never fire, so enabling
+it without the curve would have been a flag with no consequence.
+
+Together they give the two HP lines something real to bite into: **Wall Armor** stops being
+near-useless, and **Repair Field** (§7) becomes the reason to drive clean between crashes
+rather than merely the reason to avoid them.
+
+- Armor subtracts **after** the per-maze scaling, so a rank is worth the same flat point on
+  every maze rather than being multiplied up where damage is already largest.
+- A dead racer is finished: it stops moving, and the run ends where it stands. There is no
+  un-stick, because the racer is already parked from the crash that killed it.
+- Death is checked **after** the crash signal fires, so a fatal crash still reads as a crash
+  — the HUD message, the camera pull-back and the recovery framing all happen normally, and
+  the death lands on top. Emitting death first would leave the player looking at a stopped
+  racer with no account of what hit them.
 
 
 The crash view is three changes working together, and each covers a failure the others
@@ -498,9 +523,11 @@ matter.
 5. **Cull one-cell stubs** — see below. Runs *before* density tuning.
 6. **Tune dead ends** — a dead end is any cell with exactly one open neighbor. Add or
    remove to hit the per-maze target density.
-7. **Cap straight runs** — bound the longest corridor with no turn available. Runs
+7. **Cull zigzags** — thin the corner-into-corner pairs that force two turns back to
+   back. Runs after both dead-end stages, before the straight-run cap.
+8. **Cap straight runs** — bound the longest corridor with no turn available. Runs
    **last**, after every other wall-knocking stage.
-8. **Place landmarks** — decorative structures in sealed pockets, dead ends, and outside
+9. **Place landmarks** — decorative structures in sealed pockets, dead ends, and outside
    the boundary. Runs after everything, on its own RNG stream, and reads nothing the
    rules depend on.
 
@@ -523,6 +550,60 @@ into a new over-long run — capping before them measurably left runs over the l
 finished maze. Measured after (6 seeds each): longest 7–8, **zero** runs over cap.
 
 `RunLengthProbe.gd` is the instrument.
+
+### Forced immediate turns are thinned
+
+A **corner** is a cell with exactly two *perpendicular* openings: you arrive from one side
+and the only way on is a 90. It is not a junction — a junction offers a **choice**, which is
+the decision the whole game is built on, while a corner offers only an **obligation**. A
+**zigzag** is a corner whose exit leads straight into another corner, so the player pays two
+commits back to back with no cell between them to read the second from.
+
+**It is a timing problem, not a routing one, and it worsens exactly as the ramp climbs.** At
+6x a cell passes in 167ms, so a zigzag demands two commits inside a third of a second — and
+the player is still inside the turn freeze (§2) from the first when the second arrives. §11.3
+says every timing demand must be visible before it is demanded; the second corner *is*
+visible, but there is no room left to act on it. Long staircases are worse: measured, the
+unbiased mazes carried **300–500 chains of three or more** forced turns each.
+
+**The cull opens a wall rather than closing one**, like every other stage in the pipeline.
+Knocking the wall ahead of the second corner turns the forced turn into an *optional* one —
+the player may still take it, they are no longer made to. That distinction is the point: the
+pass removes **obligations, not corners**, so the maze keeps its shape and loses only the
+coercion. It prefers the wall opposite an existing opening, since opening a corner's fourth
+side adds a route while leaving both approaches still forced to turn.
+
+It runs **after both dead-end stages** (those open walls and so mint new corners) and
+**before the straight-run cap**, which has to stay the last word on corridor length.
+
+**The knob was mostly inert before this existed, by accident.** Only maze 1 sets
+`straighten`; mazes 2–5 have no entry and fall back to `0.0`, a pure random DFS that turns at
+nearly every cell. So the set *anti-escalated* — maze 2 measured the worst of all five at 57%
+of corners being zigzags, against maze 1's 40%. Measured, 8 seeds each:
+
+| | Maze 1 | Maze 2 | Maze 3 | Maze 4 | Maze 5 |
+|---|---|---|---|---|---|
+| Before | 40% | 57% | 51% | 44% | 40% |
+| After | **12%** | **7%** | **14%** | **20%** | **24%** |
+| 3+ chains before | 103 | 509 | 469 | 359 | 311 |
+| 3+ chains after | 13 | 11 | 31 | 69 | 111 |
+
+The long staircases collapse fastest, which is the right shape — a lone zigzag is a moment of
+pressure, four in a row is unreadable.
+
+`zigzag_keep` is the fraction **kept**, and like `shallow_keep` it is **not** the share that
+survives: one opened wall often resolves several neighbouring zigzags at once, so the response
+is steep and non-linear. At 0.35 the pass wiped out essentially *all* of them. **Set these by
+measuring with `ZigzagProbe`, never by writing the share you want.**
+
+**They still exist, deliberately.** At zero every corridor reads as an escape hatch and the
+maze loses the moments of real pressure the ramp is supposed to create.
+
+**Side effect worth knowing: this raises the equilibrium speed.** §5.3 settles speed where
+ramp-gain equals turn-cost per second, and that formula is linear in the turn ratio — fewer
+forced corners means a lower ratio. Measured on a full `RunTest` autopilot, final speed went
+**4.45x → 5.13x** with solve time roughly unchanged (~273s). If the knob moves again,
+re-derive rather than re-guess.
 
 ### One-cell stubs are a separate knob from dead-end density
 
@@ -617,6 +698,15 @@ and measured 0.19 landmarks per 100 cells in maze 5: a player could cross the bi
 loopiest maze and never meet one, switching the feature off exactly where it is needed
 most. `LandmarkProbe.gd` is the instrument.
 
+**Tuned high, and the late mazes RISE rather than fall.** Measured: 131–187 landmarks per
+maze, with **84–94% of dead ends decorated**. The instinct to thin them out as mazes grow
+is backwards, because the eligible set — sealed pockets and dead ends — does not scale with
+area, so a flat fraction leaves a 100×100 maze sparse per unit of ground actually covered.
+Maze 5 needs the *highest* fraction (0.95) to reach even 1.09 landmarks per 100 cells
+against maze 1's 2.11. The late mazes now sit near the eligible-cell ceiling, which is the
+practical maximum short of putting landmarks in corridors — which the no-collision rule
+forbids.
+
 **Colour is fixed across all mazes**, joining gates, the exit, the player marker and the
 HUD (§8) — a landmark seen in maze 1 and again in maze 3 should read as the same kind of
 object. The six hues sit in the gaps left by everything that already owns a colour: amber→red
@@ -663,22 +753,95 @@ being a *choice* between strategies and started being a scramble to start anythi
 Twenty-four picks was enough to actually max two or three lines and feel the compounding that
 §7 is built around, while still being far short of taking everything.
 
-> **At five mazes that headroom is gone, and this needs a decision.** Forty gates against a
-> tree holding 38 total ranks means a clean run maxes *everything* and the last two picks
-> have nothing left to take — `RunTest` prints a `note:` line when gates exceed capacity, and
-> currently does. That breaks the §11.5 promise that upgrades change *decisions*: if every
-> line ends maxed, the choice was only ever about ordering.
->
-> Deliberately **not** fixed by quietly cutting gates per maze — gates are also the pacing
-> beat and the timer pause, so thinning them changes the rhythm of a maze to solve a problem
-> in the upgrade tree. The honest options are more upgrade lines, higher `max_rank` on the
-> lines that can carry it, or fewer gates on the late mazes; which one is a design call worth
-> making on purpose.
+**That capacity problem is now settled: the tree grew.** Forty gates against a tree holding
+38 total ranks used to mean a clean run maxed *everything*, with the last picks having
+nothing left to take — which broke the §11.5 promise that upgrades change *decisions*, since
+if every line ends maxed the choice was only ever about ordering.
+
+It was deliberately **not** fixed by cutting gates per maze. Gates are also the pacing beat
+and the timer pause, so thinning them would have changed the rhythm of a maze to solve a
+problem in the upgrade tree. Instead the tree was grown on both axes at once — three new
+lines (Cornering, Expiry Grace, Repair Field) and higher `max_rank` on the four lines that
+could carry it — which fixes the shortfall *and* adds real choices rather than just deeper
+stats.
+
+The ledger now runs **45 picks against 48 ranks**: 40 gates plus the five loadout picks
+below, against a tree that can absorb slightly more than a perfect run collects. Measured on
+a full `RunTest` autopilot, the finishing build has genuine gaps in it — Path Indicator 3 and
+Minimap 2 on one seed, Buffer Window 6 and Expiry Grace 1 on another — so the last pick is
+still a decision. `RunTest` prints a `note:` line if that inverts again; it no longer does.
+
+### Every maze opens with a loadout pick
+
+**The start of each maze is a pick, before the racer has covered any ground.** Five per run,
+one per maze, on top of the eight gates.
+
+A maze used to open with whatever build the previous one ended on, so arriving somewhere new
+— which §8 wants to read as *arriving* — came with no decision attached. The player crossed a
+threshold into a new grid size, a new palette and a new braid factor, and their only input
+was to keep driving. A pick on entry means every maze starts by asking what you want to be
+for it, which is when that question is most interesting: the maze's character is on screen
+and none of it has been driven yet.
+
+**It reuses the gate card screen exactly**, with only the title changed — `THE TANGLE —
+CHOOSE YOUR LOADOUT` against `GATE 3 — CHOOSE AN UPGRADE`. The player already knows how to
+read three cards and press 1, 2 or 3; a second interface saying the same thing in a different
+shape would be two things to keep in sync for no gain. The *moment* still reads as distinct,
+because the title names the maze rather than a gate number.
+
+Everything a gate pick does, the loadout does: the timer stops, the minimap blurs, the world
+stays visible behind the cards. The blur matters for the same anti-abuse reason §7 gives —
+a paused zoomed-out map at the mouth of an unexplored maze is the most valuable free solve in
+the game, not the least.
+
+**The maze-name banner gives way to it.** The HUD used to announce the maze name on the same
+frame, which drew the name twice in two sizes, overlapping. The banner is the decoration and
+the title is load-bearing, so the banner is suppressed when a loadout opens.
+
+**The trailer is exempt**, gated on `trailer_seed` — the same flag that already suppresses
+the HUD banner, for the same reason (§9b). The reel calls `_start_maze` five times in thirty
+seconds against pre-built upgrade sets, so a card screen on every cut would bury the reel in
+modal UI it never asked for.
+
+One consequence worth knowing for anything that drives the game: **a run now boots into
+`UPGRADING`, not `RACING`**, and steering is correctly inert until a card is taken. Every
+harness and every shot tool takes the first card offered before driving. `SceneTest` asserts
+the new contract directly — boots on the pick, races once it is taken.
 
 **Why gates rather than distance-travelled:** gates sit on the optimal route, so
 collecting them *is* engagement with the solve. A player who routes well reaches them
 faster and with more clock left. Distance-travelled would reward aimless wandering, which
 is precisely backwards.
+
+### Gates rise above the wall line
+
+The gate marker is **taller than `WALL_HEIGHT`**, so it is visible over the walls from
+several corridors away rather than only once the player is already in its corridor.
+
+It was 0.9× wall height — just *under* the walls — which meant a gate gave no warning at
+all. At a speed where a cell passes in 125ms, "you can see it once you are in the corridor
+with it" is not a warning. Seeing one coming is the entire reason a gate is a physical
+object in the world instead of a HUD readout: it sits on the solve path, it pauses the
+timer, and it is the thing the player is routing *toward*.
+
+This is the same argument the skyline landmark tier rests on. The camera is capped below
+`WALL_HEIGHT` on purpose (§12), so **height is the only way anything becomes visible from
+the next corridor over** — raising the camera instead would flatten the maze into a floor
+plan.
+
+**The exit stays taller than a gate** (2.6× vs 1.85×). Now that both clear the walls,
+height is what separates them at distance: a gate is a waypoint, the exit ends the maze,
+and mistaking one for the other at speed is a real routing error. Colour separates them up
+close (amber-yellow vs white).
+
+**The marker is two crossed slabs, not one.** A single flat slab is nearly invisible
+edge-on, so a gate approached down a *perpendicular* corridor showed as a thin vertical
+sliver — which is exactly the approach that most needs the warning, since a gate straight
+ahead is already obvious. Crossing them guarantees a broad face toward the camera from any
+angle.
+
+`GateShot.gd` is the check: it shoots from 2.5–6 cells out, because the question is not
+"is there a gate here" but "can I see it coming".
 
 ### Gate behavior
 
@@ -710,7 +873,22 @@ meta-progression (§10).
 | **Gate Compass** | Points toward the next gate | A soft directional hint — weaker than Path Indicator, but always on |
 | **Snap Turn** | Shortens the post-turn freeze: 0.10s → 0.075 → 0.055 → 0.04 | Buys back time, the currency of §8. Never removes the freeze — see below |
 | **Golden Trail** | On a timer, a golden streak shoots from the player along the optimal route, travelling at 2x player speed and lingering 2s | Periodic, not continuous — it answers "where does this go" a few times a minute rather than at every junction |
-| **Wall Armor** | Reduces crash HP damage | Near-useless in v1 (no death). Reserved for when hazards land |
+| **Wall Armor** | Reduces crash HP damage by 1 per rank | Now load-bearing: death is on and wall damage scales per maze (§5.5). Subtracts *after* the per-maze scaling, so a rank is the same flat point everywhere |
+| **Cornering** | Cuts the per-turn cost: 0.03x → 0.024 → 0.018 → 0.012 | Moves the §5.3 equilibrium directly, so it changes *routing*, not a stat — a Cornering build affords turn-heavy routes that would bleed an unupgraded racer dry. Never reaches zero |
+| **Expiry Grace** | Shrinks the expired-input penalty: 0.5x → 0.38 → 0.26 → 0.15 | Pairs with Buffer Window into a real "press early, press often" build. Never zero — an expired press must always mean something |
+| **Repair Field** | Restores 0.6 / 1.2 / 2.0 HP per second of **clean** travel | The answer to scaling wall damage. Pays for the same thing the speed ramp does (§3) and cannot be farmed: no regen while parked or scraping |
+
+**Four lines were deepened** to grow the tree against the pick count above: Buffer Window and
+Base Speed to 7 ranks, Barrier Capacity and Barrier Regen to 6. These were chosen because
+they scale linearly with no tuning cliff — each rank is another +0.15 cells, +0.25x floor, or
++0.25s of grace, so a seventh rank is arithmetic rather than a new balance question.
+
+**Fast Turnaround's card text is derived from `Tuning.REVERSE_COST_BY_RANK`, not written
+out.** The hand-written strings had drifted badly — they still advertised "1.5x instead of
+2.0x" long after the 180 was retuned to 0.75x (§5.3), so the cards were quoting numbers the
+game had not charged for a long time. A description that restates a tuning value is the same
+transcription trap §12 flags for tests, and it is worse here because the player reads it and
+makes a decision on it.
 
 ### Path Indicator lives in the world, not on the HUD
 
@@ -774,6 +952,153 @@ this whole corridor go*, a few times a minute, and says nothing in between. One
 is a continuous readout, the other is an occasional map. Taking both is meant to
 be strong; taking either alone leaves a real gap.
 
+### Legendaries
+
+**Rare, active, and capped at one per run.** Three lines, three ranks each, each on a
+cooldown and each answering a different failure the ordinary tree cannot touch.
+
+| Legendary | Effect | Ranks scale |
+|---|---|---|
+| **Wall Smasher** | Crash into a wall and instead **break through it, keeping your speed**. The wall is destroyed. At the maze boundary it turns you around rather than breaking | Cooldown 45s → 30s → 20s |
+| **Flying Vision** | Double-tap `↓` to **stop the world and look**: a free camera over the maze for 5s, then a countdown before play resumes | Cooldown 45s → 30s → 20s |
+| **Auto-Steer** | Double-tap `↓` to hand control to the router for a burst at **2x speed**, following the distance field. Invulnerable while it runs | Duration 3s → 4.5s → 6s |
+
+**One per run is the whole shape of the line.** These are not stronger versions of ordinary
+upgrades — they are abilities, with an input and a cooldown, and the ordinary tree has none.
+Taking one is a commitment to a *style* for the whole run, which is §11.5 at its strongest:
+the pick changes how the player drives, not what a number reads.
+
+**Rarity is enforced at the offer, not the take.** Once any legendary is held, no legendary
+is ever offered again — the cards simply stop containing them. That is cleaner than letting a
+player take a second and refusing it, which would waste a pick and read as a bug.
+
+#### They trigger on a double-tap, and the guards matter more than the gesture
+
+`↓` already means two things (§2): the 180, and the crash un-stick. A third meaning has to be
+placed carefully or it fires when the player meant one of the first two.
+
+- **Never while `PARKED`.** A crashed player mashing `↓` to recover would otherwise burn the
+  ability at the exact moment they did not want it. Parked taps un-stick and nothing else.
+- **A genuine double-180 still fires it.** Accepted deliberately: reversing twice in quick
+  succession is rare, the ability is on a 45s cooldown, and adding more conditions to
+  suppress it would make activation unpredictable, which is worse than an occasional early
+  fire.
+- **No new key.** The three-key driving contract in §2 holds — a legendary is reached through
+  the input the player already has, which is why the gesture is a double-tap rather than a
+  fourth binding.
+
+**Legendaries 2 and 3 share the gesture, and that is safe precisely because of the one-per-run
+cap.** They can never coexist, so the double-tap means exactly one thing in any given run.
+
+#### Wall Smasher genuinely rewrites the maze
+
+The broken wall is **removed from the maze**, and the distance field, solve path and minimap
+are all rebuilt from it. A smash can therefore open a real shortcut, and Path Indicator, Gate
+Compass and Golden Trail will route through the new hole because they read the live field
+(§6).
+
+That is the point: a wall break that left routing untouched would have the indicator pointing
+the player around a wall that is no longer there — visibly, obviously wrong. Rebuilding is a
+plain BFS over the grid, which is cheap at a maximum of once per 20s.
+
+**The maze boundary is the exception**, and it turns the player around instead. Breaking the
+outer wall would put the racer outside the grid, where there is no cell, no distance value and
+no floor — every query downstream returns garbage. The boundary is the one wall that is
+structural rather than decorative.
+
+**A smash consumes the crash, not the barrier.** It fires at the moment a crash *would* have
+happened — barrier empty, wall ahead — so it is a save, not a bypass. The barrier still drains
+normally, the player still feels the scrape, and the ability turns the ending into a
+breakthrough instead of a stop.
+
+#### Flying Vision stops the clock, deliberately and completely
+
+Both the run timer and the maze budget stop. **This makes using it on cooldown strictly
+optimal**, which is a known and accepted cost — recorded here so a later reader does not
+"fix" it as an oversight. The alternative considered was leaving the maze budget running so
+the look-around cost multiplier the way the turn freeze costs time (§2); it was rejected in
+favour of the ability being unambiguously a *relief*, which is what makes it feel legendary
+rather than merely useful.
+
+It shows **more than the minimap** — a real camera lifted over the maze, which is the one
+place the §12 rule "camera height stays below `WALL_HEIGHT`" is suspended. That rule exists so
+corridors feel enclosed *while driving*; Flying Vision is explicitly not driving, and the
+whole ability is the reprieve from that enclosure.
+
+The **countdown before play resumes** is not decoration. Returning a player straight to a
+running simulation after five seconds of a static overhead view, at whatever speed they left,
+would hand back control while they are still re-orienting. The countdown is the re-entry.
+
+#### Rarity is a measured number, not a feeling
+
+`LEGENDARY_DRAW_WEIGHT` is 0.04 — an unstarted legendary is drawn at 4% the weight of an
+ordinary line. **Tuned against a simulation, because a run makes 45 picks and even a small
+per-card weight compounds into near-certainty across a whole run.** Measured over 2000
+simulated runs:
+
+| weight | runs that see one | first sighting |
+|---|---|---|
+| 0.180 | 100.0% | pick 8.3 |
+| 0.100 | 98.3% | pick 12.8 |
+| 0.060 | 92.2% | pick 17.4 |
+| **0.040** | **81.8%** | **pick 20.2** |
+| 0.025 | 66.0% | pick 22.4 |
+| 0.015 | 48.1% | pick 23.7 |
+
+At the 0.18 first tried, a legendary was guaranteed and usually arrived during maze 1 — not
+rare at all. Below 0.025 most runs never meet a tier carrying three whole abilities. 0.04
+makes one a genuine find that reshapes the back half of a run, first seen around maze 3.
+
+**A held legendary draws at full weight.** Upgrading the one you have should not be a
+lottery — the rarity is in *finding* it, not in feeding it.
+
+**The "guarantee a new line early" rule never offers a legendary.** That rule (§7) exists so
+early picks feel like they open options; spending it on the rare tier would make a legendary
+a near-certain opener and undo everything above.
+
+#### Auto-Steer is an escape button, not a speed boost
+
+It follows the distance field at 2x for its duration, and the player is **invulnerable
+throughout**. The router takes the optimal turn every time, so it should never touch a wall —
+but at doubled speed a single mistimed frame would be brutal, and an escape button that can
+kill you is not one. Invulnerability makes it reliable, which is the property it is bought
+for.
+
+It is the answer to being *lost*, where Flying Vision is the answer to not *knowing*. One
+shows you the maze; the other drives you out of it.
+
+It steers by **requesting** turns rather than forcing them, so each one goes through ordinary
+turn resolution and pays the ordinary turn cost. The burst is an autopilot, not a second
+movement mode — a separate path would be a second set of movement rules to keep in step with
+the first.
+
+#### Traps found while building these
+
+- **The un-stick tap leaks into the gesture.** Guarding the double-tap on `state == RUNNING`
+  is not enough: the *first* tap on a parked racer un-sticks it, so by the second tap the
+  racer is running and the ability fires — which is exactly the recovery mash the guard
+  exists to stop. A press that un-sticks now returns immediately and clears the tap, so the
+  player must press again, deliberately, once actually moving. `SceneTest` asserts it.
+- **A test whose premise is "drive into a wall and crash" stops being true once Wall Smasher
+  exists.** `SceneTest` takes every upgrade line before its crash check, so the racer
+  correctly broke through instead. The check now puts the legendary on cooldown — the same
+  shape as the §12 note about a harness inheriting the previous test's state.
+- **`UpgradeScreen` only ever hid itself on a card press.** Any other route out of a pick
+  left the cards rendering over live gameplay, because the screen is a `Control` that knows
+  nothing about the phase machine. It now has a `dismiss()` that every exit calls.
+
+### Score Multiplier
+
+A non-legendary line: **+15% to points earned per rank, four ranks** (§8b).
+
+It scales the maze subtotal *before* the time multiplier, so it compounds with good routing
+rather than substituting for it — a player who takes Score Multiplier and routes badly still
+banks a small number multiplied by a small number. At max rank a run is worth ~75% more.
+
+Deliberately **not** added to the time multiplier, which is already the dominant term in the
+score (§8b): a line that pushed that number directly would be a must-pick, and would flatten
+the choice between it and the survival lines it is supposed to compete with.
+
 ### Snap Turn reduces the freeze, never removes it
 
 At max rank the freeze is still **40% of base**. The freeze is what makes a corner readable
@@ -801,7 +1126,8 @@ Upgrades carry forward. Each maze escalates **complexity**, not merely size.
 | Name | The Grid | The Ember | The Tangle | The Labyrinth | The Vault |
 | Grid | 60×60 | 70×70 | 80×80 | 90×90 | 100×100 |
 | Braid factor (loops) | 6% | 12% | 18% | 25% | 30% |
-| One-cell stubs kept | 15% | 20% | 12% | 11% | 10% |
+| One-cell stubs kept | 15% | 11% | 12% | 11% | 10% |
+| Zigzags kept | 62% | 56% | 62% | 70% | 78% |
 | Gates | 8 | 8 | 8 | 8 | 8 |
 | Measured solve time | ~54s | ~55s | ~59s | ~57s | ~56s |
 
@@ -901,9 +1227,153 @@ decisions, which reads as tedium rather than difficulty (§6).
 
 ### Timer
 
-A run timer, always visible, pausing during gate selection. It is the score. With no death
-in v1, **time is the only thing the player is fighting** — fast, clean, well-routed play
-is the entire optimization target.
+A run timer, always visible, pausing during gate selection **and during the maze-start
+loadout pick** (§7).
+
+It used to be *the score*, and the only thing the player fought. **Neither is true now** —
+death is on (§5.5), so a run can end outright, and a real points system (§8b) has taken over
+as the score. The timer's job is now to drive the **per-maze time multiplier**, which is
+where it does most of its work.
+
+---
+
+## 8b. Score
+
+Points, banked per maze, multiplied by how much of that maze's time budget was left.
+
+### The awards
+
+| Event | Points |
+|---|---|
+| Each second of clean travel (running, not parked) | `10 × speed` |
+| Clean turn — barrier untouched | `60 × speed` |
+| Scraped turn — barrier drained and escaped | `24 × speed` (40%) |
+| Crash | **−1000** |
+| Maze complete | subtotal × time multiplier, banked |
+
+**Everything scales with speed**, which is what makes the §3 ramp pay off in the score rather
+than only in the clock. A turn taken at 6x is worth six times one taken at the floor, so the
+player who holds speed through a turn-heavy section is paid for exactly the thing that is
+hard.
+
+**A scraped turn is worth 40% of a clean one, not zero.** §11.4 calls wall-brushing the
+skill ceiling and says to protect it in tuning, so scoring it as a failure would turn the
+expert texture into a penalty. At 40% a clean turn is clearly better, while a scrape still
+pays far more than the crash it avoided — brushing stays viable expert play rather than
+becoming a mistake.
+
+**Crashes cost a flat 1000**, about 1.7% of a typical maze subtotal, ~14% across eight
+crashes. Deliberately flat rather than speed-scaled: a crash already resets speed to the
+floor, so a speed-scaled penalty would charge the most at the exact moment it also removes
+the ability to earn. The flat figure is a fourth cost on top of parked time, the speed reset
+and the HP (§5.4), and it is sized to be *felt* without being able to sink a run on its own.
+
+### The time multiplier
+
+**Budget: 180 seconds per maze**, roughly 3x what a perfect autopilot needs (measured
+~54–59s per maze, §8).
+
+```
+under budget:  mult = 1.0 + (seconds_left / 30)
+over  budget:  mult = 1.0 - (seconds_over / 120),  floored at 0.20
+```
+
+**Asymmetric on purpose.** Leftover time is rewarded steeply (÷30) because that is the
+routing skill the score exists to measure; overtime decays gently (÷120) because a hard
+penalty there flattens every slow run onto the floor, and two runs that both score 0.20x are
+indistinguishable no matter how differently they were driven. The floor is 0.20 rather than
+0 so a badly-overrun maze still banks *something* — points already earned should not
+evaporate entirely.
+
+**Why 180s and not the 7 minutes first proposed.** At 420s a perfect run banks ~360 leftover
+seconds and so does a mediocre one; the multiplier stops discriminating and becomes a flat
+inflation of everyone's score. 180s puts a good human run at 60–100s left and a sloppy one
+near zero, which is the range where the multiplier actually measures something.
+
+### The hard part: wandering must not outscore optimal play
+
+**This is the trap the whole design had to be built around, and the naive version fails it.**
+
+A per-turn award looks like it rewards skill, but turn count is a property of the *route*,
+not of the driver: a lost player covers more ground and therefore makes **more** turns. On a
+modelled maze the optimal route is ~165 turns and a badly-routed one ~429. Per-second income
+compounds the same way — driving longer earns longer. So a scoring system built the obvious
+way pays the *worse* player more, and no amount of tuning the award sizes fixes it, because
+every award moves in the wrong direction together.
+
+Measured across the parameter space: with speed-scaled per-second points and per-turn awards,
+the best achievable margin for a perfect run over a merely-great one was **1.05** — a coin
+flip — and only at multiplier settings so steep they flattened everything else.
+
+**The time multiplier is what has to overcome it**, and it has to be strong enough to beat a
+~2.6x detour. At ÷30 it is, comfortably:
+
+| Run | Subtotal | Mult | Maze score |
+|---|---|---|---|
+| Perfect router (55s, 5.5x) | 57,475 | 5.17x | **296,954** |
+| Great (90s, 5.0x) | 64,989 | 4.00x | 259,956 |
+| Good (120s, 4.0x) | 58,656 | 3.00x | 175,968 |
+| Scrappy (150s, 3.0x) | 47,387 | 2.00x | 94,774 |
+| Struggling (200s, 2.0x) | 34,492 | 0.83x | 28,743 |
+| Bad (260s, 1.5x) | 28,610 | 0.33x | 9,537 |
+
+Note the perfect run's subtotal is *lower* than the great run's — it made fewer turns and
+drove for less time — and it still wins by 14% on the multiplier alone. **Faster is always
+better, monotonically**, which is the property the system exists to have. Spread from best to
+worst is ~31x.
+
+> If any award size or the budget moves, **re-check monotonicity** rather than assuming it
+> survives. It is not a property of the numbers being sensible; it is a property of the
+> multiplier being strong enough, and it broke in every naive configuration tried.
+
+### Death scores what was actually achieved
+
+A run that ends on HP 0 (§5.5) keeps every banked maze. The maze in progress scores:
+
+```
+subtotal × (gates_taken / gates_in_maze) × time multiplier
+```
+
+**Gates are the progress measure because they are already the maze's own milestones** — 8 of
+them, evenly spaced along the solve path (§7), so "5 of 8 gates" is a real statement about
+how far through the maze the player got, and it needs no new tracking. Distance travelled
+would reward wandering for exactly the reasons above.
+
+The time multiplier still applies, which means dying *slowly* scores worse than dying at the
+same point *quickly* — consistent with every other part of the system.
+
+### Implementation notes
+
+**`Score` is pure logic, like `Racer`** — node-free, renderer-free, headlessly testable
+(§12). `Game` feeds it events; it never reads the world. `RulesTest` asserts the awards, the
+multiplier's shape, banking, partial banking, and — most importantly — **monotonicity across
+a spread of six modelled runs**, so a future tuning change that re-inverts fast-versus-slow
+fails a test rather than shipping.
+
+**The subtotal may go negative from crashes, and is clamped only once, at banking.** Clamping
+per crash would make crashes free the moment the subtotal hit zero — exactly when the player
+is doing worst and least deserves the discount. Clamping at bank time means a wrecked maze
+banks zero but can never eat the scores of mazes already completed.
+
+**A scraped turn is identified by `Racer.last_turn_scraped`, not by reading `scraping`.** The
+scrape-escape path clears `scraping` *before* pivoting, so a listener on `turned` always sees
+false and every escape would score as a clean corner. The flag is recorded at the moment of
+the turn. This keeps the rules layer ignorant of scoring — it records what happened, and the
+score decides what that is worth.
+
+**The HUD shows the projected total, not the banked one**, so the number on screen is always
+the score the player actually has, including the maze in progress at its current multiplier.
+Beside it sits the live multiplier and the budget countdown, which **goes negative rather
+than stopping at zero** — a countdown that floors at 0:00 hides how far over the player is,
+and how far over is precisely what the shrinking multiplier depends on. It turns amber
+inside the last 30s and red once over.
+
+**Measured on a full `RunTest` autopilot: 452,947** across five mazes, with per-maze
+subtotals rising (7,913 → 24,344) as speed climbs and multipliers nearly flat (5.43 → 5.05)
+because an optimal router solves every maze in the same narrow band. **The flat multipliers
+are not the knob failing** — verified separately, the same subtotal banks 283,333 at a 40s
+finish and 10,000 at 320s, a 28x spread. The multiplier discriminates on *time*, and an
+autopilot simply does not vary its time.
 
 ---
 
@@ -1176,9 +1646,9 @@ instead. **A tool must not write the state it is inspecting.**
 
 Recorded so the architecture leaves room. **Do not implement in v1.**
 
-### Death
-HP reaching 0 ends the run. The code path should exist behind a disabled flag from Phase 2
-onward.
+### ~~Death~~ — SHIPPED, no longer deferred
+HP reaching 0 ends the run. **This is now on** (§5.5), together with per-maze wall damage
+scaling. Left listed here only so the change is traceable from where it was first planned.
 
 ### Hazards / bosses
 Intended for later stages or as final-maze encounters. The theme is *pressure that makes the
@@ -1285,6 +1755,24 @@ exactly that — they sit at 0.10 with half albedo and a 0.012 half-width.
 the **minimap directly above those bars, bottom-left**. The map sits near the player marker
 rather than in a far corner because the two are read together at speed — a diagonal
 glance across the whole screen costs the read the map exists to give.
+
+**The minimap rotates with the player: the direction of travel is always toward the top.**
+A north-up map demands a mental rotation at exactly the moment there is no time for one —
+at 8x a cell passes in 125ms, and *"the corridor on my left is the one drawn on the map's
+right"* is not a translation anyone performs at that speed. Rotating means a left turn on
+screen is a left turn on the map, so the map can be read the way the corridor is. This is
+§11.3 applied to the HUD: a timing demand has to be legible when it is made, and a map that
+needs decoding first is not.
+
+The player arrow is therefore **fixed pointing up** and never rotates — the map turns under
+it. Rotating both would double-apply the transform and leave the arrow permanently wrong.
+The wall strokes rotate with their cells for the same reason: drawn unrotated they stay
+axis-aligned while the cells turn, which reads as the walls sliding off the cells they
+belong to.
+
+The cost is that the maze's absolute orientation is no longer legible. That is an acceptable
+trade because recognising *where you are* was never this map's job at these radii — that is
+what landmarks are for (§6).
 
 **View: third person.** The camera trails behind and slightly above a player marker — a
 glowing ring with an arrow inside it, sitting on the floor. First person hid the two things
@@ -1445,10 +1933,10 @@ Six harnesses, each answering a different question:
 
 | Harness | Question it answers |
 |---|---|
-| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, landmark placement. 174 assertions. |
-| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall- and path-indicator placement, the crash camera, pause, landmark mesh winding, marker sight lines. 61 assertions. |
-| `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, and the final build. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, and the pads scale to a phone screen. 34 assertions. |
+| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — and the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer. 270 assertions. |
+| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall- and path-indicator placement, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, and Flying Vision's held clocks and raised camera. 74 assertions. |
+| `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, and the pads scale to a phone screen. 35 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 21 assertions. |
 | `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 39 assertions. |
 
@@ -1462,6 +1950,15 @@ verified; "over cap" must always read 0.
 `LandmarkProbe.gd` reports landmark counts, tier split and dead-end coverage per maze,
 which is how the `landmarks` density knob gets tuned. `LandmarkShot.gd` shoots a frame
 next to a landmark in each maze, seeking one rather than shooting on a timer.
+
+`GateShot.gd` shoots each maze from 2.5-6 cells short of a gate, which is how the
+above-the-wall gate marker gets checked -- the question it answers is "can I see it
+coming", so shooting from on top of a gate would show nothing.
+
+`ZigzagProbe.gd` reports forced-turn corners, corner-into-corner zigzags and chains of
+three or more, both over the whole grid and **along the canonical solve path** — the second
+is what the player actually drives through, since a maze can carry plenty of zigzags in its
+backwaters and still feel clean on the route. It is how `zigzag_keep` gets tuned.
 
 `DeadEndProbe.gd` is not a test either — it reports dead-end density and one-cell-stub
 frequency per maze, which is how the two knobs in §6 get tuned without guessing.

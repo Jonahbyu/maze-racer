@@ -25,9 +25,19 @@ const COL_DIM := Color(0.55, 0.62, 0.75)
 const COL_GOOD := Color(0.2, 1.0, 0.4)
 const COL_BAD := Color(1.0, 0.25, 0.25)
 
+# The score's own colour. Kept clear of the reserved set in CLAUDE.md section 8:
+# amber-yellow is gates, amber-to-red is the wall indicator, white is the exit
+# and the player marker, green/red is Path Indicator. A pale near-white gold
+# reads as "value" without colliding with any of them, and like the rest of the
+# HUD it is FIXED across every maze (section 7) -- a score that changed hue per
+# palette would be re-learned five times a run.
+const COL_SCORE := Color(0.98, 0.92, 0.62)
+
 var _speed_label: Label
 var _timer_label: Label
 var _maze_label: Label
+var _score_label: Label
+var _budget_label: Label
 var _barrier_bar: ProgressBar
 var _hp_bar: ProgressBar
 var _compass: Label
@@ -105,6 +115,18 @@ func _build_top_bar() -> void:
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_child(spacer)
+
+	# The score sits with the timer rather than beside speed, because the two are
+	# read together: the countdown is what the score is about to be multiplied
+	# by. Both are in the row's flow, so neither can collide with the other as
+	# the timer's width changes past a minute (the trap section 9d records).
+	_score_label = _make_label("0", 30, COL_SCORE)
+	_score_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(_score_label)
+
+	_budget_label = _make_label("", 20, COL_DIM)
+	_budget_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(_budget_label)
 
 	_timer_label = _make_label("0:00.0", 34, Color.WHITE)
 	_timer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -208,7 +230,7 @@ func _make_bar(colour: Color, height: int) -> ProgressBar:
 	bar.add_theme_stylebox_override("fill", fill)
 
 	return bar
-func update_hud(racer: Racer, upgrades: Upgrades, elapsed: float, maze_name: String, maze_index: int) -> void:
+func update_hud(racer: Racer, upgrades: Upgrades, elapsed: float, maze_name: String, maze_index: int, score: Score = null) -> void:
 	_speed_label.text = "%.2fx" % racer.speed
 	# The speed readout warms toward white as it climbs, so the number itself
 	# signals how exposed the player is.
@@ -216,6 +238,23 @@ func update_hud(racer: Racer, upgrades: Upgrades, elapsed: float, maze_name: Str
 		COL_SPEED.lerp(Color.WHITE, racer.speed_fraction()))
 
 	_timer_label.text = _format_time(elapsed)
+
+	if score != null:
+		# The projected total, not just the banked one: the number on screen
+		# should always be the score the player actually has, including the maze
+		# in progress at its current multiplier.
+		_score_label.text = _format_score(score.projected_total())
+
+		# The countdown drives the multiplier, so it is shown as the multiplier
+		# the player is currently earning rather than as a bare clock -- "x3.40"
+		# is the decision-relevant number, and the raw seconds are not.
+		var mult := score.time_multiplier()
+		var left := score.time_remaining()
+		_budget_label.text = "x%.2f  (%s)" % [mult, _format_budget(left)]
+		# Over budget the multiplier is below 1.0 and actively shrinking the
+		# score, which has to read as a warning rather than as neutral trim.
+		_budget_label.add_theme_color_override("font_color",
+			COL_BAD if left < 0.0 else (COL_DIM if left > 30.0 else COL_BARRIER))
 	# Gate count comes from the maze, not a literal: the per-maze gate count is
 	# a tuning knob (Tuning.MAZES) and a hard-coded denominator here would quietly
 	# lie the moment it moved.
@@ -308,6 +347,33 @@ func _process(delta: float) -> void:
 	elif _message_time > 0.0:
 		_message_time = maxf(0.0, _message_time - delta)
 		_message.modulate.a = minf(1.0, _message_time / 0.6)
+
+
+# Thousands-separated: a maze banks six figures, and a bare run of digits is
+# unreadable at the glance-speed everything else on this HUD is designed for.
+func _format_score(value: float) -> String:
+	var n := int(round(value))
+	var sign_text := "-" if n < 0 else ""
+	var digits := str(absi(n))
+	var out := ""
+	var count := 0
+	for i in range(digits.length() - 1, -1, -1):
+		out = digits[i] + out
+		count += 1
+		if count % 3 == 0 and i > 0:
+			out = "," + out
+	return sign_text + out
+
+
+# The maze budget countdown. Goes NEGATIVE rather than stopping at zero, because
+# a countdown that floors at 0:00 hides how far over the player is -- and how
+# far over is exactly what the shrinking multiplier depends on.
+func _format_budget(seconds: float) -> String:
+	var over := seconds < 0.0
+	var t := absf(seconds)
+	var m := int(t) / 60
+	var sec := int(t) % 60
+	return "%s%d:%02d" % ["-" if over else "", m, sec]
 
 
 func _format_time(seconds: float) -> String:

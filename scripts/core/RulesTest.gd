@@ -15,6 +15,7 @@ func _init() -> void:
 	_test_generation()
 	_test_distance_field()
 	_test_braiding()
+	_test_zigzag_cull()
 	_test_seeding()
 	_test_turn_resolution()
 	_test_double_tap()
@@ -24,6 +25,9 @@ func _init() -> void:
 	_test_reverse()
 	_test_speed_ramp()
 	_test_upgrades()
+	_test_hp_regen_and_death()
+	_test_score()
+	_test_legendaries()
 	_test_gates()
 	_test_indicator()
 	_test_golden_trail()
@@ -32,6 +36,7 @@ func _init() -> void:
 	_test_turn_keeps_progress()
 	_test_entry_corridor_lockout()
 	_test_turn_freeze()
+	_test_marker_heights()
 	_test_landmarks()
 	_test_landmarks_do_not_move_the_racer()
 
@@ -142,6 +147,7 @@ func check_near(label: String, actual: float, expected: float, tol: float = 0.00
 class SignalRecorder extends RefCounted:
 	var count := 0
 	var last_arg = null
+	var last_two = null
 
 	func on_signal() -> void:
 		count += 1
@@ -149,6 +155,12 @@ class SignalRecorder extends RefCounted:
 	func on_signal_arg(arg) -> void:
 		count += 1
 		last_arg = arg
+
+	# wall_smashed carries (cell, direction); a one-arg handler cannot bind it.
+	func on_signal_two(a, b) -> void:
+		count += 1
+		last_arg = a
+		last_two = b
 
 	func fired() -> bool:
 		return count > 0
@@ -450,6 +462,59 @@ func _test_braiding() -> void:
 		"got %d" % braided.loop_count())
 
 
+
+# The zigzag cull thins CORNER-INTO-CORNER pairs: a forced 90 whose exit leads
+# straight into another forced 90, with no cell between them to read the second
+# from (CLAUDE.md section 6).
+#
+# Asserts the RELATIONSHIP rather than a count. A check against a literal number
+# of zigzags would be a transcription of whatever the tuning happens to be, and
+# would fail the moment the knob moved without telling you anything (section 12,
+# the transcription-check trap). What has to hold is that the knob is monotonic,
+# that it removes obligations rather than corners, and that opening walls never
+# breaks the maze.
+func _test_zigzag_cull() -> void:
+	var loose := Maze.new()
+	loose.generate(40, 40, 5150, 0.10, 1.0, 0, 0.0, 1.0, 0.0, 1.0)
+	var tight := Maze.new()
+	tight.generate(40, 40, 5150, 0.10, 1.0, 0, 0.0, 1.0, 0.0, 0.4)
+
+	var loose_zig := _count_zigzags(loose)
+	var tight_zig := _count_zigzags(tight)
+
+	check("zigzag cull removes zigzags", tight_zig < loose_zig,
+		"kept 1.0 -> %d, kept 0.4 -> %d" % [loose_zig, tight_zig])
+
+	# It must relieve the FORCED turn, not delete the corner. A pass that simply
+	# straightened corridors would score well here and would be flattening the
+	# maze instead of opening it up, so assert openings went UP.
+	check("zigzag cull opens walls rather than removing corners",
+		tight.loop_count() > loose.loop_count(),
+		"loops %d -> %d" % [loose.loop_count(), tight.loop_count()])
+
+	# Every stage that knocks walls has to leave the maze solvable.
+	check("zigzag cull leaves the exit reachable",
+		tight.get_distance(tight.start_cell) != -1)
+	check("zigzag cull leaves a solve path", tight.solve_path.size() > 0)
+
+	# keep >= 1.0 is the off switch, and must be byte-identical to not running.
+	var off := Maze.new()
+	off.generate(40, 40, 5150, 0.10, 1.0, 0, 0.0, 1.0, 0.0, 1.0)
+	check("zigzag_keep 1.0 is a no-op", off.cells == loose.cells)
+
+
+# A corner is a cell with exactly two PERPENDICULAR openings: the only way on is
+# a turn. A junction offers a choice and is deliberately not counted.
+func _count_zigzags(m: Maze) -> int:
+	var total := 0
+	for y in m.height:
+		for x in m.width:
+			var c := Vector2i(x, y)
+			if m._is_corner(c) and m._leads_into_corner(c):
+				total += 1
+	return total
+
+
 func _test_seeding() -> void:
 	var a := _make_maze(25, 25, 0.15, 999)
 	var b := _make_maze(25, 25, 0.15, 999)
@@ -680,7 +745,12 @@ func _test_crash_and_unstick() -> void:
 
 	check("barrier depletion causes a crash", crash_rec.fired())
 	check_eq("crash parks the racer", r.state, Racer.State.PARKED)
-	check_eq("crash deals damage", r.hp, Tuning.MAX_HP - 1)
+	# Read the damage off the build rather than restating a literal. A hard-coded
+	# "MAX_HP - 1" was a transcription check, and it broke the moment wall damage
+	# became a per-maze curve -- while telling us nothing about whether the crash
+	# actually applied the damage the rules say it should (CLAUDE.md section 12).
+	check_eq("crash deals damage", r.hp,
+		Tuning.MAX_HP - r.upgrades.wall_damage(r.maze_index))
 	check_near("speed reset to floor", r.speed, r.upgrades.speed_floor())
 
 	# Parked means parked: stepping does nothing.
@@ -806,11 +876,46 @@ func _test_upgrades() -> void:
 	check_eq("rank caps at max", u.rank(Upgrades.Line.GATE_COMPASS), 1)
 	check("maxed line reports maxed", u.is_maxed(Upgrades.Line.GATE_COMPASS))
 
-	# Wall armor must never heal.
+	# Wall armor must never heal, on any maze.
 	var armored := Upgrades.new(1)
 	for i in 3:
 		armored.take(Upgrades.Line.WALL_ARMOR)
-	check("wall damage floors at zero", armored.wall_damage() >= 0)
+	for mi in Tuning.MAZES.size():
+		check("wall damage floors at zero (maze %d)" % (mi + 1),
+			armored.wall_damage(mi) >= 0)
+
+	# Wall damage scales per maze (CLAUDE.md section 5.5). Derived from the
+	# tuning pair rather than restated, so the assertion is about the curve
+	# holding, not about two literals agreeing.
+	var bare_dmg := Upgrades.new(3)
+	check_eq("maze 1 wall damage", bare_dmg.wall_damage(0), Tuning.WALL_DAMAGE)
+	check_eq("wall damage climbs per maze", bare_dmg.wall_damage(4),
+		Tuning.WALL_DAMAGE + 4 * Tuning.WALL_DAMAGE_PER_MAZE)
+	check("later mazes hurt more", bare_dmg.wall_damage(4) > bare_dmg.wall_damage(0))
+	# Armor subtracts AFTER the scaling, so a rank is worth the same flat point
+	# everywhere rather than being multiplied up in the late mazes.
+	check_eq("armor subtracts after scaling", armored.wall_damage(4),
+		bare_dmg.wall_damage(4) - 3 * Tuning.WALL_ARMOR_PER_RANK)
+
+	# Cornering and Expiry Grace both reduce a cost without ever reaching zero:
+	# a free turn or a free expiry would remove the decision the cost exists to
+	# create (CLAUDE.md sections 5.2, 5.3).
+	var corner := Upgrades.new(5)
+	check_near("base turn cost", corner.turn_cost(), Tuning.TURN_COST)
+	check_near("base slowdown", corner.slowdown_penalty(), Tuning.SLOWDOWN_PENALTY)
+	var prev_turn := corner.turn_cost()
+	var prev_slow := corner.slowdown_penalty()
+	for i in 3:
+		corner.take(Upgrades.Line.CORNERING)
+		corner.take(Upgrades.Line.EXPIRY_GRACE)
+		check("cornering rank %d cuts the turn cost" % (i + 1),
+			corner.turn_cost() < prev_turn)
+		check("expiry grace rank %d cuts the slowdown" % (i + 1),
+			corner.slowdown_penalty() < prev_slow)
+		prev_turn = corner.turn_cost()
+		prev_slow = corner.slowdown_penalty()
+	check("turn cost never reaches zero", corner.turn_cost() > 0.0)
+	check("slowdown never reaches zero", corner.slowdown_penalty() > 0.0)
 
 	# Card offers: three distinct, never maxed.
 	var cards := u.roll_cards(3)
@@ -830,6 +935,427 @@ func _test_upgrades() -> void:
 		if fresh.rank(line) == 0:
 			has_new = true
 	check("early offer includes a new line", has_new)
+
+
+# Repair Field restores HP on CLEAN travel only, and death fires when HP runs
+# out (CLAUDE.md sections 5.5, 7).
+func _test_hp_regen_and_death() -> void:
+	var m := Maze.new()
+	m.generate(40, 40, 999, 0.25, 0.02, 3, 0.5, 0.2, 0.0, 0.6)
+
+	# Untaken, the line is completely inert: HP only ever falls.
+	var bare := Upgrades.new(1)
+	var r_bare := Racer.new()
+	r_bare.setup(m, bare, 0)
+	r_bare.hp = 50
+	_run_clean(m, r_bare, 500)
+	check_eq("no regen without Repair Field", r_bare.hp, 50)
+
+	var u := Upgrades.new(1)
+	for i in 3:
+		u.take(Upgrades.Line.HP_REGEN)
+	var r := Racer.new()
+	r.setup(m, u, 0)
+	r.hp = 50
+	_run_clean(m, r, 500)
+	# 10s at the rank-3 rate, less the fraction still accumulating. Asserting a
+	# band rather than an exact value, since the last whole point lands whenever
+	# the accumulator happens to cross 1.0.
+	var want := 50.0 + u.hp_regen() * 10.0
+	check("Repair Field restores on clean travel",
+		float(r.hp) >= want - 2.0 and float(r.hp) <= want,
+		"50 -> %d, expected about %.0f" % [r.hp, want])
+	check_eq("regen never exceeds max hp", mini(r.hp, Tuning.MAX_HP), r.hp)
+
+	# It must not pay out while parked -- a crash would otherwise heal itself.
+	var parked := Racer.new()
+	parked.setup(m, u, 0)
+	parked.hp = 50
+	parked.state = Racer.State.PARKED
+	for i in 300:
+		parked.step(0.02)
+	check_eq("no regen while parked", parked.hp, 50)
+
+	# Death: drive into walls until HP is gone.
+	var dying := Racer.new()
+	dying.setup(m, Upgrades.new(1), 4)
+	var rec := SignalRecorder.new()
+	dying.died.connect(rec.on_signal)
+
+	for i in 40000:
+		if dying.dead:
+			break
+		if dying.state == Racer.State.PARKED:
+			dying.request_reverse()
+		dying.step(0.02)
+
+	check("death fires when hp runs out", dying.dead)
+	check("died signal emitted", rec.fired())
+	check_eq("death leaves hp at zero", dying.hp, 0)
+	# A dead racer is finished: stepping must not move it.
+	var cell_at_death := dying.cell
+	for i in 100:
+		dying.step(0.02)
+	check_eq("dead racer does not move", dying.cell, cell_at_death)
+
+
+# Step a racer without ever letting it touch a wall, so "clean travel" means
+# what it says. An unsteered racer parks against the first wall it meets
+# (CLAUDE.md section 12), which is exactly what regen excludes -- so a regen
+# test that did not steer would measure the parking, not the regen.
+func _run_clean(m: Maze, r: Racer, frames: int) -> void:
+	for i in frames:
+		if not m.is_open(r.cell, r.facing):
+			var best := m.best_direction(r.cell)
+			if best != -1:
+				r.facing = best
+		r.step(0.02)
+
+
+# The score (CLAUDE.md section 8b).
+#
+# The property that matters most here is MONOTONICITY: a faster run must always
+# beat a slower one, even though the slower one covers more ground and so makes
+# more turns and earns more per-second income. That is not a property of the
+# award sizes being sensible -- it broke in every naive configuration tried, and
+# it is the multiplier that has to carry it. Asserted directly below.
+func _test_score() -> void:
+	var sc := Score.new()
+	check_near("fresh score is zero", sc.total(), 0.0)
+
+	# Travel pays per second, scaled by speed.
+	sc.add_travel(1.0, 2.0)
+	check_near("travel pays rate x speed", sc.maze_subtotal,
+		Tuning.SCORE_PER_SECOND * 2.0)
+
+	# A parked racer earns nothing -- Game gates this, but a zero delta must be
+	# inert regardless.
+	var before := sc.maze_subtotal
+	sc.add_travel(0.0, 5.0)
+	check_near("zero delta earns nothing", sc.maze_subtotal, before)
+
+	# A scraped turn is worth less than a clean one, and both beat nothing.
+	var clean_score := Score.new()
+	clean_score.add_turn(3.0, false)
+	var scrape_score := Score.new()
+	scrape_score.add_turn(3.0, true)
+	check("clean turn beats scraped turn",
+		clean_score.maze_subtotal > scrape_score.maze_subtotal)
+	check("scraped turn still pays", scrape_score.maze_subtotal > 0.0)
+	check_near("scraped turn is 40% of clean",
+		scrape_score.maze_subtotal / clean_score.maze_subtotal, 0.4)
+	check_eq("clean turns are counted", clean_score.clean_turns, 1)
+	check_eq("scraped turns are counted", scrape_score.scraped_turns, 1)
+
+	# Crashes are a flat cost, NOT speed-scaled.
+	var crash_a := Score.new()
+	crash_a.add_crash()
+	var crash_b := Score.new()
+	crash_b.add_crash()
+	check_near("crash cost does not vary", crash_a.maze_subtotal, crash_b.maze_subtotal)
+	check_near("crash costs the flat penalty", crash_a.maze_subtotal,
+		-Tuning.SCORE_CRASH_PENALTY)
+
+	# A maze can bank zero but never a negative -- a run of crashes must not eat
+	# the scores of mazes already completed.
+	var sunk := Score.new()
+	for i in 50:
+		sunk.add_crash()
+	sunk.bank_maze(0, "test")
+	check("a wrecked maze banks zero, never negative", sunk.total() >= 0.0)
+
+	# The multiplier: steep under budget, gentle over, floored.
+	var m := Score.new()
+	check_near("multiplier at exactly budget is 1.0",
+		m.time_multiplier(Tuning.SCORE_TIME_BUDGET), 1.0)
+	check("finishing early beats finishing at budget",
+		m.time_multiplier(Tuning.SCORE_TIME_BUDGET - 60.0)
+			> m.time_multiplier(Tuning.SCORE_TIME_BUDGET))
+	check("overtime drops below 1.0",
+		m.time_multiplier(Tuning.SCORE_TIME_BUDGET + 30.0) < 1.0)
+	check("overtime never goes below the floor",
+		m.time_multiplier(Tuning.SCORE_TIME_BUDGET * 100.0)
+			>= Tuning.SCORE_MULT_FLOOR)
+	check("overtime decays more gently than early time rewards",
+		(m.time_multiplier(Tuning.SCORE_TIME_BUDGET - 60.0) - 1.0)
+			> (1.0 - m.time_multiplier(Tuning.SCORE_TIME_BUDGET + 60.0)))
+
+	# Banking clears the maze and accumulates the run.
+	var bank := Score.new()
+	bank.add_travel(10.0, 4.0)
+	bank.advance_time(120.0)
+	var expected_mult := bank.time_multiplier()
+	var earned := bank.bank_maze(0, "The Grid")
+	check("banking returns what was earned", earned > 0.0)
+	check_near("banked equals subtotal x multiplier", earned,
+		Tuning.SCORE_PER_SECOND * 4.0 * 10.0 * expected_mult)
+	check_near("maze subtotal resets after banking", bank.maze_subtotal, 0.0)
+	check_near("maze clock resets after banking", bank.maze_time, 0.0)
+	check_eq("a banked maze is recorded", bank.maze_results.size(), 1)
+
+	# Partial banking on death scales by progress.
+	var partial := Score.new()
+	partial.add_travel(10.0, 4.0)
+	partial.advance_time(120.0)
+	var half := partial.bank_maze(0, "The Grid", 0.5)
+	check_near("half progress banks half the score", half, earned * 0.5)
+
+	_check_score_monotonic()
+
+
+# Faster must always score higher, across a realistic spread of runs.
+#
+# This is the assertion the whole section 8b design exists to satisfy. A worse
+# player covers MORE ground, so they make more turns and collect more per-second
+# income -- the naive scoring built the obvious way pays them more. Only the
+# time multiplier reverses that, and only if it is strong enough.
+func _check_score_monotonic() -> void:
+	# time, speed, detour (route length vs optimal), scrape fraction
+	var runs := [
+		[55.0, 5.5, 1.00, 0.00],
+		[90.0, 5.0, 1.30, 0.10],
+		[120.0, 4.0, 1.60, 0.25],
+		[150.0, 3.0, 1.90, 0.40],
+		[200.0, 2.0, 2.20, 0.50],
+		[260.0, 1.5, 2.60, 0.60],
+	]
+	const OPTIMAL_CELLS := 300.0
+
+	var scores: Array[float] = []
+	for run in runs:
+		var t: float = run[0]
+		var sp: float = run[1]
+		var cells: float = OPTIMAL_CELLS * float(run[2])
+		var scrape_frac: float = run[3]
+		var turns := int(cells * 0.55)
+
+		var sc := Score.new()
+		sc.add_travel(t, sp)
+		for i in turns:
+			sc.add_turn(sp, i < int(float(turns) * scrape_frac))
+		sc.advance_time(t)
+		scores.append(sc.bank_maze(0, "test"))
+
+	for i in range(scores.size() - 1):
+		check("run %d outscores run %d (faster is better)" % [i, i + 1],
+			scores[i] > scores[i + 1],
+			"%.0f vs %.0f" % [scores[i], scores[i + 1]])
+
+	check("best run far outscores worst", scores[0] / maxf(scores[-1], 1.0) > 10.0,
+		"ratio %.1fx" % (scores[0] / maxf(scores[-1], 1.0)))
+
+
+# Legendaries: rarity, the one-per-run cap, and each ability's mechanics
+# (CLAUDE.md section 7).
+func _test_legendaries() -> void:
+	var u := Upgrades.new(11)
+
+	# The tier is identifiable, and the ordinary lines are not in it.
+	check("wall smasher is legendary", u.is_legendary(Upgrades.Line.WALL_SMASHER))
+	check("flying vision is legendary", u.is_legendary(Upgrades.Line.FLYING_VISION))
+	check("auto steer is legendary", u.is_legendary(Upgrades.Line.AUTO_STEER))
+	check("buffer window is not legendary",
+		not u.is_legendary(Upgrades.Line.BUFFER_WINDOW))
+	check("score bonus is not legendary",
+		not u.is_legendary(Upgrades.Line.SCORE_BONUS))
+
+	check("a fresh build holds no legendary", not u.has_legendary())
+	u.take(Upgrades.Line.WALL_SMASHER)
+	check("taking one is detected", u.has_legendary())
+	check_eq("the held legendary is reported",
+		u.legendary_line(), Upgrades.Line.WALL_SMASHER)
+
+	# ONE PER RUN: no other legendary may ever be offered again. This is the
+	# rule the whole tier rests on, so it is checked exhaustively rather than
+	# on a sample.
+	var leaked := false
+	for i in 400:
+		for line in u.roll_cards(3):
+			if u.is_legendary(line) and line != Upgrades.Line.WALL_SMASHER:
+				leaked = true
+	check("a second legendary is never offered", not leaked)
+
+	# The one already held stays upgradeable.
+	var upgradeable := false
+	for i in 400:
+		if Upgrades.Line.WALL_SMASHER in u.roll_cards(3):
+			upgradeable = true
+	check("the held legendary is still offered", upgradeable)
+
+	# Cooldown scales by rank, and Auto-Steer scales duration instead.
+	var cd := Upgrades.new(3)
+	cd.take(Upgrades.Line.WALL_SMASHER)
+	var cd1 := cd.legendary_cooldown()
+	cd.take(Upgrades.Line.WALL_SMASHER)
+	check("rank 2 cools down faster", cd.legendary_cooldown() < cd1)
+
+	var au := Upgrades.new(3)
+	au.take(Upgrades.Line.AUTO_STEER)
+	var dur1 := au.auto_steer_duration()
+	au.take(Upgrades.Line.AUTO_STEER)
+	check("auto-steer rank 2 runs longer", au.auto_steer_duration() > dur1)
+
+	# Rarity: an unstarted legendary must be genuinely rare in the draw.
+	var seen := 0
+	var draws := 3000
+	for i in draws:
+		var fresh := Upgrades.new(i + 1)
+		for line in fresh.roll_cards(3):
+			if fresh.is_legendary(line):
+				seen += 1
+	var rate := float(seen) / float(draws * 3)
+	check("legendaries are rare in the draw", rate < 0.10,
+		"%.1f%% of offered cards" % (rate * 100.0))
+	check("legendaries do appear at all", seen > 0)
+
+	_test_wall_smasher()
+	_test_auto_steer()
+
+
+func _test_wall_smasher() -> void:
+	var m := Maze.new()
+	m.generate(30, 30, 4242, 0.15, 0.02, 3, 0.5, 0.2, 0.0, 0.6)
+
+	var u := Upgrades.new(1)
+	u.take(Upgrades.Line.WALL_SMASHER)
+
+	var r := Racer.new()
+	r.setup(m, u, 0)
+
+	# Find an interior cell with a wall ahead that is NOT the boundary.
+	var found := false
+	for y in range(1, m.height - 1):
+		for x in range(1, m.width - 1):
+			var c := Vector2i(x, y)
+			for dir in Maze.DIRS:
+				if m._has_wall(c, dir) and m._in_bounds(c + Maze.DIR_VECTORS[dir]):
+					r.cell = c
+					r.facing = dir
+					r.progress = 0.0
+					found = true
+					break
+			if found: break
+		if found: break
+	check("found an interior wall to smash", found)
+	if not found:
+		return
+
+	var smash_rec := SignalRecorder.new()
+	r.wall_smashed.connect(smash_rec.on_signal_two)
+	var target := r.cell
+	var dir_hit := r.facing
+	var speed_before := r.speed
+
+	for i in 400:
+		r.step(0.01)
+		if smash_rec.fired():
+			break
+
+	check("driving a wall down smashes it", smash_rec.fired())
+	check("the racer did not crash", r.state == Racer.State.RUNNING)
+	check("the wall is really gone", not m._has_wall(target, dir_hit))
+	check("speed was kept", r.speed >= speed_before * 0.5,
+		"%.2f from %.2f" % [r.speed, speed_before])
+	check("the cooldown started", r.legendary_cooldown > 0.0)
+
+	# The distance field must agree the hole exists, or the indicator points
+	# players around a wall that is not there.
+	check("distance field was rebuilt",
+		m.get_distance(target) >= 0)
+
+	# On cooldown it crashes normally again.
+	var r2 := Racer.new()
+	r2.setup(m, u, 0)
+	r2.legendary_cooldown = 999.0
+	var blocked := -1
+	for y in range(1, m.height - 1):
+		for x in range(1, m.width - 1):
+			var c2 := Vector2i(x, y)
+			for d in Maze.DIRS:
+				if m._has_wall(c2, d) and m._in_bounds(c2 + Maze.DIR_VECTORS[d]):
+					r2.cell = c2
+					r2.facing = d
+					blocked = d
+					break
+			if blocked != -1: break
+		if blocked != -1: break
+	if blocked != -1:
+		for i in 600:
+			r2.step(0.01)
+			if r2.state == Racer.State.PARKED:
+				break
+		check("on cooldown it crashes normally", r2.state == Racer.State.PARKED)
+
+	# The maze BOUNDARY must never break -- it turns the player around instead.
+	var edge := Racer.new()
+	edge.setup(m, u, 0)
+	edge.cell = Vector2i(0, 5)
+	edge.facing = Maze.W
+	edge.progress = 0.0
+	edge.legendary_cooldown = 0.0
+	var facing_before := edge.facing
+	for i in 400:
+		edge.step(0.01)
+		if edge.facing != facing_before:
+			break
+	check("the boundary turns you around instead of breaking",
+		edge.facing == int(Maze.OPPOSITE[facing_before]))
+	check("the racer is still inside the maze",
+		edge.cell.x >= 0 and edge.cell.x < m.width)
+
+
+func _test_auto_steer() -> void:
+	var m := Maze.new()
+	m.generate(30, 30, 77, 0.15, 0.02, 3, 0.5, 0.2, 0.0, 0.6)
+
+	var u := Upgrades.new(1)
+	u.take(Upgrades.Line.AUTO_STEER)
+
+	var r := Racer.new()
+	r.setup(m, u, 0)
+
+	check("auto-steer starts when held and ready", r.start_auto_steer())
+	check("the burst is running", r.auto_steer > 0.0)
+	check("starting it puts it on cooldown", r.legendary_cooldown > 0.0)
+	check("it cannot be restarted while cooling", not r.start_auto_steer())
+
+	# It covers ground faster than an ordinary racer over the same window.
+	var plain := Racer.new()
+	plain.setup(m, Upgrades.new(1), 0)
+	plain.speed = r.speed
+	for i in 100:
+		r.step(0.01)
+		plain.step(0.01)
+	check("auto-steer covers more ground",
+		r.distance_travelled > plain.distance_travelled,
+		"%.2f vs %.2f" % [r.distance_travelled, plain.distance_travelled])
+
+	# Invulnerable: it can never crash while running.
+	var safe := Racer.new()
+	safe.setup(m, u, 0)
+	safe.start_auto_steer()
+	safe.barrier = 0.001
+	for i in 200:
+		safe.step(0.01)
+		if safe.auto_steer <= 0.0:
+			break
+	check("auto-steer never crashes", safe.state == Racer.State.RUNNING)
+	check("auto-steer takes no damage", safe.hp == Tuning.MAX_HP)
+
+	# It expires on its own.
+	var timed := Racer.new()
+	timed.setup(m, u, 0)
+	timed.start_auto_steer()
+	for i in 2000:
+		timed.step(0.01)
+		if timed.auto_steer <= 0.0:
+			break
+	check("the burst ends by itself", timed.auto_steer <= 0.0)
+
+	# A racer without the line cannot start one.
+	var bare := Racer.new()
+	bare.setup(m, Upgrades.new(1), 0)
+	check("no auto-steer without the legendary", not bare.start_auto_steer())
 
 
 func _test_gates() -> void:
@@ -1205,3 +1731,37 @@ func _test_landmarks_do_not_move_the_racer() -> void:
 	check("landmarks do not change speed", absf(a.speed - b.speed) < 0.0001,
 		"%.4f vs %.4f" % [a.speed, b.speed])
 	check("landmarks do not change the barrier", absf(a.barrier - b.barrier) < 0.0001)
+
+
+# Gate and exit markers must rise ABOVE the wall line.
+#
+# This is the whole reason they are physical objects in the world rather than a
+# HUD readout: a gate sits on the solve path and pauses the timer, so the player
+# is routing TOWARD it and needs to see it coming from a couple of corridors
+# away. At 0.9x WALL_HEIGHT it sat just UNDER the walls and was invisible until
+# the player was already in its corridor -- no warning at all at a speed where a
+# cell passes in 125ms.
+#
+# The camera is capped below WALL_HEIGHT on purpose (CLAUDE.md section 12), so
+# height is the ONLY way anything becomes visible from the next corridor over --
+# the same argument the skyline landmark tier rests on.
+func _test_marker_heights() -> void:
+	check("gate markers clear the wall line",
+		Tuning.GATE_MARKER_HEIGHT > 1.0,
+		"%.2f x WALL_HEIGHT" % Tuning.GATE_MARKER_HEIGHT)
+	check("exit markers clear the wall line",
+		Tuning.EXIT_MARKER_HEIGHT > 1.0,
+		"%.2f x WALL_HEIGHT" % Tuning.EXIT_MARKER_HEIGHT)
+
+	# The exit stays taller than a gate. Now that BOTH clear the walls, height is
+	# what separates them at distance -- a gate is a waypoint, the exit ends the
+	# maze, and mistaking one for the other at speed is a real routing error.
+	check("the exit stands taller than a gate",
+		Tuning.EXIT_MARKER_HEIGHT > Tuning.GATE_MARKER_HEIGHT,
+		"exit %.2f vs gate %.2f" % [Tuning.EXIT_MARKER_HEIGHT, Tuning.GATE_MARKER_HEIGHT])
+
+	# But not so tall they read as part of the skyline rather than as a marker
+	# inside the maze.
+	check("markers stay under a sane ceiling",
+		Tuning.EXIT_MARKER_HEIGHT < 5.0,
+		"%.2f x WALL_HEIGHT" % Tuning.EXIT_MARKER_HEIGHT)

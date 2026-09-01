@@ -6,11 +6,12 @@
 # tested headlessly (CLAUDE.md section 12).
 extends Node3D
 
-enum Phase { RACING, UPGRADING, TRANSITION, COMPLETE, PAUSED }
+enum Phase { RACING, UPGRADING, TRANSITION, COMPLETE, PAUSED, DEAD, VISION }
 
 var maze: Maze
 var racer: Racer
 var upgrades: Upgrades
+var score: Score
 
 var phase: int = Phase.RACING
 var maze_index := 0
@@ -42,6 +43,15 @@ var _touch: TouchControls
 var _world: Node3D
 var _transition_time := 0.0
 
+# --- Legendaries (CLAUDE.md section 7) ---------------------------------------
+
+# When the last reverse input arrived, for double-tap detection.
+var _last_reverse_time := -999.0
+
+# Flying Vision: seconds left of the held view, then of the countdown back in.
+var _vision_time := 0.0
+var _vision_countdown := 0.0
+
 # Smoothed camera state, so the view does not snap on turns.
 var _cam_yaw := 0.0
 
@@ -55,6 +65,7 @@ func _ready() -> void:
 	run_seed = trailer_seed if trailer_seed != 0 \
 		else int(Time.get_unix_time_from_system())
 	upgrades = Upgrades.new(run_seed)
+	score = Score.new()
 
 	_build_world()
 	_build_ui()
@@ -310,14 +321,15 @@ func _start_maze(index: int) -> void:
 		int(config["gates"]),
 		float(config.get("straighten", 0.0)),
 		float(config.get("shallow_keep", 1.0)),
-		_landmark_density(index)
+		_landmark_density(index),
+		float(config.get("zigzag_keep", 1.0))
 	)
 
 	if _golden_trail:
 		_golden_trail.reset()
 
 	racer = Racer.new()
-	racer.setup(maze, upgrades)
+	racer.setup(maze, upgrades, index)
 
 	racer.crashed.connect(_on_crashed)
 	racer.unstuck.connect(_on_unstuck)
@@ -326,6 +338,7 @@ func _start_maze(index: int) -> void:
 	racer.exit_reached.connect(_on_exit_reached)
 	racer.turned.connect(_on_turned)
 	racer.reversed.connect(_on_turned.bind(-1))
+	racer.died.connect(_on_died)
 
 	# The track is named on the maze config, so a maze changes its own music the
 	# same way it changes its own palette (docs/specs/music.md). Shared across all
@@ -342,12 +355,44 @@ func _start_maze(index: int) -> void:
 	_cam_yaw = _cam_target_yaw
 
 	phase = Phase.RACING
-	# The trailer prints the maze name itself, larger and clear of the corridor
-	# (docs/specs/trailer.md), so letting the HUD announce it too put the name on
-	# screen twice in two different places.
-	if trailer_seed == 0:
+
+	# The loadout card screen already names the maze in its title, and it opens
+	# on this same frame -- so announcing it on the HUD as well drew the name
+	# twice, overlapping, in two different sizes. The banner is what gives way:
+	# it is the decoration, the title is load-bearing.
+	#
+	# The trailer prints the name itself, larger and clear of the corridor
+	# (docs/specs/trailer.md), which is the same reason it is suppressed there.
+	_offer_loadout(index)
+	if trailer_seed == 0 and phase != Phase.UPGRADING:
 		_hud.show_message("%s" % String(config["name"]).to_upper(),
 			Tuning.PALETTES[palette_index]["wall"])
+
+
+# The loadout pick: one upgrade at the START of every maze, before the racer has
+# covered any ground.
+#
+# It is the same card screen a gate uses, deliberately. The player already knows
+# how to read it, and a second UI saying the same thing in a different shape
+# would be two things to keep in sync for no gain. Only the title changes, so
+# the MOMENT still reads as distinct from a gate.
+#
+# Why it exists: a maze used to open with whatever build the previous one ended
+# on, so arriving somewhere new -- which section 8 wants to read as ARRIVING --
+# came with no decision attached. A pick on entry means every maze starts by
+# asking what you want to be for it.
+#
+# The trailer is excluded for the same reason it suppresses the HUD maze banner:
+# it calls _start_maze five times in thirty seconds and drives a pre-built
+# upgrade set per segment (docs/specs/trailer.md), so a card screen on every cut
+# would cover the reel in modal UI the reel never asked for.
+func _offer_loadout(index: int) -> void:
+	if trailer_seed != 0:
+		return
+
+	phase = Phase.UPGRADING
+	_minimap.blurred = true
+	_upgrade_screen.present_loadout(upgrades, index)
 
 
 # Landmark density for a maze, from its own config (docs/specs/landmarks.md).
@@ -400,12 +445,39 @@ func _process(delta: float) -> void:
 	match phase:
 		Phase.RACING:
 			elapsed += delta
+			# The maze clock drives the time multiplier and runs alongside the
+			# run timer, which measures the whole run (CLAUDE.md section 8b).
+			score.advance_time(delta)
 			racer.step(delta)
+			# Clean travel only: a parked racer earns nothing, which is what
+			# stops a crash paying for the time it costs.
+			if racer.state == Racer.State.RUNNING and not racer.dead:
+				# Kept in step every frame rather than on each pick, so a rank
+				# taken mid-maze applies immediately and nothing has to remember
+				# to push it.
+				score.earn_multiplier = upgrades.score_multiplier()
+				score.add_travel(delta, racer.speed)
 		Phase.TRANSITION:
 			_transition_time -= delta
 			if _transition_time <= 0.0:
 				_start_maze(maze_index + 1)
-		Phase.UPGRADING, Phase.COMPLETE, Phase.PAUSED:
+		Phase.VISION:
+			# Neither clock advances: elapsed and the maze budget are both held,
+			# which is what makes this a genuine reprieve (CLAUDE.md section 7).
+			if _vision_time > 0.0:
+				_vision_time -= delta
+				if _vision_time <= 0.0:
+					_vision_countdown = Tuning.VISION_COUNTDOWN
+			elif _vision_countdown > 0.0:
+				var before := ceili(_vision_countdown)
+				_vision_countdown -= delta
+				var after := ceili(_vision_countdown)
+				# One message per whole second, not per frame.
+				if after != before and after > 0:
+					_hud.show_message(str(after), Color(0.7, 0.9, 1.0))
+				if _vision_countdown <= 0.0:
+					_end_vision()
+		Phase.UPGRADING, Phase.COMPLETE, Phase.PAUSED, Phase.DEAD:
 			# PAUSED stops `elapsed` along with the simulation. The timer IS the
 			# score (CLAUDE.md section 8), so a pause that let it run would be a
 			# penalty for stepping away, and one that let the sim run would be
@@ -416,7 +488,7 @@ func _process(delta: float) -> void:
 
 	if racer:
 		_hud.update_hud(racer, upgrades, elapsed,
-			String(Tuning.MAZES[maze_index]["name"]), maze_index)
+			String(Tuning.MAZES[maze_index]["name"]), maze_index, score)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -453,7 +525,66 @@ func _on_turn_input(direction: int) -> void:
 func _on_reverse_input() -> void:
 	if phase != Phase.RACING:
 		return
+
+	# A double-tap reaches the held legendary. Guarded so it can never steal the
+	# crash un-stick: a parked player mashing DOWN to recover would otherwise
+	# burn the ability at exactly the moment they did not want it
+	# (CLAUDE.md section 7).
+	var now := elapsed
+	var is_double := (now - _last_reverse_time) <= Tuning.DOUBLE_TAP_WINDOW
+	_last_reverse_time = now
+
+	# A press that UN-STICKS is not part of a gesture. Without this the guard
+	# only half-works: the first tap on a parked racer recovers it to RUNNING,
+	# so the second tap sees a running racer and fires the ability -- which is
+	# precisely the recovery mash the guard exists to stop. Clearing the tap
+	# here means the player must press again, deliberately, after they are
+	# actually moving.
+	if racer.state == Racer.State.PARKED:
+		racer.request_reverse()
+		_last_reverse_time = -999.0
+		return
+
+	if is_double and racer.state == Racer.State.RUNNING and not racer.dead:
+		if _try_legendary_gesture():
+			# Consumed: do not also reverse, and clear the tap so a third press
+			# does not immediately read as another double.
+			_last_reverse_time = -999.0
+			return
+
 	racer.request_reverse()
+
+
+# The double-tap abilities. Wall Smasher is not here -- it fires on contact, not
+# on input. Returns true if an ability actually started.
+func _try_legendary_gesture() -> bool:
+	if upgrades.has_flying_vision():
+		return _start_vision()
+	if upgrades.has_auto_steer():
+		if racer.start_auto_steer():
+			_hud.show_message("AUTO-STEER", Color(0.5, 0.85, 1.0))
+			return true
+	return false
+
+
+# Flying Vision: stop the world and rise above the maze.
+#
+# The run timer and the maze budget BOTH stop, which makes using it on cooldown
+# strictly optimal -- a known and accepted cost, recorded in section 7 so it is
+# not mistaken later for an oversight.
+func _start_vision() -> bool:
+	if racer.legendary_cooldown > 0.0:
+		return false
+	racer.legendary_cooldown = upgrades.legendary_cooldown()
+	_vision_time = Tuning.VISION_DURATION
+	_vision_countdown = 0.0
+	phase = Phase.VISION
+	# The minimap is redundant under a real overhead view, and leaving it up
+	# would be a second, worse map competing with the one the ability exists to
+	# give.
+	_minimap.blurred = true
+	_hud.show_message("FLYING VISION", Color(0.7, 0.9, 1.0))
+	return true
 
 
 # Not gated on RACING, unlike the three above: the whole point of pause is that
@@ -482,6 +613,19 @@ func _update_camera(delta: float) -> void:
 		_marker.position = ground
 		_marker.rotation = Vector3(0.0, _yaw_for(racer.facing), 0.0)
 		_marker.update_state(racer, delta)
+
+	# Flying Vision lifts the camera clear of the maze and looks straight down.
+	#
+	# This is the ONE place the section 12 rule "camera height stays below
+	# WALL_HEIGHT" is suspended. That rule exists so corridors feel enclosed
+	# while DRIVING; this is explicitly not driving, and the reprieve from the
+	# enclosure is the whole ability. It bypasses the anti-clip passes too --
+	# there is nothing up there to clip against.
+	if phase == Phase.VISION:
+		var eye := ground + Vector3(0.0, Tuning.VISION_CAMERA_HEIGHT, 0.01)
+		_camera.position = _camera.position.lerp(eye, minf(1.0, delta * 6.0))
+		_camera.look_at(ground, Vector3(0.0, 0.0, -1.0))
+		return
 
 	# Only while actually racing. Between mazes the racer still sits on the OLD
 	# maze's exit cell for a frame after the new maze is swapped in, so a mark
@@ -839,10 +983,14 @@ func _set_paused(on: bool) -> void:
 # --- Events ------------------------------------------------------------------
 
 func _on_turned(_direction: int) -> void:
-	pass
+	# A turn out of a scrape is worth 40% of a clean one -- see the note on
+	# Tuning.SCORE_TURN_SCRAPED. The racer records which it was, because
+	# `scraping` is already cleared by the time this fires.
+	score.add_turn(racer.speed, racer.last_turn_scraped)
 
 
 func _on_crashed() -> void:
+	score.add_crash()
 	_shake = 1.0
 	_hud.flash(Color(1.0, 0.2, 0.15), 0.5)
 	# Held, not faded: the player stays parked until they press DOWN, so the
@@ -868,6 +1016,12 @@ func _on_gate_entered(index: int) -> void:
 
 
 func _on_upgrade_chosen(line: int) -> void:
+	# Idempotent: the screen hides itself on a card press, but this is also
+	# reached directly (harnesses, and any future non-card exit from a pick),
+	# and a pick that ends without hiding the cards leaves them drawn over live
+	# gameplay.
+	_upgrade_screen.dismiss()
+
 	if line >= 0:
 		upgrades.take(line)
 		_hud.show_message("%s  RANK %d" % [
@@ -878,15 +1032,68 @@ func _on_upgrade_chosen(line: int) -> void:
 	phase = Phase.RACING
 
 
+# HP reached 0 with death enabled (Tuning.DEATH_ENABLED).
+#
+# The run ends where it stands. Unlike a crash there is no un-stick: the racer
+# is already PARKED from the crash that killed it, and DEAD stops the timer and
+# the simulation the same way COMPLETE does.
+func _end_vision() -> void:
+	_vision_time = 0.0
+	_vision_countdown = 0.0
+	phase = Phase.RACING
+	_minimap.blurred = false
+	_hud.show_message("GO", Color(0.35, 1.0, 0.45))
+
+
+func _on_died() -> void:
+	phase = Phase.DEAD
+
+	# Bank what was actually achieved in the maze being driven, measured by
+	# gates taken (CLAUDE.md section 8b). Gates are already the maze's own
+	# milestones, evenly spaced along the solve path, so "5 of 8" is a real
+	# statement about progress and needs no extra tracking -- and unlike
+	# distance travelled it cannot be farmed by wandering.
+	var config: Dictionary = Tuning.MAZES[maze_index]
+	var gate_total := maxi(1, int(config["gates"]))
+	var progress := float(racer.gates_taken) / float(gate_total)
+	score.bank_maze(maze_index, String(config["name"]), progress)
+
+	_hud.show_message("RUN OVER  -  %s" % _format_score(score.total()),
+		Color(1.0, 0.3, 0.3), true)
+
+
 func _on_exit_reached() -> void:
+	var config: Dictionary = Tuning.MAZES[maze_index]
+	var mult := score.time_multiplier()
+	var earned := score.bank_maze(maze_index, String(config["name"]))
+
 	if maze_index + 1 < Tuning.MAZES.size():
 		phase = Phase.TRANSITION
 		_transition_time = 2.0
-		_hud.show_message("MAZE CLEARED", Color(0.35, 1.0, 0.45))
+		_hud.show_message("MAZE CLEARED  -  %s  x%.2f" % [
+			_format_score(earned), mult
+		], Color(0.35, 1.0, 0.45))
 	else:
 		phase = Phase.COMPLETE
-		_hud.show_message("RUN COMPLETE  -  %s" % _hud._format_time(elapsed),
+		_hud.show_message("RUN COMPLETE  -  %s" % _format_score(score.total()),
 			Color(0.35, 1.0, 0.45))
+
+
+# Thousands-separated, because a maze banks six figures and a bare run of digits
+# is unreadable at a glance -- and the score is read under exactly the same time
+# pressure as everything else on the HUD.
+func _format_score(value: float) -> String:
+	var n := int(round(value))
+	var sign_text := "-" if n < 0 else ""
+	var digits := str(absi(n))
+	var out := ""
+	var count := 0
+	for i in range(digits.length() - 1, -1, -1):
+		out = digits[i] + out
+		count += 1
+		if count % 3 == 0 and i > 0:
+			out = "," + out
+	return sign_text + out
 
 
 # --- Music -------------------------------------------------------------------

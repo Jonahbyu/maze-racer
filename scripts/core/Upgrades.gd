@@ -19,6 +19,15 @@ enum Line {
 	WALL_ARMOR,
 	GOLDEN_TRAIL,
 	SNAP_TURN,
+	CORNERING,
+	EXPIRY_GRACE,
+	HP_REGEN,
+	SCORE_BONUS,
+	# Legendaries. Rare, active, one per run -- see is_legendary() and the
+	# rarity rule in roll_cards().
+	WALL_SMASHER,
+	FLYING_VISION,
+	AUTO_STEER,
 }
 
 # max_rank is the number of times a line can be taken. Lines whose effect is a
@@ -46,53 +55,64 @@ const DEFINITIONS := {
 	},
 	Line.BUFFER_WINDOW: {
 		"name": "Buffer Window",
-		"max_rank": 5,
+		"max_rank": 7,
 		"desc": [
 			"+0.15 cells of turn buffer. Press earlier and still make the turn.",
 			"+0.15 cells of turn buffer.",
 			"+0.15 cells of turn buffer.",
 			"+0.15 cells of turn buffer.",
 			"+0.15 cells of turn buffer.",
+			"+0.15 cells of turn buffer.",
+			"+0.15 cells of turn buffer. Over two cells of forgiveness.",
 		],
 	},
 	Line.FAST_TURNAROUND: {
 		"name": "Fast Turnaround",
 		"max_rank": 3,
-		"desc": [
-			"180 costs 1.5x instead of 2.0x.",
-			"180 costs 1.0x.",
-			"180 costs only 0.6x.",
-		],
+		# Left empty on purpose: the text is DERIVED from
+		# Tuning.REVERSE_COST_BY_RANK in next_rank_description(), because these
+		# strings had drifted badly -- they still advertised "1.5x instead of
+		# 2.0x" long after the 180 was retuned to 0.75x (CLAUDE.md section 5.3),
+		# so the cards were quoting numbers the game had not used for a while.
+		# A description that restates a tuning value is the same transcription
+		# trap section 12 flags for tests.
+		"desc": [],
 	},
 	Line.BASE_SPEED: {
 		"name": "Base Speed",
-		"max_rank": 5,
+		"max_rank": 7,
 		"desc": [
 			"+0.25x speed floor. Less time in the slow band after a crash.",
 			"+0.25x speed floor.",
 			"+0.25x speed floor.",
 			"+0.25x speed floor.",
 			"+0.25x speed floor.",
+			"+0.25x speed floor.",
+			"+0.25x speed floor. You never drop below 2.5x.",
 		],
 	},
 	Line.BARRIER_CAPACITY: {
 		"name": "Barrier Capacity",
-		"max_rank": 4,
+		"max_rank": 6,
 		"desc": [
 			"+0.25s of wall contact before you crash.",
 			"+0.25s of wall grace.",
 			"+0.25s of wall grace.",
 			"+0.25s of wall grace.",
+			"+0.25s of wall grace.",
+			"+0.25s of wall grace. Two full seconds on the wall.",
 		],
 	},
 	Line.BARRIER_REGEN: {
 		"name": "Barrier Regen",
-		"max_rank": 4,
+		"max_rank": 6,
 		"desc": [
 			"Barrier refills faster between scrapes.",
 			"Barrier refills faster.",
 			"Barrier refills faster.",
 			"Barrier refills faster.",
+			"Barrier refills faster.",
+			"Barrier refills faster. Back to full in under a second.",
 		],
 	},
 	Line.GATE_COMPASS: {
@@ -127,6 +147,73 @@ const DEFINITIONS := {
 			"Every 12s a golden streak races 10 cells down the best route.",
 			"Every 8s, and it runs 15 cells.",
 			"Every 5s, and it runs 20 cells.",
+		],
+	},
+	Line.CORNERING: {
+		"name": "Cornering",
+		"max_rank": 3,
+		"desc": [
+			"Turns cost 20% less speed. Turn-heavy routes stop bleeding you dry.",
+			"Turns cost 40% less.",
+			"Turns cost 60% less. Corner as much as the maze asks.",
+		],
+	},
+	Line.EXPIRY_GRACE: {
+		"name": "Expiry Grace",
+		"max_rank": 3,
+		"desc": [
+			"An expired press costs 0.38x instead of 0.5x. Press early more freely.",
+			"An expired press costs 0.26x.",
+			"An expired press costs only 0.15x.",
+		],
+	},
+	Line.HP_REGEN: {
+		"name": "Repair Field",
+		"max_rank": 3,
+		"desc": [
+			"Recover 0.6 HP per second of clean travel.",
+			"Recover 1.2 HP per second.",
+			"Recover 2.0 HP per second. Drive clean and you drive it off.",
+		],
+	},
+	Line.SCORE_BONUS: {
+		"name": "Score Multiplier",
+		"max_rank": 4,
+		"desc": [
+			"+15% points earned. Stacks before the time bonus.",
+			"+30% points earned.",
+			"+45% points earned.",
+			"+60% points earned.",
+		],
+	},
+	Line.WALL_SMASHER: {
+		"name": "Wall Smasher",
+		"max_rank": 3,
+		"legendary": true,
+		"desc": [
+			"LEGENDARY  -  Every 45s, crash through a wall instead of stopping. Keep your speed; the wall is destroyed.",
+			"Cooldown down to 30s.",
+			"Cooldown down to 20s.",
+		],
+	},
+	Line.FLYING_VISION: {
+		"name": "Flying Vision",
+		"max_rank": 3,
+		"legendary": true,
+		"desc": [
+			"LEGENDARY  -  Double-tap DOWN to stop time and rise above the maze for 5s. Every 45s.",
+			"Cooldown down to 30s.",
+			"Cooldown down to 20s.",
+		],
+	},
+	Line.AUTO_STEER: {
+		"name": "Auto-Steer",
+		"max_rank": 3,
+		"legendary": true,
+		"desc": [
+			"LEGENDARY  -  Double-tap DOWN to be driven down the best route at 2x speed for 3s, untouchable. Every 45s.",
+			"It runs for 4.5s.",
+			"It runs for 6s.",
 		],
 	},
 }
@@ -166,6 +253,18 @@ func line_name(line: int) -> String:
 # Description of what the NEXT rank does -- that is what a card is offering.
 func next_rank_description(line: int) -> String:
 	var r := rank(line)
+
+	# Fast Turnaround reads its numbers from the tuning table rather than from a
+	# fixed string, so the card can never advertise a cost the game does not
+	# charge.
+	if line == Line.FAST_TURNAROUND:
+		var costs: Array = Tuning.REVERSE_COST_BY_RANK
+		if r + 1 >= costs.size():
+			return ""
+		return "A 180 costs %.2fx instead of %.2fx." % [
+			float(costs[r + 1]), float(costs[r])
+		]
+
 	var descs: Array = DEFINITIONS[line]["desc"]
 	if r >= descs.size():
 		return ""
@@ -227,9 +326,99 @@ func barrier_regen() -> float:
 	return Tuning.BASE_BARRIER_REGEN + rank(Line.BARRIER_REGEN) * Tuning.BARRIER_REGEN_PER_RANK
 
 
-func wall_damage() -> int:
+# Damage from one crash, on the given maze.
+#
+# The maze index is a PARAMETER rather than state held here, because Upgrades is
+# the player's build and the maze is not part of it -- the same build crashing
+# on maze 1 and maze 5 must give different answers, and an Upgrades that
+# remembered which maze it was on would be two things at once.
+#
+# Armor subtracts AFTER the per-maze scaling, so a rank of Wall Armor is worth
+# the same flat point everywhere rather than being multiplied up in the late
+# mazes where the damage is already largest.
+func wall_damage(maze_index: int = 0) -> int:
+	var base := Tuning.WALL_DAMAGE + maxi(0, maze_index) * Tuning.WALL_DAMAGE_PER_MAZE
 	# Never heals on contact, however much armor is stacked.
-	return maxi(0, Tuning.WALL_DAMAGE - rank(Line.WALL_ARMOR) * Tuning.WALL_ARMOR_PER_RANK)
+	return maxi(0, base - rank(Line.WALL_ARMOR) * Tuning.WALL_ARMOR_PER_RANK)
+
+
+# The per-turn speed cost. Cornering reduces it, never to zero -- a free turn
+# would remove the routing decision the cost exists to create (section 5.3).
+func turn_cost() -> float:
+	var r := mini(rank(Line.CORNERING), Tuning.TURN_COST_BY_RANK.size() - 1)
+	return float(Tuning.TURN_COST_BY_RANK[r])
+
+
+# The speed cost of an expired turn input. Expiry Grace shrinks it, never to
+# zero -- an expired press must always mean something.
+func slowdown_penalty() -> float:
+	var r := mini(rank(Line.EXPIRY_GRACE), Tuning.SLOWDOWN_PENALTY_BY_RANK.size() - 1)
+	return float(Tuning.SLOWDOWN_PENALTY_BY_RANK[r])
+
+
+# HP restored per second of clean travel. Zero without the line, so HP only ever
+# falls on an unupgraded build.
+func hp_regen() -> float:
+	var r := mini(rank(Line.HP_REGEN), Tuning.HP_REGEN_BY_RANK.size() - 1)
+	return float(Tuning.HP_REGEN_BY_RANK[r])
+
+
+func has_hp_regen() -> bool:
+	return rank(Line.HP_REGEN) > 0
+
+
+# Multiplier on points earned, from the Score Multiplier line. Applied to the
+# maze subtotal before the time multiplier (CLAUDE.md section 8b).
+func score_multiplier() -> float:
+	return 1.0 + rank(Line.SCORE_BONUS) * Tuning.SCORE_BONUS_PER_RANK
+
+
+# --- Legendaries -------------------------------------------------------------
+
+func is_legendary(line: int) -> bool:
+	return bool(DEFINITIONS[line].get("legendary", false))
+
+
+# The legendary held this run, or -1. One per run is enforced at the OFFER
+# (roll_cards), so this can never find more than one.
+func legendary_line() -> int:
+	for line in Line.values():
+		if is_legendary(line) and rank(line) > 0:
+			return line
+	return -1
+
+
+func has_legendary() -> bool:
+	return legendary_line() != -1
+
+
+# Cooldown for whichever legendary is held, in seconds. 0.0 when none is.
+func legendary_cooldown() -> float:
+	var line := legendary_line()
+	if line == -1:
+		return 0.0
+	var r := rank(line)
+	if line == Line.AUTO_STEER:
+		return Tuning.AUTOSTEER_COOLDOWN
+	var table: Array = Tuning.LEGENDARY_COOLDOWN_BY_RANK
+	return float(table[mini(r, table.size() - 1)])
+
+
+func has_wall_smasher() -> bool:
+	return rank(Line.WALL_SMASHER) > 0
+
+
+func has_flying_vision() -> bool:
+	return rank(Line.FLYING_VISION) > 0
+
+
+func has_auto_steer() -> bool:
+	return rank(Line.AUTO_STEER) > 0
+
+
+func auto_steer_duration() -> float:
+	var r := mini(rank(Line.AUTO_STEER), Tuning.AUTOSTEER_DURATION_BY_RANK.size() - 1)
+	return float(Tuning.AUTOSTEER_DURATION_BY_RANK[r])
 
 
 func has_indicator() -> bool:
@@ -277,17 +466,32 @@ func trail_cells() -> float:
 # picks should feel like they open options, not deepen one stat
 # (CLAUDE.md section 7).
 func roll_cards(count: int = Tuning.CARDS_PER_GATE) -> Array[int]:
+	# One legendary per run, enforced at the OFFER rather than at the take: once
+	# any legendary is held, no legendary is ever offered again. Refusing a
+	# second at pick time instead would waste the pick and read as a bug
+	# (CLAUDE.md section 7).
+	var holds_legendary := has_legendary()
+
 	var available: Array[int] = []
 	for line in Line.values():
-		if not is_maxed(line):
-			available.append(line)
+		if is_maxed(line):
+			continue
+		# A legendary already started stays upgradeable; a DIFFERENT one is
+		# locked out for the rest of the run.
+		if is_legendary(line) and holds_legendary and rank(line) == 0:
+			continue
+		available.append(line)
 
 	var offered: Array[int] = []
 
 	if started_line_count() < 3:
 		var fresh: Array[int] = []
 		for line in available:
-			if rank(line) == 0:
+			# Never satisfy the "open a new line" guarantee with a legendary:
+			# that rule exists so early picks feel like they open options, and
+			# spending it on the rare tier would make a legendary a near-certain
+			# opener rather than a rare find.
+			if rank(line) == 0 and not is_legendary(line):
 				fresh.append(line)
 		if not fresh.is_empty():
 			var pick: int = fresh[_rng.randi_range(0, fresh.size() - 1)]
@@ -295,11 +499,37 @@ func roll_cards(count: int = Tuning.CARDS_PER_GATE) -> Array[int]:
 			available.erase(pick)
 
 	while offered.size() < count and not available.is_empty():
-		var pick: int = available[_rng.randi_range(0, available.size() - 1)]
+		var pick: int = _weighted_pick(available)
 		offered.append(pick)
 		available.erase(pick)
 
 	return offered
+
+
+# Weighted draw. Ordinary lines weigh 1.0; legendaries weigh far less, which is
+# what actually makes the tier RARE -- a uniform draw would surface a legendary
+# as often as Buffer Window, and "rare" would be a label rather than a fact.
+#
+# An UNSTARTED legendary is the rare case. Once one is held it is an ordinary
+# part of the build and upgrading it should not be a lottery, so it draws at
+# full weight like anything else.
+func _weighted_pick(pool: Array[int]) -> int:
+	var total := 0.0
+	for line in pool:
+		total += _draw_weight(line)
+
+	var roll := _rng.randf() * total
+	for line in pool:
+		roll -= _draw_weight(line)
+		if roll <= 0.0:
+			return line
+	return pool[pool.size() - 1]
+
+
+func _draw_weight(line: int) -> float:
+	if is_legendary(line) and rank(line) == 0:
+		return Tuning.LEGENDARY_DRAW_WEIGHT
+	return 1.0
 
 
 func snapshot() -> Dictionary:

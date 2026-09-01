@@ -33,6 +33,19 @@ func _ready() -> void:
 
 
 func present(upgrades: Upgrades, gate_index: int) -> void:
+	_present("GATE %d  -  CHOOSE AN UPGRADE" % gate_index, upgrades)
+
+
+# The maze-start loadout pick (CLAUDE.md section 7). Identical machinery to a
+# gate pick -- same cards, same keys, same signal -- with a title that names the
+# maze instead of a gate number, so the player can tell the two moments apart
+# without having to learn a second interface.
+func present_loadout(upgrades: Upgrades, maze_index: int) -> void:
+	var maze_name := String(Tuning.MAZES[maze_index]["name"]).to_upper()
+	_present("%s  -  CHOOSE YOUR LOADOUT" % maze_name, upgrades)
+
+
+func _present(title_text: String, upgrades: Upgrades) -> void:
 	_clear()
 
 	_lines = upgrades.roll_cards()
@@ -49,7 +62,7 @@ func present(upgrades: Upgrades, gate_index: int) -> void:
 	add_child(scrim)
 
 	var title := Label.new()
-	title.text = "GATE %d  -  CHOOSE AN UPGRADE" % gate_index
+	title.text = title_text
 	title.add_theme_font_size_override("font_size", 30)
 	title.add_theme_color_override("font_color", COL_ACCENT)
 	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
@@ -149,9 +162,19 @@ func _make_card(upgrades: Upgrades, line: int, index: int) -> Button:
 
 
 func _on_card_pressed(line: int) -> void:
+	dismiss()
+	emit_signal("upgrade_chosen", line)
+
+
+# Take the cards down without choosing.
+#
+# Visibility used to be cleared ONLY on a card press, so any other route out of
+# the pick left the screen rendering over live gameplay -- the cards are a
+# Control that knows nothing about the phase machine, so nothing else was going
+# to hide them. Anything that ends a pick calls this.
+func dismiss() -> void:
 	visible = false
 	_clear()
-	emit_signal("upgrade_chosen", line)
 
 
 func _unhandled_input(event: InputEvent) -> void:

@@ -100,6 +100,24 @@ func _go() -> void:
 	print("hp remaining  : %d" % _game.racer.hp)
 	print("upgrades      : %s" % str(_game.upgrades.snapshot()))
 
+	# The score breakdown (CLAUDE.md section 8b). Printed per maze because the
+	# time multiplier is where most of the variation lives, and a single total
+	# hides whether a maze was banked well or merely banked.
+	if _game.score != null:
+		print("")
+		print("score         : %.0f" % _game.score.total())
+		for entry in _game.score.maze_results:
+			print("  %-14s %8.0f  x%.2f  = %10.0f   (%.0fs)" % [
+				String(entry["name"]),
+				float(entry["subtotal"]),
+				float(entry["multiplier"]),
+				float(entry["score"]),
+				float(entry["time"]),
+			])
+		print("  clean turns  : %d" % _game.score.clean_turns)
+		print("  scraped turns: %d" % _game.score.scraped_turns)
+		print("  crashes      : %d" % _game.score.crashes)
+
 	# An autopilot that always takes the optimal turn should collect every gate
 	# on every maze -- gates sit ON the solve path, so a perfect router cannot
 	# miss one.

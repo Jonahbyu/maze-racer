@@ -93,24 +93,71 @@ const REVERSE_COST_BY_RANK := [0.75, 0.55, 0.4, 0.25]
 const BASE_BARRIER := 0.5
 const BARRIER_PER_RANK := 0.25
 
-# Full refill in 2s of clean travel at base.
-const BASE_BARRIER_REGEN := 0.25
+# Full refill in 3.3s of clean travel at base -- slower than the 0.25 it started
+# at. The barrier is the skill ceiling (CLAUDE.md section 11.4), and a refill
+# fast enough to be back before the next corridor made scraping close to free:
+# the pool was always full, so the interesting question -- "can I afford this
+# brush?" -- never got asked. Regen is now slow enough that consecutive scrapes
+# compound, which is what makes Barrier Regen a line worth taking.
+const BASE_BARRIER_REGEN := 0.15
 const BARRIER_REGEN_PER_RANK := 0.15
 
 const MAX_HP := 100
-const WALL_DAMAGE := 1
+
+# Wall damage per crash on maze 1, climbing by WALL_DAMAGE_PER_MAZE each maze:
+# 3, 5, 7, 9, 11. Against 100 HP that is ~33 crashes on maze 1 and ~9 on maze 5.
+#
+# It was a flat 1, which made HP decorative -- 100 crashes to die, in a game
+# whose longest run is a few minutes. Section 5.5 always intended HP to "become
+# relevant in the late mazes"; a flat rate cannot do that, because the same
+# number against a fixed pool is the same pressure everywhere. Scaling per maze
+# is what turns HP into an escalation lever alongside size and loop density
+# (section 8), and it is what gives Wall Armor and HP Regen something to bite.
+const WALL_DAMAGE := 3
+const WALL_DAMAGE_PER_MAZE := 2
 
 # An expired turn input. Cheap, frequent, and teaching -- it says "you were
 # early" without derailing the run. Not a crash: no HP, no barrier drain.
 const SLOWDOWN_PENALTY := 0.5
 
-# v1 has no death. The path exists; the flag is off (CLAUDE.md section 5.5).
-const DEATH_ENABLED := false
+# Death is ON. HP reaching 0 ends the run.
+#
+# This reverses the original v1 call (section 5.5, "no death in v1") and it is a
+# real change of genre, not a tuning tweak: the timer stops being the ONLY thing
+# the player fights (section 8). It was turned on deliberately, together with
+# the scaling wall damage above -- the two only make sense as a pair, since
+# damage that scales toward a pool that can never empty is a number with no
+# consequence, and death against a flat 1 damage would almost never fire.
+const DEATH_ENABLED := true
 
 # --- Upgrades (CLAUDE.md section 7) ------------------------------------------
 
 const BASE_SPEED_PER_RANK := 0.25
 const WALL_ARMOR_PER_RANK := 1
+
+# Cornering: the per-turn speed cost by rank (index 0 = no upgrade).
+#
+# This line moves the section 5.3 equilibrium DIRECTLY -- speed settles where
+# ramp-gain per second equals turn-cost per second, so halving the cost roughly
+# doubles the settling point. That is why it is a routing decision rather than a
+# stat: a Cornering build can afford a turn-heavy route that would bleed an
+# unupgraded racer dry. It never reaches zero, because a free turn would remove
+# the choice the cost exists to create.
+const TURN_COST_BY_RANK := [0.03, 0.024, 0.018, 0.012]
+
+# Expiry Grace: the slowdown penalty for an expired input, by rank.
+#
+# Pairs with Buffer Window into a genuine "press early, press often" build.
+# Never zero -- an expired press must always mean something, or the buffer stops
+# being a window and becomes an invitation to mash.
+const SLOWDOWN_PENALTY_BY_RANK := [0.5, 0.38, 0.26, 0.15]
+
+# HP Regen: HP restored per second of clean (non-parked, non-scraping) travel.
+#
+# Rank 0 is zero -- without the line, HP only ever goes down. It regenerates on
+# CLEAN travel specifically, so it rewards the same thing the speed ramp does
+# (section 3) and cannot be farmed by sitting still.
+const HP_REGEN_BY_RANK := [0.0, 0.6, 1.2, 2.0]
 
 # Path Indicator: how many cells ahead the junction warning appears, by rank.
 const INDICATOR_LOOKAHEAD_BY_RANK := [0.0, 1.0, 2.0, 3.5]
@@ -133,6 +180,102 @@ const TRAIL_SPEED_MULTIPLIER := 2.0
 const TRAIL_LINGER := 2.0
 
 const CARDS_PER_GATE := 3
+
+# --- Score (CLAUDE.md section 8b) --------------------------------------------
+#
+# Every award scales with speed, which is what makes the section 3 ramp pay off
+# in the score and not only on the clock.
+
+# Points per second of clean travel, times current speed. Not while parked.
+const SCORE_PER_SECOND := 10.0
+
+# A turn taken with the barrier untouched, times current speed.
+const SCORE_TURN_CLEAN := 60.0
+
+# A turn taken out of a scrape, times current speed. 40% of a clean turn: a
+# clean turn must be clearly better, but section 11.4 calls wall-brushing the
+# skill ceiling, so scoring a scrape as a failure would turn the expert texture
+# into a penalty. It still pays far more than the crash it avoided.
+const SCORE_TURN_SCRAPED := 24.0
+
+# Flat, NOT speed-scaled. A crash already resets speed to the floor, so a
+# speed-scaled penalty would charge most at the moment it also removes the
+# ability to earn. ~1.7% of a typical maze subtotal.
+const SCORE_CRASH_PENALTY := 1000.0
+
+# Seconds allowed per maze before the multiplier drops below 1.0. Roughly 3x
+# what a perfect autopilot needs (measured ~54-59s per maze), which puts a good
+# human run at 60-100s left and a sloppy one near zero. At the 420s first
+# proposed, every run banked ~360s and the multiplier stopped discriminating.
+const SCORE_TIME_BUDGET := 180.0
+
+# Asymmetric by design (CLAUDE.md section 8b): leftover time is rewarded steeply
+# because that is the routing skill being measured, while overtime decays gently
+# so two badly-overrun runs stay distinguishable instead of both flooring.
+const SCORE_MULT_DIVISOR := 30.0
+const SCORE_OVERTIME_DIVISOR := 120.0
+const SCORE_MULT_FLOOR := 0.20
+
+# Score Multiplier upgrade: +15% earned points per rank, applied to the maze
+# subtotal BEFORE the time multiplier so it compounds with routing rather than
+# substituting for it (CLAUDE.md section 7).
+const SCORE_BONUS_PER_RANK := 0.15
+
+# --- Legendaries (CLAUDE.md section 7) ---------------------------------------
+#
+# Rare, active, one per run. Each is an ability with an input and a cooldown,
+# which is what separates the tier from the ordinary tree.
+
+# Cooldown by rank for the two cooldown-scaling legendaries. Index 0 is rank 0
+# and is never used -- a legendary at rank 0 is not held at all.
+const LEGENDARY_COOLDOWN_BY_RANK := [0.0, 45.0, 30.0, 20.0]
+
+# Auto-Steer scales its DURATION rather than its cooldown.
+const AUTOSTEER_DURATION_BY_RANK := [0.0, 3.0, 4.5, 6.0]
+const AUTOSTEER_COOLDOWN := 45.0
+const AUTOSTEER_SPEED_MULTIPLIER := 2.0
+
+# Flying Vision: how long the world is held, then the countdown back in. The
+# countdown is not decoration -- returning a player straight to a running
+# simulation after five seconds of a static overhead view hands back control
+# while they are still re-orienting.
+const VISION_DURATION := 5.0
+const VISION_COUNTDOWN := 3.0
+
+# How high the vision camera lifts, in cells. This is the one place the
+# "camera stays below WALL_HEIGHT" rule (section 12) is suspended: that rule
+# exists so corridors feel enclosed WHILE DRIVING, and this is explicitly not
+# driving.
+const VISION_CAMERA_HEIGHT := 34.0
+
+# Two taps within this window count as a double-tap. Long enough to be
+# reachable at speed, short enough that two deliberate 180s a beat apart are
+# not mistaken for one.
+const DOUBLE_TAP_WINDOW := 0.40
+
+# How heavily an UNSTARTED legendary is weighted against an ordinary line in the
+# card draw. A uniform draw would surface one as often as Buffer Window, which
+# would make "rare" a label rather than a fact. Once a legendary is held it
+# draws at full weight -- upgrading the one you have should not be a lottery.
+#
+# TUNED BY MEASUREMENT, not by feel: a run makes 45 picks, so even a small
+# per-card weight accumulates into near-certainty across a whole run. Measured
+# over 2000 simulated runs (share of runs that are ever OFFERED one, and the
+# pick number it first shows up at):
+#
+#   weight  runs seeing one  first sighting
+#   0.180        100.0%        pick 8.3
+#   0.100         98.3%        pick 12.8
+#   0.060         92.2%        pick 17.4
+#   0.040         81.8%        pick 20.2      <- chosen
+#   0.025         66.0%        pick 22.4
+#   0.015         48.1%        pick 23.7
+#
+# 0.04 makes a legendary a genuine find that reshapes the back half of a run
+# -- first seen around maze 3 -- while still letting most runs actually play
+# with a tier that carries three whole abilities. At 0.18 it was guaranteed by
+# maze 1 and not rare at all; below 0.025 most runs never meet one.
+const LEGENDARY_DRAW_WEIGHT := 0.04
 
 # --- Music (docs/specs/music.md) ---------------------------------------------
 
@@ -188,10 +331,11 @@ const MAZES := [
 		# Fraction of one-cell stubs kept. Maze 1 is the introduction: a
 		# turnaround here teaches nothing the player has the speed to act on.
 		"shallow_keep": 0.15,
+		"zigzag_keep": 0.62,
 		"gates": 8,
 		# Densest of the set. Maze 1 is where the vocabulary is learned, so the
 		# player needs to meet several types before landmarks can mean anything.
-		"landmarks": 0.34,
+		"landmarks": 0.85,
 		# Longer straight runs than the later mazes, so maze 1 reads as an
 		# introduction: room to build speed and to see a junction coming before
 		# having to decide.
@@ -213,8 +357,9 @@ const MAZES := [
 		"braid": 0.12,
 		"dead_ends": 0.028,
 		"shallow_keep": 0.11,
+		"zigzag_keep": 0.56,
 		"gates": 8,
-		"landmarks": 0.32,
+		"landmarks": 0.80,
 	},
 	{
 		"name": "The Tangle",
@@ -225,8 +370,9 @@ const MAZES := [
 		"braid": 0.18,
 		"dead_ends": 0.030,
 		"shallow_keep": 0.12,
+		"zigzag_keep": 0.62,
 		"gates": 8,
-		"landmarks": 0.30,
+		"landmarks": 0.88,
 	},
 	{
 		"name": "The Labyrinth",
@@ -237,8 +383,9 @@ const MAZES := [
 		"braid": 0.25,
 		"dead_ends": 0.030,
 		"shallow_keep": 0.11,
+		"zigzag_keep": 0.70,
 		"gates": 8,
-		"landmarks": 0.28,
+		"landmarks": 0.92,
 	},
 	{
 		"name": "The Vault",
@@ -263,11 +410,12 @@ const MAZES := [
 		# stubs. Tuned against DeadEndProbe rather than set to the intended
 		# share directly -- re-run it after touching braid or dead_ends here.
 		"shallow_keep": 0.10,
+		"zigzag_keep": 0.78,
 		"gates": 8,
 		# Sparsest. By here the maze is 100x100 and a fixed fraction of a much
 		# larger eligible set would be a forest -- scarcity is what makes a
 		# landmark memorable (see LANDMARK_DENSITY).
-		"landmarks": 0.26,
+		"landmarks": 0.95,
 	},
 ]
 
@@ -385,6 +533,30 @@ const PALETTES := [
 # the bright thing in the corridor once per maze.
 const NEON_GATE := Color(1.0, 0.85, 0.15)
 const NEON_EXIT := Color(1.0, 1.0, 1.0)
+
+
+# Marker heights, as a multiple of WALL_HEIGHT.
+#
+# Both CLEAR THE WALL LINE, and that is the whole point of the numbers.
+#
+# Gates were 0.9 -- just UNDER the walls -- so a gate was invisible until the
+# player was already in its corridor, which is no warning at all at a speed
+# where a cell passes in 125ms. A gate is navigation (section 7): it sits on the
+# solve path, it pauses the timer, and it is the thing the player is routing
+# TOWARD, so seeing one two corridors away is the entire reason it is a physical
+# object in the world rather than a HUD readout.
+#
+# This is the same argument the skyline landmark tier rests on: the camera is
+# capped below WALL_HEIGHT on purpose (section 12), so the ONLY way anything is
+# visible from the next corridor over is by being tall enough to clear the walls
+# itself. Raising the camera instead would flatten the maze into a floor plan.
+#
+# The exit stays TALLER than a gate. Now that both clear the walls, height is
+# what separates them at distance -- a gate is a waypoint, the exit ends the
+# maze, and mistaking one for the other at speed is a real routing error.
+# Colour separates them up close (amber-yellow vs white).
+const GATE_MARKER_HEIGHT := 1.85
+const EXIT_MARKER_HEIGHT := 2.6
 
 
 # --- World scale -------------------------------------------------------------
@@ -662,7 +834,7 @@ const LANDMARK_DENSITY := 0.24
 # Landmarks placed OUTSIDE the maze boundary, giving it an exterior. Skyline
 # tier only -- a local one out there would never clear the boundary wall and so
 # would never be seen at all.
-const LANDMARK_EXTERIOR_COUNT := 14
+const LANDMARK_EXTERIOR_COUNT := 55
 
 # How far beyond the boundary wall the exterior ring sits, in cells. Far enough
 # that they read as distant scenery rather than as part of the maze, close
