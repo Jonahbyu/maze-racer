@@ -80,13 +80,11 @@ func _ready() -> void:
 
 	_bus_index = _ensure_bus()
 
-	# Only the web has an autoplay policy to satisfy. Checking the platform
-	# rather than the AudioContext state because Godot exposes no way to read
-	# that from GDScript -- the engine resumes the context itself once input
-	# has been seen, so what this needs to know is when to RETRY the track.
+	# Only the web has an autoplay policy to satisfy, so only the web starts
+	# locked. The platform check picks WHETHER to wait; _poll_unlock decides
+	# when the wait is over by reading the AudioContext itself.
 	if OS.has_feature("web"):
 		_unlocked = false
-		set_process_input(true)
 
 	_follow_settings()
 
@@ -241,24 +239,56 @@ func current_track() -> String:
 
 # --- Browser autoplay unlock -------------------------------------------------
 
-# The first real interaction is what lets the browser start audio. Godot resumes
-# the AudioContext itself once it has seen input; this just replays whatever was
-# requested while the page was still mute, and then gets out of the way.
+# The unlock has to watch the AudioContext, NOT Godot's input.
 #
-# Any input counts -- a click on PLAY, or a key press. Deliberately not limited
-# to the menu button: the game can be reached by keyboard, and a player who
-# never touches the mouse would otherwise stay silent for the whole run.
-func _input(event: InputEvent) -> void:
+# It was an `_input` handler, and that misses the one gesture that matters. The
+# player's first interaction is the shell's PLAY button -- an HTML element
+# OUTSIDE the canvas -- so Godot never sees it, `_unlocked` stayed false, and
+# the menu's track sat in `_pending` forever. Measured over CDP against the live
+# site: the context was `running` with its clock advancing in real time while
+# the game was still holding the track unplayed. The browser half was working;
+# this half never fired.
+#
+# Reaching a canvas click is not enough either. The menu is fully playable with
+# the keyboard, and a keypress on the canvas is only seen once the canvas has
+# focus -- which it acquires from that same out-of-canvas PLAY click.
+#
+# So ask the context directly. `shell.html` already collects every context the
+# engine creates, for its own resume() call, and its state is the exact fact
+# this needs: `running` means the browser has accepted a gesture and audio will
+# be heard. Polled in _process rather than pushed from JS, so nothing depends on
+# the shell calling into GDScript -- a custom shell that someone later replaces
+# takes the audio with it, silently, and that is how this broke the first time.
+func _poll_unlock() -> void:
 	if _unlocked:
 		return
-	if not (event is InputEventKey or event is InputEventMouseButton
-			or event is InputEventScreenTouch):
-		return
-	if not event.is_pressed():
+
+	var state := ""
+	if OS.has_feature("web"):
+		# Falls back to the engine's own context if the shell hook is absent,
+		# so a default shell still unlocks.
+		var v = JavaScriptBridge.eval("""
+			(function () {
+				var l = window.__godotAudioContexts || [];
+				if (l.length && l[0]) { return l[0].state; }
+				return (window.GodotAudio && window.GodotAudio.ctx)
+					? window.GodotAudio.ctx.state : "";
+			})();
+		""", true)
+		if typeof(v) == TYPE_STRING:
+			state = v
+
+	if state != "running":
 		return
 
+	_unlock()
+
+
+# Split from the poll so a test can drive it without a browser.
+func _unlock() -> void:
+	if _unlocked:
+		return
 	_unlocked = true
-	set_process_input(false)
 
 	# Restart what was asked for while locked, from the top. _current is already
 	# set to it, so clear that first or play() returns early as a no-op.
@@ -319,6 +349,10 @@ func is_muted() -> bool:
 # --- Fade --------------------------------------------------------------------
 
 func _process(delta: float) -> void:
+	# Cheap once unlocked -- it returns on the first line -- and off the web
+	# `_unlocked` starts true, so this never evaluates anything at all.
+	_poll_unlock()
+
 	if _players.is_empty():
 		return
 

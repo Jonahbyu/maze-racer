@@ -20,6 +20,11 @@ const COL_CARD_HOVER := Color(0.12, 0.20, 0.32, 0.98)
 const BUTTON_SIZE := Vector2(360, 62)
 const SEPARATION := 18.0
 
+# Angular offsets of the four points that make one gear tooth, as a fraction
+# of one tooth's arc: rise, flat top, fall, flat gap. Named rather than inlined
+# because the four numbers are meaningless out of order.
+const _COG_STEP: Array[float] = [0.06, 0.20, 0.30, 0.44]
+
 const COG_SIZE := 52.0
 const COG_MARGIN := 24.0
 
@@ -104,14 +109,18 @@ func _build_buttons() -> void:
 # room, and putting it in the stack is what crowded the stack in the first place.
 func _build_cog() -> void:
 	var cog := Button.new()
-	cog.text = "⚙"
+	# NO TEXT. This was "⚙" (U+2699 GEAR) and it rendered as a tofu box in
+	# the web build -- the exact failure section 9d records for the touch pads,
+	# arriving by the same route: a character is only as reliable as the font
+	# behind it, and the web export falls back to whatever the device ships.
+	# A missing glyph renders as a box, so the door to every setting looked
+	# broken on the one platform that cannot be checked from here.
+	#
+	# Drawn from polygons instead, which owe nothing to a font and scale with
+	# the button. Same fix the steering arrows and the pause bars already got.
 	cog.tooltip_text = "Settings"
 	cog.custom_minimum_size = Vector2(COG_SIZE, COG_SIZE)
 	cog.focus_mode = Control.FOCUS_ALL
-	cog.add_theme_font_size_override("font_size", 30)
-	cog.add_theme_color_override("font_color", COL_DIM)
-	cog.add_theme_color_override("font_hover_color", COL_ACCENT)
-	cog.add_theme_color_override("font_focus_color", COL_ACCENT)
 
 	for state in ["normal", "hover", "pressed", "focus", "disabled"]:
 		var style := StyleBoxFlat.new()
@@ -135,6 +144,73 @@ func _build_cog() -> void:
 	cog.pressed.connect(_on_settings)
 	_cog = cog
 	add_child(cog)
+
+	# Added after add_child so the icon inherits the button's final rect.
+	_build_cog_icon(cog)
+
+	# The glyph used to take its colour from font_color overrides, which a
+	# polygon does not read. Hover and focus are re-tinted by hand instead.
+	cog.mouse_entered.connect(_tint_cog.bind(true))
+	cog.mouse_exited.connect(_tint_cog.bind(false))
+	cog.focus_entered.connect(_tint_cog.bind(true))
+	cog.focus_exited.connect(_tint_cog.bind(false))
+
+
+# A gear: a toothed ring plus a hub hole, built from two polygons.
+#
+# Drawn rather than typed, for the reason in _build_cog. Geometry is derived
+# from COG_SIZE so the icon tracks the button at any size -- a hard-coded span
+# is the section 12 layout-band trap, which only looks right by coincidence.
+func _build_cog_icon(cog: Button) -> void:
+	var icon := Control.new()
+	icon.name = "CogIcon"
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	cog.add_child(icon)
+
+	var mid := COG_SIZE * 0.5
+	var r_out := COG_SIZE * 0.30
+	var r_in := COG_SIZE * 0.21
+	var teeth := 8
+
+	# The toothed ring. Two radii alternating around the circle, four points
+	# per tooth, gives square teeth rather than a star.
+	var ring := PackedVector2Array()
+	for i in teeth * 4:
+		var seg := i % 4
+		var r: float = r_out if (seg == 1 or seg == 2) else r_in
+		var a: float = TAU * (float(i / 4) + _COG_STEP[seg]) / float(teeth)
+		ring.append(Vector2(mid + cos(a) * r, mid + sin(a) * r))
+
+	var body := Polygon2D.new()
+	body.name = "CogBody"
+	body.polygon = ring
+	body.color = COL_DIM
+	icon.add_child(body)
+
+	# The hub, in the card colour, so the ring reads as a gear and not a blob.
+	var hub := PackedVector2Array()
+	for i in 16:
+		var a := TAU * float(i) / 16.0
+		hub.append(Vector2(mid + cos(a) * COG_SIZE * 0.105,
+			mid + sin(a) * COG_SIZE * 0.105))
+
+	var hole := Polygon2D.new()
+	hole.name = "CogHub"
+	hole.polygon = hub
+	hole.color = COL_CARD
+	icon.add_child(hole)
+
+
+func _tint_cog(lit: bool) -> void:
+	if _cog == null:
+		return
+	var body := _cog.get_node_or_null("CogIcon/CogBody")
+	if body != null:
+		body.color = COL_ACCENT if lit else COL_DIM
+	var hub := _cog.get_node_or_null("CogIcon/CogHub")
+	if hub != null:
+		hub.color = COL_CARD_HOVER if lit else COL_CARD
 
 
 func _on_settings() -> void:

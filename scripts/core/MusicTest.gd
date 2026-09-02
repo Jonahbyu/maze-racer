@@ -335,13 +335,26 @@ func _check_autoplay_lock() -> void:
 	# is correct. What must not happen is a NEW start, which is what the
 	# _active check above catches.
 
-	# A key press is a real gesture and must release it.
-	var key := InputEventKey.new()
-	key.keycode = KEY_SPACE
-	key.pressed = true
-	music._input(key)
+	# Off the web the poll must never unlock on its own -- `_unlocked` is
+	# forced false here, but a desktop build has no autoplay policy and no
+	# AudioContext, so the poll has nothing to read and must leave it held.
+	music._poll_unlock()
+	check("the poll does not unlock without a running context",
+		not bool(music._unlocked))
+	check("the track is still held after a no-op poll",
+		String(music._pending) == Music.MENU_TRACK)
 
-	check("input unlocks audio", bool(music._unlocked))
+	# The browser reporting a running context is what releases it. Driven
+	# directly because there is no AudioContext to satisfy headlessly -- this
+	# is the half `_poll_unlock` calls once the state reads "running".
+	#
+	# It used to be an `_input` handler taking a synthetic key press, and that
+	# assertion passed against a build that was silent in every browser: the
+	# real first gesture is the shell's PLAY button, which is outside the
+	# canvas and never reaches Godot input at all.
+	music._unlock()
+
+	check("unlocking starts the held audio", bool(music._unlocked))
 	check("the held track is started on unlock",
 		music.current_track() == Music.MENU_TRACK, music.current_track())
 	var player: AudioStreamPlayer = music._players[music._active]
