@@ -96,7 +96,7 @@ func _shoot() -> void:
 # The solve-path autopilot every other tool uses is optimal, and landmarks are
 # deliberately placed OFF the route -- in sealed pockets and dead ends -- so
 # following the distance field is the one policy guaranteed never to arrive at
-# one. Same trap as SceneTest's wall-indicator check, which could not reach a
+# one. Same trap as SceneTest's dead-end decoration check, which could not reach a
 # dead end while it steered by best_direction (CLAUDE.md section 12).
 func _autopilot() -> void:
 	var racer: Racer = _game.racer

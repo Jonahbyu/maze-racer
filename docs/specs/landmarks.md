@@ -36,9 +36,9 @@ nothing about a landmark's type, height, or colour correlates with any of them.
 This line is the whole reason the feature is safe to add. Three upgrade lines are
 sold on answering "which way" — Path Indicator, Gate Compass, Golden Trail — and
 Path Indicator in particular is described in §7 as "the headline upgrade". Free
-scenery that hinted at the route would cannibalise all three at once, the same
-way the wall indicator would have if it had been allowed to mark correct turns
-rather than only true dead ends (§5.6).
+scenery that hinted at the route would cannibalise all three at once. This is the
+line the wall indicator held too, before it was removed in favour of the landmark
+itself (§5.6).
 
 So the contract is: **a landmark tells you where you *are*, never where to go.**
 Recognising one is worth something only because you remember what you did last
@@ -111,10 +111,30 @@ the centre point would be geometry the marker visibly drives through. Pushed to
 the back it is the thing beyond the stopping point, which is both correct and the
 better image.
 
-**Density is a per-maze knob**, expressed as a fraction of eligible cells, and it
-falls as mazes grow. A landmark in every dead end is wallpaper; the memorability
-comes from scarcity, the same reasoning that governs one-cell stubs in §6 —
-frequency was what was wrong there, not existence.
+**Every dead end is decorated; the density knob thins only sealed pockets.**
+
+This reverses an earlier call, recorded plainly because the reasoning changed
+rather than the taste. The knob used to thin both pools together on the argument
+that *"a landmark in every dead end is wallpaper; the memorability comes from
+scarcity"* — reasoning borrowed from the one-cell stubs in §6, where frequency
+was the problem and not existence.
+
+That argument does not survive the removal of the wall indicator (§5.6). While
+the sign existed, a bare dead end still announced itself and the landmark was
+pure bonus, so thinning cost little. With the sign gone the landmark is the
+**only** thing distinguishing the end of a corridor from a corridor that merely
+turns, and a bare dead end is a reversal with nothing to remember it by — the
+"punishment without the lesson" failure in §1 that this whole feature exists to
+fix, reappearing in the exact cells it was aimed at.
+
+The scarcity argument was also weaker than it looked: what makes a landmark
+memorable is that it is *different from the others*, which is carried by type,
+hue, scale and yaw, not by whether the neighbouring dead end happens to be empty.
+Measured after the split: **0 bare dead ends** across all five mazes on 4 seeds
+each (2,187 dead ends).
+
+Sealed pockets stay on the knob. They are glimpsed from outside, are never driven
+into, and so make no promise to the player that a bare one would break.
 
 ---
 
