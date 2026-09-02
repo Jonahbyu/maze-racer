@@ -27,6 +27,17 @@ const COL_WALL := Color(0.35, 0.62, 0.9, 0.9)
 const COL_OPEN := Color(0.06, 0.09, 0.15, 0.75)
 const COL_PLAYER := Color(0.2, 1.0, 0.5)
 const COL_GATE := Color(1.0, 0.85, 0.15)
+# A gate already taken. Cool against the live gate's amber, so the two separate
+# by hue and not only by brightness -- at this scale a gate is a handful of
+# pixels, and a dimmer amber square would read as the same square drawn faintly.
+#
+# BRIGHTER than the world marker's spent colour, deliberately, rather than the
+# same value. The two are read against opposite backgrounds: the marker sits
+# against a near-black sky where a dark blue still reads, while this sits on a
+# map whose walls are ALREADY blue (COL_WALL), so a dark blue cell disappears
+# into the strokes drawn around it. Matching the hue is what makes the two read
+# as the same thing; matching the value would make one of them invisible.
+const COL_GATE_SPENT := Color(0.30, 0.55, 0.95)
 const COL_EXIT := Color(0.35, 1.0, 0.45)
 const COL_RING := Color(0.4, 0.7, 1.0, 0.35)
 
@@ -132,6 +143,11 @@ func _draw_cell(cell: Vector2i, at: Vector2, scale: float, spin: float) -> void:
 	var colour := COL_OPEN
 	if cell == racer.maze.exit_cell:
 		colour = COL_EXIT
+	elif racer.gates_cleared.has(cell):
+		# Checked BEFORE the live-gate test: maze.gates is the full placement
+		# list and never shrinks, so a taken gate is still in it and would
+		# otherwise keep painting itself as one still worth driving to.
+		colour = COL_GATE_SPENT
 	elif racer.maze.gates.has(cell):
 		colour = COL_GATE
 

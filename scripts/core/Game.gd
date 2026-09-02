@@ -8,6 +8,24 @@ extends Node3D
 
 enum Phase { RACING, UPGRADING, TRANSITION, COMPLETE, PAUSED, DEAD, VISION }
 
+# Right edge of the HUD's barrier/integrity column, and the smallest map worth
+# drawing. Both are needed by _place_minimap now that the map is centred rather
+# than tucked in the opposite corner.
+#
+# Mirrored from HUD's own layout literals rather than measured off the live
+# node, for the reason section 9d records about the touch pads: the HUD builds
+# its layout from literals too, and a queried rect is only correct once a frame
+# has been laid out -- which has not happened when this runs. If the bars move,
+# this moves with them; they are one screen.
+const HUD_BARS_RIGHT := 340.0
+const MINIMAP_MIN := 96.0
+
+# The pause-screen settings cog, top-right. Below the HUD's top row rather than
+# beside it: the timer is right-aligned there and its width changes as the run
+# passes a minute, so anything sharing that line eventually collides with it.
+const COG_MARGIN := 24.0
+const COG_TOP := 76.0
+
 var maze: Maze
 var racer: Racer
 var upgrades: Upgrades
@@ -32,7 +50,6 @@ var _camera: Camera3D
 var _headlight: OmniLight3D
 var _environment: Environment
 var _marker: PlayerMarker
-var _wall_indicator: WallIndicator
 var _path_indicator: PathIndicator
 var _golden_trail: GoldenTrail
 var _mesh: MazeMesh
@@ -40,6 +57,12 @@ var _hud: HUD
 var _minimap: Minimap
 var _upgrade_screen: UpgradeScreen
 var _touch: TouchControls
+
+# The settings panel, built on demand from the pause screen and freed on close.
+# Not built up front: it is a modal the player may never open, and one that
+# exists all run is one more Control competing for input every frame.
+var _settings_panel: SettingsPanel = null
+var _settings_cog: Button = null
 var _world: Node3D
 var _transition_time := 0.0
 
@@ -100,10 +123,6 @@ func _build_world() -> void:
 	_marker = PlayerMarker.new()
 	_marker.name = "PlayerMarker"
 	_world.add_child(_marker)
-
-	_wall_indicator = WallIndicator.new()
-	_wall_indicator.name = "WallIndicator"
-	_world.add_child(_wall_indicator)
 
 	_path_indicator = PathIndicator.new()
 	_path_indicator.name = "PathIndicator"
@@ -217,6 +236,11 @@ func _build_ui() -> void:
 	_upgrade_screen.upgrade_chosen.connect(_on_upgrade_chosen)
 	ui_root.add_child(_upgrade_screen)
 
+	# Only visible while paused -- see _set_paused. A cog on a live corridor
+	# would be a mouse target over the thing the player is steering through.
+	_settings_cog = _make_settings_cog()
+	ui_root.add_child(_settings_cog)
+
 	# Added LAST so the pads sit above the HUD and the upgrade cards in draw
 	# order. They are transparent panels over a corner each, so what matters is
 	# not what they cover but that a tap reaches them rather than the card
@@ -239,18 +263,28 @@ func _build_ui() -> void:
 			func(_enabled: bool) -> void: _apply_touch_setting())
 
 
-# The minimap sits bottom-left on desktop and BELOW THE PLAYER on mobile.
+# The minimap sits DIRECTLY BELOW THE PLAYER MARKER, on desktop and mobile
+# alike.
 #
-# Bottom-left is the right corner on a keyboard, for the reason section 12
-# gives: the map and the corridor are read together at speed, so the map wants
-# to be near the marker rather than in a far corner. With touch controls on,
-# that corner is a thumb pad -- the map would sit underneath it, covered by the
-# hand holding the phone, which is the same "read it together" argument
-# arriving at a different answer because the screen now has hands on it.
+# It was bottom-left on desktop, which was already an argument about distance:
+# section 12 moved it out of the top-right corner because the map and the
+# corridor are read together at speed, and a diagonal glance across the whole
+# screen costs the read the map exists to give. Centring finishes that move
+# rather than reversing it -- the marker sits on the centre line slightly below
+# the middle of the screen, so the shortest possible glance is straight down
+# from it, not down and away to a corner.
 #
-# Centred under the marker keeps the short glance the corner placement was
-# chosen for, and it is the one part of the bottom edge no thumb occupies:
-# the pads are hard against the left and right margins.
+# It also puts the map on the axis the player is already looking along. The
+# corridor vanishing point, the marker and the map now stack vertically, so
+# checking the map is a flick of the eye down the same line rather than a
+# saccade to a different part of the screen and back.
+#
+# Mobile reached this position first and for an additional reason: with pads up,
+# the bottom-left corner IS a thumb, so the map would have sat under the hand
+# holding the phone. The centre strip is the one part of the bottom edge no
+# thumb occupies, since the pads are hard against the left and right margins.
+# Both platforms now want the same answer, so the branch below is only about
+# SIZE and clearance, not about which corner.
 func _place_minimap() -> void:
 	if _minimap == null:
 		return
@@ -266,31 +300,50 @@ func _place_minimap() -> void:
 	if touch and view.y > 0.0:
 		span = min(span, view.y * 0.5)
 
-	# Minimap sets custom_minimum_size to its nominal SIZE, and a Control
-	# cannot shrink below its minimum -- so the offsets below would be silently
-	# ignored on a small screen without this. Its _draw already centres on the
-	# control's actual size, so a smaller box draws a smaller map correctly.
+	# Centred, the map runs into the barrier/integrity bars on a narrow window:
+	# the bars occupy the left 340px of the same bottom band, so anything below
+	# roughly 890px wide overlaps them. Shrink to the gap rather than cover them
+	# -- the barrier bar is the most important element on screen (CLAUDE.md
+	# section 5.1), so it wins any contest for these pixels.
+	#
+	# Measured against the HUD's own literals rather than a queried rect, for
+	# the reason section 9d records: the HUD builds its layout from literals
+	# too, and a queried rect is only correct after a frame has been laid out.
+	var gap_left := 0.0
+	if view.x > 0.0:
+		var free_half: float = view.x * 0.5 - HUD_BARS_RIGHT - 16.0
+		span = min(span, maxf(free_half * 2.0, MINIMAP_MIN))
+		gap_left = HUD_BARS_RIGHT + 16.0
+
 	_minimap.custom_minimum_size = Vector2(span, span)
 
-	if touch:
-		# Centred horizontally, above the bottom edge. The player marker sits
-		# slightly below screen centre, so the map tucks under it without
-		# reaching the pads on either side.
-		_minimap.anchor_left = 0.5
-		_minimap.anchor_right = 0.5
-		_minimap.offset_left = -span * 0.5
-		_minimap.offset_right = span * 0.5
-	else:
-		_minimap.anchor_left = 0.0
-		_minimap.anchor_right = 0.0
-		_minimap.offset_left = 24
-		_minimap.offset_right = 24 + span
+	# Centred horizontally under the marker, which is the whole point of the
+	# placement -- but NUDGED RIGHT if centring would still put the map over the
+	# bars. Below roughly 890px wide the two demands cannot both be met, and
+	# clearing the bars wins: MINIMAP_MIN floors the shrink above, so on a very
+	# narrow window the map would otherwise be sitting on the barrier readout
+	# with nothing left to give.
+	#
+	# Off-centre by a few pixels costs almost nothing, because the marker is
+	# large and the glance is vertical. The alternative -- shrinking past the
+	# floor -- costs the map its legibility, and an unreadable map centred
+	# perfectly is worse than a readable one slightly to the right.
+	var left := -span * 0.5
+	if view.x > 0.0:
+		left = maxf(left, gap_left - view.x * 0.5)
 
-	# Bottom-anchored either way. On desktop it stacks above the barrier/HP
-	# bars; on mobile those bars are to its left, so it can sit lower.
+	_minimap.anchor_left = 0.5
+	_minimap.anchor_right = 0.5
+	_minimap.offset_left = left
+	_minimap.offset_right = left + span
+
+	# Bottom-anchored, and it can sit low now that it is centred: the barrier
+	# and integrity bars are hard against the LEFT margin, so the map no longer
+	# has to stack above them the way the old corner placement did. Clearing
+	# them by height was the only reason the desktop gap was 140.
 	_minimap.anchor_top = 1.0
 	_minimap.anchor_bottom = 1.0
-	var bottom_gap: float = 24.0 if touch else 140.0
+	var bottom_gap := 24.0
 	_minimap.offset_top = -(bottom_gap + span)
 	_minimap.offset_bottom = -bottom_gap
 
@@ -591,6 +644,14 @@ func _start_vision() -> bool:
 # it works when the game is not racing, since an unpause has to be reachable
 # from the paused phase itself.
 func _on_pause_input() -> void:
+	# The panel is modal over a paused game: a pause press while it is open is
+	# aimed at the panel, and resuming underneath it would hand the player a
+	# running corridor with a settings card still on screen. The panel closes
+	# itself on ESC; this covers the pause PAD, which does not go through
+	# _unhandled_input at all (CLAUDE.md section 9d).
+	if _settings_panel != null:
+		_close_settings()
+		return
 	if phase == Phase.RACING:
 		_set_paused(true)
 	elif phase == Phase.PAUSED:
@@ -627,27 +688,20 @@ func _update_camera(delta: float) -> void:
 		_camera.look_at(ground, Vector3(0.0, 0.0, -1.0))
 		return
 
-	# Only while actually racing. Between mazes the racer still sits on the OLD
-	# maze's exit cell for a frame after the new maze is swapped in, so a mark
-	# drawn then lands on whatever happens to occupy that coordinate in the new
-	# grid -- usually an open corridor, which is exactly what this must never
-	# mark. It is also just noise on the completion screen.
-	if _wall_indicator:
-		if phase == Phase.RACING or phase == Phase.UPGRADING:
-			_wall_indicator.update_state(racer, delta)
-		else:
-			_wall_indicator.visible = false
-
-	# Driven in every phase the wall indicator is, deliberately: the panels are
-	# part of the corridor now, so blanking them during a gate pause would make
-	# the junction geometry change under the player while they read cards.
+	# Driven during a gate pause as well as while racing, deliberately: the
+	# panels are part of the corridor now, so blanking them while the cards are
+	# up would make the junction geometry change under the player as they read.
+	#
+	# Not driven between mazes: the racer still sits on the OLD maze's exit cell
+	# for a frame after the new maze is swapped in, so anything drawn then lands
+	# on whatever happens to occupy that coordinate in the new grid.
 	if _path_indicator:
 		if phase == Phase.RACING or phase == Phase.UPGRADING:
 			_path_indicator.update_state(racer, upgrades, delta)
 		else:
 			_path_indicator.visible = false
 
-	# RACING only, deliberately unlike the wall indicator. A trail firing during
+	# RACING only, deliberately unlike the Path Indicator. A trail firing during
 	# the gate pause would draw the optimal route while the timer is stopped --
 	# exactly the free scouting the minimap blur exists to prevent (section 7).
 	if _golden_trail:
@@ -951,6 +1005,74 @@ func _yaw_for(direction: int) -> float:
 	return 0.0
 
 
+# --- Settings ----------------------------------------------------------------
+
+# Top-right, matching the title screen's cog so the same affordance sits in the
+# same corner in both places.
+func _make_settings_cog() -> Button:
+	var cog := Button.new()
+	cog.name = "SettingsCog"
+	cog.text = "⚙"
+	cog.tooltip_text = "Settings"
+	cog.visible = false
+	cog.focus_mode = Control.FOCUS_NONE
+	cog.custom_minimum_size = Vector2(MainMenu.COG_SIZE, MainMenu.COG_SIZE)
+	cog.add_theme_font_size_override("font_size", 30)
+	cog.add_theme_color_override("font_color", MainMenu.COL_DIM)
+	cog.add_theme_color_override("font_hover_color", MainMenu.COL_ACCENT)
+
+	for state in ["normal", "hover", "pressed", "focus", "disabled"]:
+		var style := StyleBoxFlat.new()
+		var lit: bool = state in ["hover", "focus", "pressed"]
+		style.bg_color = MainMenu.COL_CARD_HOVER if lit else MainMenu.COL_CARD
+		style.set_corner_radius_all(8)
+		style.set_border_width_all(2)
+		style.border_color = (MainMenu.COL_ACCENT if lit
+			else Color(0.2, 0.3, 0.45))
+		cog.add_theme_stylebox_override(state, style)
+
+	# The HUD timer is right-aligned in the top row, and its width CHANGES as
+	# the run passes a minute -- so anything sharing that line collides with it
+	# eventually (the mistake the pause pad made, CLAUDE.md section 9d). The cog
+	# sits below the row, not beside it.
+	cog.anchor_left = 1.0
+	cog.anchor_right = 1.0
+	cog.anchor_top = 0.0
+	cog.anchor_bottom = 0.0
+	cog.offset_left = -MainMenu.COG_SIZE - COG_MARGIN
+	cog.offset_right = -COG_MARGIN
+	cog.offset_top = COG_TOP
+	cog.offset_bottom = COG_TOP + MainMenu.COG_SIZE
+
+	cog.pressed.connect(_open_settings)
+	return cog
+
+
+func _open_settings() -> void:
+	if _settings_panel != null:
+		return
+	var ui_root := get_node_or_null("UI/UIRoot")
+	if ui_root == null:
+		return
+	var panel := SettingsPanel.new()
+	panel.name = "SettingsPanel"
+	panel.closed.connect(_close_settings)
+	_settings_panel = panel
+	ui_root.add_child(panel)
+	panel.focus_first()
+
+
+func _close_settings() -> void:
+	if _settings_panel == null:
+		return
+	_settings_panel.queue_free()
+	_settings_panel = null
+
+
+func settings_open() -> bool:
+	return _settings_panel != null
+
+
 # --- Pause -------------------------------------------------------------------
 
 # Enter or leave the paused phase.
@@ -963,6 +1085,8 @@ func _set_paused(on: bool) -> void:
 	if on:
 		phase = Phase.PAUSED
 		_minimap.blurred = true
+		if _settings_cog != null:
+			_settings_cog.visible = true
 		# Ducked, not stopped. Music continuing quietly is what says the game is
 		# held rather than gone, and a volume change keeps the track's position.
 		_music_duck(true)
@@ -970,6 +1094,11 @@ func _set_paused(on: bool) -> void:
 	else:
 		phase = Phase.RACING
 		_minimap.blurred = false
+		# Resuming with the panel still up would leave a modal over a live
+		# corridor, swallowing the steering inputs the player just went back to.
+		_close_settings()
+		if _settings_cog != null:
+			_settings_cog.visible = false
 		_music_duck(false)
 		_hud.clear_held_message()
 		# Pausing while parked overwrote the crash prompt with the pause prompt,
@@ -1008,11 +1137,18 @@ func _on_slowdown() -> void:
 	_hud.show_message("TOO EARLY", Color(1.0, 0.75, 0.2))
 
 
+# `index` is the gate's PLACEMENT in `maze.gates`, which is what names its
+# marker node -- so it goes to the mesh unmodified.
+#
+# The card title wants a different number: how many gates the player has taken,
+# which is `gates_taken`. The two were one parameter, and reading the placement
+# as a count is what made the header say "GATE 5" on the second gate of a loopy
+# maze. They are only the same on a maze driven in placement order.
 func _on_gate_entered(index: int) -> void:
-	_mesh.clear_gate(index - 1)
+	_mesh.clear_gate(index)
 	phase = Phase.UPGRADING
 	_minimap.blurred = true
-	_upgrade_screen.present(upgrades, index)
+	_upgrade_screen.present(upgrades, racer.gates_taken)
 
 
 func _on_upgrade_chosen(line: int) -> void:

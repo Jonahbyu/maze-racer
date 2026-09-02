@@ -26,8 +26,8 @@ const COL_GOOD := Color(0.2, 1.0, 0.4)
 const COL_BAD := Color(1.0, 0.25, 0.25)
 
 # The score's own colour. Kept clear of the reserved set in CLAUDE.md section 8:
-# amber-yellow is gates, amber-to-red is the wall indicator, white is the exit
-# and the player marker, green/red is Path Indicator. A pale near-white gold
+# amber-yellow is gates, white is the exit and the player marker, green/red is
+# Path Indicator. A pale near-white gold
 # reads as "value" without colliding with any of them, and like the rest of the
 # HUD it is FIXED across every maze (section 7) -- a score that changed hue per
 # palette would be re-learned five times a run.
@@ -179,10 +179,18 @@ func _build_compass() -> void:
 	centre.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(centre)
 
-	# Placed well below centre: at centre it lands directly on the player marker
-	# in third person and the two fight for the same pixels.
+	# Squeezed between the player marker and the minimap, and both edges of that
+	# gap are real: at centre the compass lands on the MARKER, and at the old
+	# 250 it lands on the MAP, which now sits centred under the marker rather
+	# than in the bottom-left corner. Moving it clear of one put it on the
+	# other, and a rendered frame is the only thing that shows either.
+	#
+	# Off to the LEFT as well as up, so even a long reading clears the marker's
+	# point rather than resting on it. The compass and the map answer the same
+	# question -- where is the next gate -- so stacking them is right;
+	# overlapping them is not.
 	_compass = _make_label("", 16, COL_DIM)
-	_compass.position = Vector2(-40, 250)
+	_compass.position = Vector2(-150, 178)
 	centre.add_child(_compass)
 
 

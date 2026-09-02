@@ -1,4 +1,4 @@
-# The title screen: PLAY, WATCH TRAILER, QUIT.
+# The title screen: PLAY, WATCH TRAILER, QUIT, and a settings cog.
 #
 # Deliberately flat -- no 3D behind it. The trailer is the moving shop window
 # (docs/specs/trailer.md); a menu that also rendered a live maze would be paying
@@ -20,13 +20,17 @@ const COL_CARD_HOVER := Color(0.12, 0.20, 0.32, 0.98)
 const BUTTON_SIZE := Vector2(360, 62)
 const SEPARATION := 18.0
 
+const COG_SIZE := 52.0
+const COG_MARGIN := 24.0
+
 # Where the button stack starts, relative to screen centre. The stack grows
 # downward from here and the hint follows it.
 const ROW_TOP := -40.0
 
 var _buttons: Array[Button] = []
-var _touch_button: Button = null
 var _hint: Label = null
+var _cog: Button = null
+var _panel: SettingsPanel = null
 
 
 func _ready() -> void:
@@ -39,6 +43,7 @@ func _ready() -> void:
 	_build_background()
 	_build_title()
 	_build_buttons()
+	_build_cog()
 
 
 func _build_background() -> void:
@@ -55,9 +60,6 @@ func _build_title() -> void:
 	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
 	add_child(title)
 
-	add_child(_centred_label(
-		"five mazes.  speed you did not ask for.", 20, COL_DIM, -140, -104))
-
 
 func _build_buttons() -> void:
 	var row := VBoxContainer.new()
@@ -73,11 +75,9 @@ func _build_buttons() -> void:
 
 	row.add_child(_make_button("PLAY", _on_play))
 	row.add_child(_make_button("WATCH TRAILER", _on_trailer))
-	# The label carries the state, so the button reads as a switch rather than
-	# an action. A separate on/off indicator beside it would be a second thing
-	# to keep in sync for no extra information.
-	_touch_button = _make_button(_touch_label(), _on_toggle_touch)
-	row.add_child(_touch_button)
+	# MOBILE CONTROLS used to sit here. It moved into the settings panel so
+	# that preferences live in exactly one place -- a toggle in the button
+	# stack and a panel behind a cog would be two homes for the same category.
 	row.add_child(_make_button("QUIT", _on_quit))
 
 	# Derived from what the row actually holds, never a fixed band. The previous
@@ -97,6 +97,66 @@ func _build_buttons() -> void:
 	_hint = _centred_label(_hint_text(), 16, COL_DIM,
 		row.offset_bottom + 30.0, row.offset_bottom + 60.0)
 	add_child(_hint)
+
+
+# Top-right, clear of the title and the button stack. A corner rather than a
+# row entry because settings is not a peer of PLAY -- it is the door beside the
+# room, and putting it in the stack is what crowded the stack in the first place.
+func _build_cog() -> void:
+	var cog := Button.new()
+	cog.text = "⚙"
+	cog.tooltip_text = "Settings"
+	cog.custom_minimum_size = Vector2(COG_SIZE, COG_SIZE)
+	cog.focus_mode = Control.FOCUS_ALL
+	cog.add_theme_font_size_override("font_size", 30)
+	cog.add_theme_color_override("font_color", COL_DIM)
+	cog.add_theme_color_override("font_hover_color", COL_ACCENT)
+	cog.add_theme_color_override("font_focus_color", COL_ACCENT)
+
+	for state in ["normal", "hover", "pressed", "focus", "disabled"]:
+		var style := StyleBoxFlat.new()
+		var lit: bool = state in ["hover", "focus", "pressed"]
+		style.bg_color = COL_CARD_HOVER if lit else COL_CARD
+		style.set_corner_radius_all(8)
+		style.set_border_width_all(2)
+		style.border_color = COL_ACCENT if lit else Color(0.2, 0.3, 0.45)
+		cog.add_theme_stylebox_override(state, style)
+
+	# Anchored to the top-right corner, so it stays put at any window size.
+	cog.anchor_left = 1.0
+	cog.anchor_right = 1.0
+	cog.anchor_top = 0.0
+	cog.anchor_bottom = 0.0
+	cog.offset_left = -COG_SIZE - COG_MARGIN
+	cog.offset_right = -COG_MARGIN
+	cog.offset_top = COG_MARGIN
+	cog.offset_bottom = COG_MARGIN + COG_SIZE
+
+	cog.pressed.connect(_on_settings)
+	_cog = cog
+	add_child(cog)
+
+
+func _on_settings() -> void:
+	if _panel != null:
+		return
+	var panel := SettingsPanel.new()
+	panel.closed.connect(_on_settings_closed)
+	_panel = panel
+	add_child(panel)
+	panel.focus_first()
+
+
+func _on_settings_closed() -> void:
+	if _panel != null:
+		_panel.queue_free()
+		_panel = null
+	# The hint describes whichever control scheme is active, and the panel is
+	# now where that gets changed -- so it has to be re-read on the way out.
+	if _hint != null:
+		_hint.text = _hint_text()
+	if _cog != null:
+		_cog.grab_focus()
 
 
 func _make_button(text: String, handler: Callable) -> Button:
@@ -156,10 +216,6 @@ func _touch_enabled() -> bool:
 	return settings != null and bool(settings.touch_controls)
 
 
-func _touch_label() -> String:
-	return "MOBILE CONTROLS:  %s" % ("ON" if _touch_enabled() else "OFF")
-
-
 # The keyboard line is wrong on a phone, where there are no arrow keys to press
 # -- so the hint describes whichever scheme is actually active.
 func _hint_text() -> String:
@@ -168,13 +224,15 @@ func _hint_text() -> String:
 	return "arrow keys steer  -  DOWN reverses  -  ESC pauses"
 
 
+# Kept after the button moved into the settings panel: this is still the one
+# place the menu flips the preference, and the hint below the stack has to
+# follow it. The panel calls Settings directly and the menu re-reads the hint
+# when the panel closes.
 func _on_toggle_touch() -> void:
 	var settings := _settings()
 	if settings == null:
 		return
 	settings.set_touch_controls(not bool(settings.touch_controls))
-	if _touch_button != null:
-		_touch_button.text = _touch_label()
 	if _hint != null:
 		_hint.text = _hint_text()
 

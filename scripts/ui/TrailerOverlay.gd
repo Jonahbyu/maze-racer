@@ -52,7 +52,7 @@ func _ready() -> void:
 	# The caption block sits in the LOWER THIRD, not the centre.
 	#
 	# Centred, it lands exactly on the corridor vanishing point -- which is where
-	# the Path Indicator panels, the Golden Trail and the wall indicator all
+	# the Path Indicator panels and the Golden Trail both
 	# draw. The reel would have been captioning its own subject matter, hiding
 	# the upgrades the later segments exist to show. It also sat on top of the
 	# HUD's own maze-name message, printing the maze twice.

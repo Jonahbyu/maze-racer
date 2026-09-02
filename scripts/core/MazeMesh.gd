@@ -31,7 +31,18 @@ func build(maze: Maze, palette_index: int = 0) -> void:
 	_palette = Tuning.PALETTES[clampi(palette_index, 0, Tuning.PALETTES.size() - 1)]
 	_wall_edges.clear()
 
+	# Detached IMMEDIATELY, not merely queued. queue_free is DEFERRED to the end
+	# of the frame, so without the remove_child the outgoing maze's markers are
+	# still in the tree -- still holding "Gate0", "Gate1"... -- while the new
+	# ones are added below, and Godot renames the NEW node to break the
+	# collision. `clear_gate` finds its marker by name, so a renamed marker is
+	# an unreachable one.
+	#
+	# Detaching first frees the name before it is reused. Cheap, and it removes
+	# a whole class of order-dependence between a maze teardown and the build
+	# that immediately follows it.
 	for child in get_children():
+		remove_child(child)
 		child.queue_free()
 
 	_build_floor()
@@ -407,14 +418,25 @@ func _build_gates() -> void:
 	for i in _maze.gates.size():
 		var gate: Vector2i = _maze.gates[i]
 		var marker := _make_marker(gate, Tuning.NEON_GATE, Tuning.GATE_MARKER_HEIGHT)
-		marker.name = "Gate%d" % i
+		# Named AFTER add_child, never before. Godot assigns a generated name on
+		# entry to the tree, so a name set beforehand is overwritten -- the trap
+		# CLAUDE.md section 12 already records for the Music autoload, arriving
+		# here through the marker that clear_gate then has to look up by name.
+		#
+		# It also has to happen after the previous maze's markers are detached,
+		# or the assignment collides with a node that is queued for deletion but
+		# still in the tree, and Godot renames THIS node to resolve it. Measured
+		# directly: adding a second "Gate0" beside a queue_freed one yields a
+		# node called "Gate1", and get_node("Gate0") returns the dying original.
 		add_child(marker)
+		marker.name = "Gate%d" % i
 
 
 func _build_exit() -> void:
 	var marker := _make_marker(_maze.exit_cell, Tuning.NEON_EXIT, Tuning.EXIT_MARKER_HEIGHT)
-	marker.name = "Exit"
+	# After add_child, for the reason given in _build_gates.
 	add_child(marker)
+	marker.name = "Exit"
 
 
 # A glowing pillar marking a cell. Deliberately tall: at speed the player needs
@@ -432,18 +454,6 @@ func _build_exit() -> void:
 # part visible from anywhere else, so it has to be tall enough to clear and wide
 # enough to read once it does.
 func _make_marker(cell: Vector2i, colour: Color, height_scale: float) -> MeshInstance3D:
-	var height := Tuning.WALL_HEIGHT * height_scale
-	var wide := Tuning.CELL_SIZE * 0.75
-	var thin := Tuning.CELL_SIZE * 0.14
-
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-
-	_add_marker_slab(st, Vector3(wide, height, thin))
-	_add_marker_slab(st, Vector3(thin, height, wide))
-
-	st.generate_normals()
-
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = colour
 	mat.emission_enabled = true
@@ -457,7 +467,7 @@ func _make_marker(cell: Vector2i, colour: Color, height_scale: float) -> MeshIns
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 
 	var instance := MeshInstance3D.new()
-	instance.mesh = st.commit()
+	instance.mesh = _marker_mesh(height_scale, 0.0)
 	instance.material_override = mat
 	instance.position = Vector3(
 		cell.x * Tuning.CELL_SIZE,
@@ -467,11 +477,33 @@ func _make_marker(cell: Vector2i, colour: Color, height_scale: float) -> MeshIns
 	return instance
 
 
-# One box of the crossed pair, sitting on the floor and rising to `size.y`.
-func _add_marker_slab(st: SurfaceTool, size: Vector3) -> void:
+# The crossed-slab mesh, running from `base_scale` up to `height_scale` (both
+# multiples of WALL_HEIGHT).
+#
+# The base is a parameter because a SPENT gate starts above the camera rather
+# than on the floor (Tuning.GATE_SPENT_BASE) -- it keeps the part that clears
+# the wall line and loses the part the eye would otherwise pass through.
+func _marker_mesh(height_scale: float, base_scale: float) -> ArrayMesh:
+	var top := Tuning.WALL_HEIGHT * height_scale
+	var base := Tuning.WALL_HEIGHT * base_scale
+	var wide := Tuning.CELL_SIZE * 0.75
+	var thin := Tuning.CELL_SIZE * 0.14
+
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	_add_marker_slab(st, Vector3(wide, top, thin), base)
+	_add_marker_slab(st, Vector3(thin, top, wide), base)
+
+	st.generate_normals()
+	return st.commit()
+
+
+# One box of the crossed pair, running from `base` up to `size.y`.
+func _add_marker_slab(st: SurfaceTool, size: Vector3, base: float = 0.0) -> void:
 	var hx := size.x * 0.5
 	var hz := size.z * 0.5
-	var lo := Vector3(-hx, 0.0, -hz)
+	var lo := Vector3(-hx, base, -hz)
 	var hi := Vector3(hx, size.y, hz)
 
 	var p := [
@@ -490,11 +522,54 @@ func _add_marker_slab(st: SurfaceTool, size: Vector3) -> void:
 	_add_quad(st, p[1], p[5], p[6], p[2])
 
 
-# Remove a gate marker once its gate is taken, so the corridor reads as cleared.
+# Recolour a gate marker once its gate is taken, rather than removing it.
+#
+# It used to queue_free the node, and that was throwing away a landmark. The
+# marker is tall enough to clear the wall line (Tuning.GATE_MARKER_HEIGHT), so
+# it is visible from several corridors away -- which makes a spent gate the most
+# recognisable object the maze has, and recognising re-crossed ground is the
+# exact problem landmarks exist to solve in a looped maze (CLAUDE.md section 6).
+# Deleting it meant a corridor the player had demonstrably driven looked like
+# one they had never seen.
+#
+# It does NOT answer "which way", so it does not tread on the paid navigation
+# lines: it marks somewhere the player has BEEN, which is knowledge they already
+# had and merely could not see. That is the same line landmarks sit on.
+#
+# The mesh is left alone and only the material changes, so the marker keeps its
+# silhouette -- a spent gate is still a gate, dimmed, rather than a different
+# kind of object.
 func clear_gate(index: int) -> void:
+	# A negative index means the caller could not resolve the cell to a gate at
+	# all. Nothing to recolour, and "Gate-1" would silently find no node anyway
+	# -- returning here says so on purpose rather than by accident.
+	if index < 0:
+		return
 	var node := get_node_or_null("Gate%d" % index)
-	if node:
-		node.queue_free()
+	if node == null:
+		return
+	var instance := node as MeshInstance3D
+	if instance == null:
+		return
+
+	# Duplicated because _make_marker builds one material per marker and this
+	# must not reach through a shared resource into the gates still standing.
+	var mat := instance.material_override.duplicate() as StandardMaterial3D
+	if mat == null:
+		return
+	mat.albedo_color = Tuning.NEON_GATE_SPENT
+	mat.albedo_color.a = Tuning.GATE_SPENT_ALPHA
+	mat.emission = Tuning.NEON_GATE_SPENT
+	mat.emission_energy_multiplier = 2.0 * Tuning.GATE_SPENT_ENERGY
+	instance.material_override = mat
+
+	# And it is lifted clear of the camera. The marker is transparent and drawn
+	# double-sided, so a marker still running to the floor puts the eye INSIDE
+	# it every time the player re-crosses the cell -- washing the entire screen
+	# its colour. A live gate does that too, but only in the instant of passing
+	# through, and it is the thing being aimed at. A cleared one is just in the
+	# way, and it stays in the way for the rest of the maze.
+	instance.mesh = _marker_mesh(Tuning.GATE_MARKER_HEIGHT, Tuning.GATE_SPENT_BASE)
 
 
 # --- Landmarks (docs/specs/landmarks.md) -------------------------------------

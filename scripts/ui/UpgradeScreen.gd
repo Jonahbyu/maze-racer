@@ -32,8 +32,13 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 
 
-func present(upgrades: Upgrades, gate_index: int) -> void:
-	_present("GATE %d  -  CHOOSE AN UPGRADE" % gate_index, upgrades)
+# `gates_taken` is a COUNT -- the header says how many gates the player has
+# reached, which is what makes "GATE 3" mean anything to them. It is explicitly
+# not the gate's placement in the maze: on a looped maze the second gate driven
+# may be the fifth one laid down, and a header reading "GATE 5" on the second
+# pick would be telling the player they had missed three.
+func present(upgrades: Upgrades, gates_taken: int) -> void:
+	_present("GATE %d  -  CHOOSE AN UPGRADE" % gates_taken, upgrades)
 
 
 # The maze-start loadout pick (CLAUDE.md section 7). Identical machinery to a

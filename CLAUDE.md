@@ -325,7 +325,16 @@ what it was designed for: an input aimed at an opening that **is not there**.
 The player has a **barrier**: a small regenerating pool that absorbs wall contact.
 
 - Moving into a wall **drains the barrier continuously**.
-- **Base capacity: 0.5 seconds** of sustained wall contact.
+- **Base capacity: 0.25 seconds** of sustained wall contact. It was 0.5, and that was
+  long enough that an unupgraded racer could sit against a wall for most of a cell and
+  still leave clean — so the question the barrier exists to ask, *can I afford this
+  brush?*, had an easy yes at rank 0. Halving it makes a brush a real commitment from
+  maze 1 onward.
+
+  **`BARRIER_PER_RANK` deliberately stays at 0.25**, so a single rank now *doubles* the
+  pool rather than adding half again. That turns Barrier Capacity from a rounding error
+  into a genuine early pick, which is §11.5's test: the rank changes whether the player
+  brushes walls at all, not merely how long they may.
 - **Regenerates** when not in contact — base **0.15/sec**, so a full refill takes ~3.3s of
   clean travel. It was 0.25, and that was too generous: the pool was effectively always full
   by the next corridor, so the interesting question — *can I afford this brush?* — never got
@@ -457,29 +466,44 @@ do not:
   state it describes is still active leaves them stopped with no explanation on screen, so
   the crash message is *held* and cleared by the `unstuck` signal.
 
-### 5.6 The wall indicator
+### 5.6 A dead end is marked by a landmark, not a sign
 
-A **no-entry mark on the wall the player is about to drive into** — the far wall of the
-corridor ahead, shown once it is within 2.5 cells. Amber far, bright orange-red close;
-the brightness is the distance read, because at speed a glow ramp parses faster than the
-wall's size in perspective. Full spec in `docs/specs/wall-indicator.md`.
+**Removed: the wall indicator.** A no-entry mark used to light on the end wall of a dead
+end once it was within 2.5 cells, ramping amber to red as it closed. It is gone, and the
+**landmark now carries the whole job** — every dead end is decorated (§6), so the thing at
+the end of the corridor is a spire or a monolith rather than a warning sign.
 
-**It marks a real dead end, never a correct turn.** A T-junction or a plain corner gets
-nothing, so the player still solves the routing themselves. That line is what keeps a free
-legibility fix from cannibalising Path Indicator, which is the headline *paid* upgrade
-(§7) and the only thing in the game that answers "which way".
+**Why the sign went and the decoration stayed.** Both mark the same cell, so the question
+was only which one should. The sign was the weaker of the two on every axis that matters:
 
-A dead end here means *forward, left and right are all walls* — the only exit is a 180.
-This was originally "any blocked facing", on the reasoning that a dead end and a corridor
-that merely turns are the same event for the player. That was wrong in play: a DFS carve
-blocks the facing on ~55% of cells (the same ratio driving the turn-cost equilibrium in
-§5.3), so the sign was lit roughly half the time — frequent enough to become scenery,
-and it sat over junctions the player was about to turn through cleanly. Restricted to the
-case with no turn available, its appearance means exactly one thing: press `↓`.
+- **It told the player something the corridor was about to tell them anyway.** A dead end
+  is ~2.5 cells of warning at best, and the 180 that answers it costs −0.75x whether it is
+  pressed early or late (§5.3). The sign bought a fraction of a second on an input that is
+  not a timing test — unlike a *turn*, which must land inside a cell boundary and is what
+  the grid-line contract in §11.3 actually exists for.
+- **It said nothing on the second visit.** Every dead end got the identical mark, so the
+  sign could not distinguish one the player had already wasted a reversal on from a fresh
+  one. That is precisely the read a looped maze needs and the one §6 built landmarks to
+  give — and the sign sat on top of it, at eye height, on the exact wall the landmark
+  stands against.
+- **Two signals for one cell is one too many.** Six landmark hues were chosen to dodge
+  every colour already spoken for (§8), and the sign's amber→red ramp was one of the
+  reservations they were dodging. Removing it gives that band back.
 
-Justified by §11.3: a wall that ends a corridor *is* a timing demand, and it was
-previously communicated only by perspective, which compresses exactly when speed makes it
-matter.
+**The trade is a small loss of warning for a permanent gain in memory.** The player now
+reads a dead end from the silhouette ahead — which is visible at a distance, is *different
+every time*, and means "you have been here before" on the second look. The sign never
+could.
+
+**This does not hand any routing away.** A landmark still answers "have I been here",
+never "which way" — placement ignores the solve path, the distance field, the gates and
+the exit entirely (§6). Path Indicator, Gate Compass and Golden Trail keep their monopoly
+on the route ahead, which is the same line the wall indicator was itself careful to hold.
+
+`SceneTest` asserts the replacement directly, over the grid *and* over real play: no dead
+end may be left bare, and every dead end the seeking autopilot actually drives into must
+carry a landmark. The two halves catch different failures — the placement pass can list a
+cell the mesh builder never emits.
 
 ---
 
@@ -658,9 +682,8 @@ ignores the solve path, the distance field, the gates and the exit entirely, and
 about a landmark's type, height or colour correlates with any of them. That line is the
 whole reason the feature is safe: Path Indicator, Gate Compass and Golden Trail are all
 *paid* lines sold on answering "which way", and free scenery that hinted at the route
-would cannibalise three upgrades at once — the same trap the wall indicator would have
-fallen into if it had been allowed to mark correct turns rather than only true dead ends
-(§5.6).
+would cannibalise three upgrades at once. This is the line the wall indicator held too,
+before it was removed in favour of the landmark itself (§5.6).
 
 Recognising a landmark is worth something only because the player remembers what they did
 last time they saw it. That is player-supplied knowledge, not a given answer.
@@ -698,8 +721,18 @@ and measured 0.19 landmarks per 100 cells in maze 5: a player could cross the bi
 loopiest maze and never meet one, switching the feature off exactly where it is needed
 most. `LandmarkProbe.gd` is the instrument.
 
+**Every dead end is decorated unconditionally; `landmarks` thins only the sealed
+pockets.** The two used to share one pool, so the density knob thinned both together and
+left 6–16% of dead ends bare. That was survivable while the wall indicator marked a dead
+end for free, and is not now that it is gone (§5.6) — the landmark is the only thing left
+that tells the end of a corridor from a corridor that merely turns, and a bare one is a
+reversal with nothing to remember it by, the "punishment without the lesson" failure this
+whole feature exists to fix. Measured after the split: **0 bare dead ends** across all
+five mazes on 4 seeds each (2,187 dead ends). Pockets stay on the knob because they are
+glimpsed from outside and carry no such promise.
+
 **Tuned high, and the late mazes RISE rather than fall.** Measured: 131–187 landmarks per
-maze, with **84–94% of dead ends decorated**. The instinct to thin them out as mazes grow
+maze. The instinct to thin them out as mazes grow
 is backwards, because the eligible set — sealed pockets and dead ends — does not scale with
 area, so a flat fraction leaves a 100×100 maze sparse per unit of ground actually covered.
 Maze 5 needs the *highest* fraction (0.95) to reach even 1.09 landmarks per 100 cells
@@ -710,7 +743,7 @@ forbids.
 **Colour is fixed across all mazes**, joining gates, the exit, the player marker and the
 HUD (§8) — a landmark seen in maze 1 and again in maze 3 should read as the same kind of
 object. The six hues sit in the gaps left by everything that already owns a colour: amber→red
-is the wall indicator, amber-yellow is gates, white is the exit and the marker, green/red is
+amber-yellow is gates, white is the exit and the marker, green/red is
 Path Indicator, and the five palettes own cyan, magenta, green, ember and violet. **That
 reserved list runs in both directions** — a future colourway in deep blue would put the
 spire's hue on every wall.
@@ -719,8 +752,8 @@ spire's hue on every wall.
 landmark four cells out was a grey speck, because fog sits between the camera and
 everything. At 1.25 one filling a dead end blew out to flat white — the silhouette, which
 is the entire way a landmark is recognised, was lost exactly where the player is closest to
-it, and it washed over the no-entry wall indicator on that same end wall. A decoration must
-never outshout a navigation signal.
+it. Silhouette is now the entire dead-end read (§5.6), so blowing it out is not a cosmetic
+loss.
 
 **Nothing in the simulation may read a landmark.** Movement, turn resolution, the buffer,
 the barrier, penalties and the distance field behave identically whether landmarks exist or
@@ -856,6 +889,59 @@ angle.
    leisure at every gate. Blur it hard enough to be genuinely unreadable.
 6. Selection made → cards dismiss → minimap unblurs → timer resumes.
 
+### A taken gate stays, dimmed — in the world and on the minimap
+
+A cleared gate **recolours to a cool blue** rather than disappearing. The world marker keeps
+its silhouette at reduced glow, and the minimap paints its cell blue where a live gate is
+amber.
+
+**It used to be deleted outright, and that threw away the best landmark in the game.** The
+marker is deliberately taller than the wall line (§7), so it is visible from several
+corridors away — which makes a spent gate the most recognisable object the maze has, and it
+sits on the solve path, so its position is meaningful rather than incidental. Deleting it
+meant a corridor the player had demonstrably driven looked exactly like one they had never
+seen.
+
+That is the problem §6 gives landmarks to solve, arriving through a different door. Loop
+density is called "the most interesting knob" and §11.2 wants bad routing punished by
+distance and time — both assume the player can *notice* they have looped. A gate they
+already opened is the least ambiguous possible evidence.
+
+**It answers "have I been here", never "which way".** That is the same line landmarks sit
+on, and it is what keeps this from cannibalising Path Indicator, Gate Compass and Golden
+Trail: the marker records the player's own history, which is knowledge they already had and
+merely could not see. It adds nothing about the route ahead.
+
+**Blue, and not a dimmer amber.** A spent gate that was merely a faint amber would read as
+a live one seen far off through fog. It must also stay clear of **white**, which is the
+exit: mistaking a cleared gate for the exit is a much worse error than mistaking it for a
+live one. A first pass at a desaturated blue-grey rendered nearly white against the night
+sky and had to be deepened toward blue; **that only showed up in a rendered frame.**
+
+**The minimap's blue is brighter than the world's, deliberately.** The two are read against
+opposite backgrounds — the marker against a near-black sky, the map cell against wall strokes
+that are *already* blue. Matching the hue is what makes them read as the same thing; matching
+the value would have made the map cell vanish into the strokes around it.
+
+**A spent marker starts above the camera** (`GATE_SPENT_BASE`) instead of at the floor. The
+marker is transparent and drawn double-sided, because the player passes *through* a gate — so
+one still reaching the floor puts the eye inside it on every re-crossing and **washes the
+whole screen its colour**. That was invisible while the marker was deleted on the spot;
+keeping it made it permanent. Raising the base loses only the part at eye level, which on a
+cleared gate is not a doorway any more, and keeps the part above the wall line that does all
+the work.
+
+`GateSpentShot.gd` is the instrument. It **seeks a gate** rather than shooting on a timer,
+for the reason `GateShot` and `PaletteShot` do, and it shoots three frames per gate: before,
+after, and a **look back** from two cells on. The look-back is the one that matters — facing
+away from a marker says nothing about how it reads, and the first two attempts at this
+change both looked fine from in front while being wrong from behind.
+
+> Aiming a camera for a shot has to fight `Game._process`, which re-frames every tick.
+> `process_frame` fires *before* a node's `_process`, so aiming and capturing in one frame
+> gets the aim overwritten in between — producing a forward-facing frame that looks exactly
+> like the feature having failed. Stop the game, aim, and capture on the *next* frame.
+
 ### Upgrade lines
 
 Upgrades **carry between mazes** within a run. They do not persist across runs — v1 has no
@@ -863,7 +949,7 @@ meta-progression (§10).
 
 | Line | Effect | Notes |
 |---|---|---|
-| **Path Indicator** | Panels on the **corridor walls** light **green** for the correct turn, **red** for wrong, at each **T** | The headline upgrade. Uses the live distance field (§6). Later ranks: earlier warning, more lookahead |
+| **Path Indicator** | A **strip across the floor of each gap** at a **T**: **green** optimal, **yellow** a longer route that works, **red** leads nowhere | The headline upgrade. Uses the live distance field (§6). Later ranks: earlier warning, more lookahead |
 | **Minimap** | Circular minimap centered on the player | Each rank **zooms out** — more maze visible. Blurs at gates |
 | **Buffer Window** | +0.15 cells of turn buffer per rank | The pure quality-of-life line; makes sloppy input viable |
 | **Fast Turnaround** | Reduces 180° cost: −0.75x → −0.55x → −0.4x → −0.25x | Makes aggressive exploration and error recovery viable |
@@ -890,11 +976,13 @@ game had not charged for a long time. A description that restates a tuning value
 transcription trap §12 flags for tests, and it is worse here because the player reads it and
 makes a decision on it.
 
-### Path Indicator lives in the world, not on the HUD
+### Path Indicator is a strip on the floor, across the gap
 
-The panels are painted **on the corridor walls at the junction**, one at the mouth of each
-open route. They were three chevrons pinned to the centre of the HUD, and that was wrong in
-two ways at once:
+**One lit strip laid across the mouth of each opening at a junction**, on the cell boundary,
+in one of three colours.
+
+It got here in two moves. It began as three chevrons pinned to the centre of the HUD, which
+was wrong in two ways at once:
 
 - **It floated the answer in the air**, in screen space, over a junction it had no fixed
   relationship to. The player had to map a flat overlay back onto the 3D corridor rushing at
@@ -902,28 +990,70 @@ two ways at once:
 - **It trained them to watch the HUD instead of the maze.** The upgrade that is supposed to
   make junctions *readable* was pulling the eye off the corridor.
 
-On the wall, the answer is already in the place it applies to. A lit panel at the mouth of
-the left corridor **is** "go left" — there is nothing to translate.
+Moving it into the world fixed both, but it went onto the **walls** — one panel on the far
+wall of the neighbouring cell, one cell down each branch. That is a surface you read by
+looking *into* a corridor, so the answer sat **past** the decision rather than on it, and
+where a branch continued straight there was no far wall at all and the panel fell back to
+whatever side wall existed.
 
-The panels are plain lit slabs, not arrows. Position already says which way it points, so an
-arrowhead would restate in symbols what the geometry states directly — and arrow shapes read
-poorly at a glancing angle, which is exactly how a side wall is seen when approaching a
-junction at speed.
+**The floor strip marks the gap itself** — the thing the player is actually choosing between.
+It lies on the cell boundary, which is already the timing contract the whole control scheme
+runs on (§11.3), so the answer lands on a mark the player is watching anyway, and it is the
+last point at which the choice is still live: past that line, the turn has been taken. Every
+opening has a floor by definition, so there is no fallback case and nothing can ever float.
 
-**Only the correct route pulses.** Motion is the strongest signal in peripheral vision, so
-spending it on the one answer makes the right panel findable without being looked at
-directly — which is the whole reason for putting this in the world rather than on the HUD.
+### Three colours, because a looped maze has three answers
 
-A panel is placed on the **far wall of the neighbouring cell**, which is square-on to the
-approach. The near wall beside an opening is edge-on to a player coming down the corridor
-and would compress to a line exactly when it is being read. Where that corridor continues
-instead of ending, there is no far wall to paint on, and the panel falls back to a side wall
-of that cell — a panel with no wall behind it is the floating-in-air problem this whole
-change exists to fix. `SceneTest` asserts every lit panel is flush against a real wall face.
+| Colour | Meaning |
+|---|---|
+| **Green** | The optimal route — the way Golden Trail would go |
+| **Yellow** | A longer way that still reaches the exit |
+| **Red** | Leads nowhere: a dead end, or a pocket that only drains back through here |
 
-The HUD keeps a **fixed** palette across every maze. Speed, barrier and integrity are
-read under pressure, and the barrier bar already uses colour to mean something — it goes red
-when low — which only works if the resting colour never moves.
+**The middle colour is the point.** Red/green said "correct" and "wrong", and in a maze
+braided to 30% (§8) that is a lie: most branches that are not optimal still reach the exit.
+Measured across the five mazes, **VIABLE routes outnumber BEST ones everywhere** — 1,638
+against 1,243 in maze 1, 9,913 against 8,386 in maze 5, with only ~120 genuinely BAD per
+maze. A two-colour scheme was painting thousands of working routes red per maze.
+
+That is not a cosmetic complaint. Telling a player to reverse out of a corridor that works
+collapses the routing decision §11.2 exists to protect, and it fights the §5.3 tuning that
+deliberately made the 180 cheap enough to stop punishing a misread twice.
+
+**Only green pulses**; yellow and red hold steady. Motion is the strongest signal in
+peripheral vision, so spending it on the one best answer keeps that gap findable without
+being looked at directly — which is the whole reason for putting this in the world instead of
+the HUD. Yellow already separates from green by hue; giving it motion too would put two
+things moving and leave the player choosing between them.
+
+**Ties come out green on both.** Two openings that each cut the distance by one are genuinely
+equally optimal; `best_direction()` returns whichever it scanned first, which is an
+implementation detail, not a claim the other is worse. Painting one yellow would send the
+player down a route that is not slower — teaching them the colours lie.
+
+The classification is `Maze.branch_quality()`, in the rules layer rather than the renderer,
+because it is the rule behind a colour the player routes on. `RulesTest` asserts all three
+cases and that a BEST branch is always as short as `best_direction()`.
+
+**The branch search must stay bounded.** Deciding VIABLE versus BAD is a flood out from the
+branch with the junction walled off, and unbounded it is O(cells) per call. That is free for
+the one or two branches at the cell the player occupies, and a trap for anything sweeping the
+grid: a probe classifying every junction in all five mazes **ran over six minutes with no
+error and no output** before it was killed. Capped at `BRANCH_SEARCH_CELLS`, and short-
+circuited the moment the flood rejoins the distance field below the junction's own value, the
+same sweep takes 193–567ms. The cap also makes the answer *more* correct — a route needing
+more than 400 cells to rejoin is not the "longer way round" yellow promises.
+
+**Placement and orientation need separate assertions.** `SceneTest` checks each lit strip
+lies on the boundary of a genuinely open neighbour *and* that its span is perpendicular to
+the direction it marks. This is the inverse of the check it replaced — the wall panels had to
+be flush against a wall face; a strip marks an opening, so a wall under it is now the failure.
+
+> **A long gold ribbon down a corridor is the Golden Trail, not a broken strip.** At a
+> junction the two look alike, and a mis-oriented strip would sit at exactly the right
+> position — so it was diagnosed as a rotation bug and "fixed" twice against geometry that
+> measured correct the whole time. `PathStripShot.gd` keeps Golden Trail out of its frames on
+> purpose, so anything lying lengthwise in those shots is a real bug.
 
 ### Golden Trail
 
@@ -1165,8 +1295,8 @@ stubs; the values in the table are tuned *against `DeadEndProbe`* to land at 20/
 
 Arriving in a new maze should read as **arriving somewhere**, not as the same corridor with
 a bigger grid. Hue carries all of it; value and saturation stay in the same band across all
-five, because brightness is already doing a job elsewhere — the wall indicator ramps
-amber-to-red by distance (§5.6), the barrier bar goes red when low — and a dim maze would
+five, because brightness is already doing a job elsewhere — the barrier bar goes red when
+low — and a dim maze would
 make those reads land differently maze to maze.
 
 **The order is not the order they were added.** Ember sits second and deep violet last so no
@@ -1174,9 +1304,9 @@ two adjacent mazes share a neighbourhood on the wheel — appending the two new 
 would have run magenta straight into violet, the one adjacency in this set that reads as the
 same maze twice. Green separates them instead.
 
-**Ember is red-orange, never amber.** Amber is spoken for twice over: the gate markers are
-amber-yellow and the wall indicator's far end is amber (§5.6), so an amber maze would put the
-two things the player most needs to pick out into the same hue as every wall around them.
+**Ember is red-orange, never amber.** The gate markers are amber-yellow, so an amber maze
+would put the thing the player most needs to pick out into the same hue as every wall
+around them.
 
 **A warm palette drives the ambient warm, and warm ambient reads as a lit surface.** Ambient
 is mixed from the palette's `grid` colour, so ember's first grid — a bright yellow — pushed
@@ -1419,7 +1549,7 @@ no second take.
 scratch rather than carried forward. The reel is *cut*, not continuous, so a segment is a
 statement about what that maze looks like with that build — carrying ranks forward would
 make the later entries depend on the order the earlier ones happen to be written in. Maze 1
-shows the bare game; maze 5 shows Path Indicator panels, a wide minimap and the Golden Trail
+shows the bare game; maze 5 shows Path Indicator strips, a wide minimap and the Golden Trail
 at 6.4x, because a trailer that showed the last maze with a rank-0 HUD would be advertising
 the wrong game.
 
@@ -1430,7 +1560,7 @@ placed a few cells back and drives into a genuine gate cell, so nothing about th
 itself is faked; only where the segment starts.
 
 **The caption sits in the lower third, never centred.** Centred, it lands exactly on the
-corridor vanishing point, which is where the Path Indicator panels, the Golden Trail and the
+corridor vanishing point, which is where the Path Indicator strips, the Golden Trail and the
 wall indicator all draw — the reel would have been captioning over its own subject matter,
 hiding the upgrades the later segments exist to show.
 
@@ -1507,8 +1637,8 @@ phone there is no `Esc` key to fall back to.
 
 **The 180 is left and right together, not a pad.** It had its own pad, and that pad
 sat in the middle of the bottom edge — directly under the player marker and the
-corridor vanishing point, which is where the Path Indicator panels, the Golden
-Trail and the wall indicator all draw. A control parked over the thing it is
+corridor vanishing point, which is where the Path Indicator strips, the Golden
+Trail all draw. A control parked over the thing it is
 helping you read is the mistake the HUD chevrons made (§7), and the trailer caption
 avoids for the same reason (§9b).
 
@@ -1752,9 +1882,38 @@ one reference the control scheme depends on is destroyed. Tried at 0.30 emission
 exactly that — they sit at 0.10 with half albedo and a 0.012 half-width.
 
 **HUD layout:** speed and maze info top-left, timer top-right, barrier/HP bottom-left, and
-the **minimap directly above those bars, bottom-left**. The map sits near the player marker
-rather than in a far corner because the two are read together at speed — a diagonal
-glance across the whole screen costs the read the map exists to give.
+the **minimap centred along the bottom edge, directly below the player marker**. The map
+sits near the marker because the two are read together at speed — a diagonal glance across
+the whole screen costs the read the map exists to give.
+
+**Centred finishes a move that bottom-left only started.** The map began in the top-right
+and came to the bottom-left on exactly the argument above; centring applies it once more,
+because the marker is *on the centre line*, slightly below the middle of the screen. The
+shortest glance from it is straight down, not down and away. It also puts the map on the
+axis the eye is already tracking: the corridor vanishing point, the marker and the map now
+stack vertically, so checking the map is a flick along one line rather than a saccade to a
+different part of the screen and back.
+
+**Mobile arrived here first**, for the extra reason §9d gives — with pads up the bottom-left
+corner *is* a thumb. Both platforms now want the same position, so the remaining branch is
+about size and clearance only, never about which corner.
+
+**The cost of centring is a collision the corner placement could never have.** The barrier
+and integrity bars are hard against the left margin in the *same* bottom band, so below
+roughly 890px wide the map runs over them. It shrinks to the gap, and when shrinking would
+take it below a legible minimum it **slides right instead** — the barrier bar is the most
+important element on screen (§5.1) and wins those pixels outright. Off-centre by a few
+pixels costs almost nothing; an unreadable map centred perfectly costs everything.
+
+`SceneTest` asserts this at **two widths**, because the wide case passes trivially — the
+clamp is not even binding there, so a broken clamp would be invisible if only one size were
+tested. Headless runs ignore `window_set_size` entirely (the dummy `DisplayServer`), so the
+test drives `UIRoot` directly after releasing its full-rect anchors; resizing the window
+looks like it varies something and does not.
+
+**The Gate Compass had to move too**, and both edges of its gap are real: at screen centre it
+lands on the player marker, and at its old offset it lands on the map. Moving it clear of one
+put it squarely on the other — which only a rendered frame shows.
 
 **The minimap rotates with the player: the direction of travel is always toward the top.**
 A north-up map demands a mental rotation at exactly the moment there is no time for one —
@@ -1933,12 +2092,12 @@ Six harnesses, each answering a different question:
 
 | Harness | Question it answers |
 |---|---|
-| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — and the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer. 270 assertions. |
-| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall- and path-indicator placement, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, and Flying Vision's held clocks and raised camera. 74 assertions. |
+| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, and the record of gates already taken. 293 assertions. |
+| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, and the gate marker names surviving a mesh rebuild. 109 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, and the pads scale to a phone screen. 35 assertions. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, and the pads scale to a phone screen. 43 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 21 assertions. |
-| `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 39 assertions. |
+| `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 103 assertions. |
 
 `TrailerShot.gd` is the picture half of `TrailerTest` — it renders the reel and
 saves a frame per segment plus each gate moment, which is the only way to check
@@ -1954,6 +2113,13 @@ next to a landmark in each maze, seeking one rather than shooting on a timer.
 `GateShot.gd` shoots each maze from 2.5-6 cells short of a gate, which is how the
 above-the-wall gate marker gets checked -- the question it answers is "can I see it
 coming", so shooting from on top of a gate would show nothing.
+
+`GateSpentShot.gd` is the picture half of the taken-gate work (§7): three frames per gate --
+approaching it live, just past it, and **looking back at it** from two cells on. Only the
+look-back answers the question the change is about, since a marker behind the camera says
+nothing about how it reads. It seeks a gate rather than shooting on a timer, and it caught
+both the full-screen colour wash and the near-white first colour, neither of which any
+headless assertion could see.
 
 `ZigzagProbe.gd` reports forced-turn corners, corner-into-corner zigzags and chains of
 three or more, both over the whole grid and **along the canonical solve path** — the second
@@ -1978,10 +2144,17 @@ caught all three HUD collisions above.
 `logs/`, which is how the visuals get checked without anyone opening the editor.
 
 `PaletteShot.gd` is the same idea aimed at one question: it jumps straight to each maze and
-shoots a frame **at a junction**, so both the per-maze palette (§8) and the wall-mounted Path
+shoots a frame **at a junction**, so both the per-maze palette (§8) and the floor-strip Path
 Indicator (§7) are actually in the picture. It seeks a junction rather than shooting on a
 timer, because a shot taken on a timer lands in a plain corridor and shows nothing of the
 indicator it exists to check.
+
+`PathStripShot.gd` aims at the Path Indicator alone, and it seeks a junction where **two or
+more colours are actually on screen** — a frame showing three strips that all say the same
+thing does not demonstrate the scheme. It keeps Golden Trail out of the shot deliberately:
+the trail is a long gold ribbon drawn *along* the route, it looks exactly like a strip laid
+the wrong way, and mistaking it for one cost two "fixes" to geometry that measured correct
+throughout.
 
 Maze generation, the distance field, buffer/turn resolution, and the penalty math are all
 pure logic and **must** stay testable headlessly. Movement *feel* is not — that needs a
@@ -2000,6 +2173,41 @@ a rule needs the renderer, the rule is in the wrong place.
   with a fresh `class_name` and immediately running a harness fails with "Identifier not
   declared" — the same symptom as the missing-cache trap, but on an up-to-date project.
   Re-run `--import` after adding one.
+- **A node's name is assigned on ENTRY TO THE TREE, so a name set before `add_child` is
+  overwritten — and a name that collides with a node still in the tree is resolved by
+  renaming the NEW node.** This is the cause of **"gates don't change colour in the other
+  zones"**. `MazeMesh.build` cleared the previous maze with `queue_free`, which is
+  *deferred*, so the outgoing markers were still present — still holding `Gate0`, `Gate1`…
+  — while the new ones were added, and each new marker was silently renamed to
+  `@MeshInstance3D@N`. `clear_gate` looks its marker up by name, so it recoloured nothing.
+
+  **Maze 1 is the only maze it spares**, having no previous markers to collide with, which
+  is exactly why every existing instrument missed it: `GateShot`, `GateSpentShot` and
+  SceneTest's gate round trip all run on maze 1.
+
+  Worse than "not found": the lookups kept *succeeding*, resolving to the **dying**
+  originals. Measured on the old code — build 1 clean, build 2 leaves 6 renamed markers,
+  build 3 leaves 12, accumulating per maze. So a check that only asked "did `get_node`
+  return something" passed throughout. Counting **strays** is what caught it.
+
+  Two halves to the fix, and both are worth keeping: `remove_child` before `queue_free`, so
+  the name is free before it is reused; and set `name` **after** `add_child`, so the
+  assignment is not thrown away. `SceneTest._check_gate_names_survive_a_rebuild` builds the
+  mesh three times with no frames in between — ticking the tree between builds lets the
+  deferred frees land and passes against the broken code.
+- **An index into a second array is a claim that two orderings agree.** `gate_entered`
+  carried `gates_taken` — a running *count* — while `MazeMesh` names its markers by the
+  gate's *placement* in `maze.gates`. Found while chasing the bug above and fixed on its
+  own merits, though **measured not to fire in play**: `_place_gates` walks the solve path
+  in order, so a gate can only be collected by standing on that path and path positions are
+  reached in increasing order however much the player loops. The count and the placement
+  therefore agree for as long as every gate sits on one path — and would diverge silently
+  the moment anything put one off it. `RulesTest._test_gate_index_is_placement` declares its
+  gates out of order rather than hoping a driver stumbles into the case.
+
+  The same parameter was also doing two jobs: the card header wants the count ("GATE 3"),
+  the mesh wants the placement. Now separate, because a header reading "GATE 5" on the
+  second pick would tell the player they had missed three.
 - **Node references captured before a maze change go stale.** `_start_maze` builds a new
   `Racer` *and* a new `Maze` for each maze in the run, so a harness that grabs
   `game.racer` once and loops is inspecting an orphan from maze 2 onward. This produced a
@@ -2059,7 +2267,7 @@ a rule needs the renderer, the rule is in the wrong place.
   root cause as the near/far note above — depth precision at distance — and the same
   lesson: separate coplanar surfaces geometrically and generously.
 - **A wall-clock seed makes a test flaky, not thorough.** `Game` seeds itself from
-  `Time.get_unix_time_from_system()`, so SceneTest's wall-indicator check drew a different
+  `Time.get_unix_time_from_system()`, so SceneTest's dead-end check drew a different
   maze every run; once the one-cell stubs were culled it failed roughly two runs in three
   purely on whether the autopilot happened to meet a dead end inside 900 frames. The check
   now pins `run_seed` to a checked-in constant. A test that samples a random fixture is
@@ -2099,11 +2307,10 @@ a rule needs the renderer, the rule is in the wrong place.
   worth turning, and told you nothing except that two literals had drifted apart. Read the
   value from `Tuning.MAZES` and the assertion starts checking that generation *honours* the
   configuration, which is the thing actually worth knowing.
-- **A solve-path autopilot cannot exercise failure states.** `SceneTest`'s wall-indicator
+- **A solve-path autopilot cannot exercise failure states.** `SceneTest`'s dead-end
   check drove toward the exit via `best_direction`, which is optimal and therefore never
-  enters a dead end — so once the indicator was narrowed to dead ends the check went
-  from asserting a policy to asserting nothing, and only the "was exercised" guard caught
-  it. A test for a punishment mechanic has to *seek* the punishment; the check now hunts
+  enters a dead end — so a check whose whole subject is dead ends went from asserting a
+  policy to asserting nothing, and only the "was exercised" guard caught it. A test for a punishment mechanic has to *seek* the punishment; the check now hunts
   for adjacent dead ends and turns into them. **That seeker then needed deepening too:**
   it looked only one cell to each side, and culling the one-cell stubs left maze 1 with
   only *deep* dead ends, which a single-cell lookahead cannot see at all. It now follows a
@@ -2180,6 +2387,24 @@ a rule needs the renderer, the rule is in the wrong place.
   overridden to `gl_compatibility` so the desktop build keeps Forward+ while the web build
   targets WebGL2. A per-platform override, not a downgrade — the two builds want different
   renderers and the `.web` suffix is how one project ships both.
+- **The browser starts every `AudioContext` suspended, and Godot never resumes
+  it.** The web build shipped completely silent while every desktop harness and
+  the real-device `MusicProbe` passed, because desktop has no autoplay policy to
+  violate. Measured over CDP against the live page: the context read
+  `"suspended"` on load and was **still** `"suspended"` after both a click and a
+  keypress — the engine exposes a `_godot_audio_resume()` internally but binds it
+  to no gesture. **Nothing in GDScript can fix this**; `AudioServer` cannot see
+  the context's state, so a GDScript "replay the track on first input" retry just
+  restarts it into a dead context. The fix lives in `tools/web/shell.html`: a
+  constructor hook in `<head>` collects each context as the engine creates it
+  (`GodotAudio` is module-internal and never reaches `window`), and the PLAY
+  click calls `resume()` on them. Verified back to `"running"` with the audio
+  clock advancing 4.01s over 4s.
+- **A silent web build is invisible to every check this project has.** The
+  harnesses are headless, `MusicProbe` runs on WASAPI, and the export succeeds —
+  so "it works locally and in CI" says nothing at all about whether the hosted
+  game makes a sound. Driving the built page in a real browser over CDP is the
+  only instrument that answers it.
 - **`process_mode` says WHEN a node may process; `set_process` says that it
   should.** `Music` set `PROCESS_MODE_ALWAYS` in `_ready` and never called
   `set_process(true)`, so its fade loop never ticked and every player sat at the

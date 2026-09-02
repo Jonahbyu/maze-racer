@@ -48,8 +48,11 @@ func _go() -> void:
 		for button in menu._buttons:
 			labels.append(String(button.text))
 	var joined := ", ".join(labels)
-	for wanted in ["PLAY", "TRAILER", "MOBILE CONTROLS", "QUIT"]:
+	# MOBILE CONTROLS is deliberately NOT here -- it moved into the settings
+	# panel behind the cog, so that preferences live in one place.
+	for wanted in ["PLAY", "TRAILER", "QUIT"]:
 		check("the menu offers %s" % wanted, joined.contains(wanted), joined)
+	check("the menu has a settings cog", menu != null and menu._cog != null)
 
 	# PLAY must reach a real, running Game -- not just swap a node in.
 	shell.start_game()
@@ -76,14 +79,61 @@ func _go() -> void:
 	var settings = shell.get_node_or_null("/root/Settings")
 	check("the Settings autoload is registered", settings != null)
 	if settings != null and menu2 != null:
+		var music_volume_before: float = float(settings.music_volume)
+		var music_muted_before: bool = bool(settings.music_muted)
+
+		# The cog opens the panel, and the panel is what owns the toggle now.
+		menu2._on_settings()
+		var panel = menu2._panel
+		check("the cog opens a settings panel", panel != null)
+
 		var before: bool = bool(settings.touch_controls)
-		menu2._on_toggle_touch()
-		check("the toggle flips the setting",
+		if panel != null:
+			panel._on_toggle_touch()
+		check("the panel toggle flips the setting",
 			bool(settings.touch_controls) != before)
-		check("the button label follows the setting",
-			String(menu2._touch_button.text).contains(
+		check("the panel label follows the setting",
+			panel != null and String(panel._touch_button.text).contains(
 				"ON" if bool(settings.touch_controls) else "OFF"),
-			String(menu2._touch_button.text))
+			String(panel._touch_button.text) if panel != null else "no panel")
+
+		# Music volume, the reason the panel exists. Written through Settings
+		# so it persists, and read back off the panel's own readout.
+		if panel != null:
+			panel._on_volume_changed(0.42)
+			check("the panel sets the music volume",
+				is_equal_approx(float(settings.music_volume), 0.42),
+				str(settings.music_volume))
+			check("the volume readout follows the slider",
+				String(panel._volume_label.text) == "42%",
+				String(panel._volume_label.text))
+
+			# Mute is a separate flag from a zero volume, so that unmuting
+			# restores the level the player chose.
+			panel._on_toggle_mute()
+			check("the panel mutes", bool(settings.music_muted))
+			check("muting leaves the volume alone",
+				is_equal_approx(float(settings.music_volume), 0.42),
+				str(settings.music_volume))
+			panel._on_toggle_mute()
+			check("the panel unmutes", not bool(settings.music_muted))
+
+			# Moving the slider off zero while muted is a request to hear
+			# something -- it must not leave the player with a slider that
+			# climbs and does nothing.
+			panel._on_toggle_mute()
+			panel._on_volume_changed(0.6)
+			check("raising the volume while muted unmutes",
+				not bool(settings.music_muted))
+
+		menu2._on_settings_closed()
+		check("closing frees the panel", menu2._panel == null)
+
+		# Put the player's own audio preference back. A harness that leaves the
+		# state it inspected changed is the TouchShot trap (CLAUDE.md section
+		# 9d) -- here it would quietly rewrite the volume someone had chosen.
+		settings.set_music_volume(music_volume_before)
+		settings.set_music_muted(music_muted_before)
 
 		# Into a game, and the pads must agree with what the menu was left on.
 		shell.start_game()

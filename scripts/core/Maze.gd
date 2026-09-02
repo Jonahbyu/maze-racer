@@ -620,7 +620,21 @@ func _place_landmarks(density: float) -> void:
 	if density <= 0.0:
 		return
 
-	var interior: Array[Vector2i] = []
+	# Two pools, and the split is the point. Dead ends are decorated
+	# UNCONDITIONALLY; sealed pockets are what `density` thins.
+	#
+	# They used to share one pool, which meant density thinned both together and
+	# left 6-16% of dead ends bare. That was tolerable while the wall indicator
+	# marked a dead end for free, and it is not any more: the indicator is gone,
+	# so the landmark is now the ONLY thing that distinguishes the end of a
+	# corridor from a corridor that merely turns. A dead end without one is a
+	# reversal with nothing to remember it by -- which is exactly the "punishment
+	# without the lesson" failure landmarks exist to fix (CLAUDE.md section 6).
+	#
+	# Pockets stay on the knob because they are seen only in glimpses from
+	# outside and carry no such promise.
+	var dead_ends: Array[Vector2i] = []
+	var pockets: Array[Vector2i] = []
 	var anchors := {}
 
 	for y in height:
@@ -634,7 +648,7 @@ func _place_landmarks(density: float) -> void:
 			var open: Array = open_directions(cell)
 			if open.is_empty():
 				# A sealed pocket. Centred, since it is seen from outside.
-				interior.append(cell)
+				pockets.append(cell)
 				anchors[cell] = Vector2.ZERO
 			elif open.size() == 1:
 				# A dead end. The player drives in and stops against the end
@@ -643,14 +657,19 @@ func _place_landmarks(density: float) -> void:
 				# thing BEYOND the stopping point, which is both correct and the
 				# better image.
 				var back: Vector2i = -DIR_VECTORS[open[0]]
-				interior.append(cell)
+				dead_ends.append(cell)
 				anchors[cell] = Vector2(back.x, back.y) * 0.28
 
-	_shuffle_decor(interior)
+	# Shuffled even though every one is taken, so the TYPE draw order does not
+	# follow the scan order and give a maze a north-to-south grain.
+	_shuffle_decor(dead_ends)
+	for cell in dead_ends:
+		landmarks.append(_make_landmark(cell, anchors[cell], _pick_interior_type()))
 
-	var count := int(interior.size() * clampf(density, 0.0, 1.0))
+	_shuffle_decor(pockets)
+	var count := int(pockets.size() * clampf(density, 0.0, 1.0))
 	for i in count:
-		var cell: Vector2i = interior[i]
+		var cell: Vector2i = pockets[i]
 		landmarks.append(_make_landmark(cell, anchors[cell], _pick_interior_type()))
 
 	_place_exterior_landmarks()
@@ -816,6 +835,108 @@ func route_from(cell: Vector2i, max_cells: int) -> Array[Vector2i]:
 		path.append(current)
 
 	return path
+
+
+# How good is stepping from `cell` in `dir`? Used by the Path Indicator to pick
+# a colour, and pure logic so it stays headlessly testable (section 12).
+#
+# Three answers rather than two, because a looped maze genuinely has three cases
+# and collapsing the middle one into "wrong" lies to the player. In a maze
+# braided to 30% (section 8) plenty of branches reach the exit by a longer road,
+# and painting those red says "dead end" about a route that works -- which is
+# exactly the misread that makes a player 180 out of a corridor they should have
+# committed to.
+enum Branch { BAD, VIABLE, BEST }
+
+
+# BEST when the step decreases distance-to-exit -- the same live read
+# best_direction() makes, so the green strip and the Golden Trail can never
+# disagree about which way is optimal.
+#
+# VIABLE when it does not decrease distance but still reaches the exit without
+# coming back through `cell`. That last clause is what separates a genuine loop
+# from a pocket: a branch whose only way on is back through the junction you are
+# standing in is a detour that costs a reversal, which is what red is for.
+#
+# BAD otherwise -- a dead end, or a pocket that only drains back through here.
+func branch_quality(cell: Vector2i, dir: int) -> int:
+	if not is_open(cell, dir):
+		return Branch.BAD
+
+	var here := get_distance(cell)
+	var next: Vector2i = cell + DIR_VECTORS[dir]
+	var there := get_distance(next)
+	if there == -1:
+		return Branch.BAD
+
+	if here > 0 and there < here:
+		return Branch.BEST
+
+	# Flood out from `next` with `cell` walled off. Reaching the exit means the
+	# branch stands on its own; running dry means every way out of it comes back
+	# through the junction.
+	return Branch.VIABLE if _reaches_exit_avoiding(next, cell) else Branch.BAD
+
+
+# BFS from `start` to the exit, forbidden to pass through `blocked`.
+#
+# BOUNDED, and the bound is not optional. An unbounded flood is O(cells) per
+# call, which is nothing for the one or two branches at the cell the player is
+# actually standing on -- but it is a trap for anything that sweeps the grid: a
+# probe classifying every junction in all five mazes ran for over six minutes
+# before it was killed, with no error and no output. Same shape as the
+# per-frame mesh rebuild in section 12: correct, and far too expensive to be
+# called the obvious way.
+#
+# The cap is what makes the answer cheap AND makes it the right answer. A route
+# that needs more than this many cells to rejoin the network is not the "longer
+# way round" the yellow strip is promising -- it is a detour long enough that a
+# 180 is genuinely the better play, which is what red is for.
+const BRANCH_SEARCH_CELLS := 400
+
+
+func _reaches_exit_avoiding(start: Vector2i, blocked: Vector2i) -> bool:
+	if start == exit_cell:
+		return true
+	if start == blocked or not _in_bounds(start):
+		return false
+
+	# Rejoining the distance field ANYWHERE below the blocked cell's own value
+	# is already proof of a way out: from there the descending route runs to the
+	# exit without ever coming back through `blocked`, since every step strictly
+	# decreases and `blocked` sits above them all. Cheaper than flooding to the
+	# exit, and it terminates as soon as the branch is shown to be viable.
+	var ceiling := get_distance(blocked)
+
+	var seen := {}
+	seen[start] = true
+	var queue: Array[Vector2i] = [start]
+	var head := 0
+	var visited := 0
+
+	while head < queue.size():
+		if visited >= BRANCH_SEARCH_CELLS:
+			return false
+		var current: Vector2i = queue[head]
+		head += 1
+		visited += 1
+
+		if current == exit_cell:
+			return true
+		var d := get_distance(current)
+		if current != start and ceiling != -1 and d != -1 and d < ceiling:
+			return true
+
+		for dir in DIRS:
+			if not is_open(current, dir):
+				continue
+			var neighbour: Vector2i = current + DIR_VECTORS[dir]
+			if neighbour == blocked or seen.has(neighbour):
+				continue
+			seen[neighbour] = true
+			queue.append(neighbour)
+
+	return false
 
 
 func open_directions(cell: Vector2i) -> Array:

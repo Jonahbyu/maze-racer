@@ -90,7 +90,18 @@ const REVERSE_COST_BY_RANK := [0.75, 0.55, 0.4, 0.25]
 # --- Barrier and damage (CLAUDE.md section 5) --------------------------------
 
 # Seconds of sustained wall contact before a crash.
-const BASE_BARRIER := 0.5
+#
+# Halved from 0.5. The barrier is the skill ceiling (CLAUDE.md section 11.4),
+# and half a second of grace was long enough that an unupgraded racer could sit
+# against a wall through most of a cell and still leave clean -- so the question
+# the barrier exists to ask, "can I afford this brush?", had an easy yes at rank
+# 0. At 0.25 a brush is a genuine commitment from the first maze.
+#
+# BARRIER_PER_RANK is deliberately left at 0.25, so a single rank now DOUBLES
+# the pool rather than adding half again. That makes Barrier Capacity a real
+# early pick instead of a rounding error, which is section 11.5's test: the rank
+# changes whether the player brushes walls at all, not just how long they may.
+const BASE_BARRIER := 0.25
 const BARRIER_PER_RANK := 0.25
 
 # Full refill in 3.3s of clean travel at base -- slower than the 0.25 it started
@@ -293,7 +304,54 @@ const TRACKS := {
 		"path": "res://audio/music/ah-eh-oh.mp3",
 		"volume_db": -9.0,
 	},
+	# One per maze, in maze order. Each was written to its palette (section 8):
+	# cyan, ember, magenta, acid green, deep violet.
+	"cyan_plucks": {
+		"path": "res://audio/music/cyan-plucks.mp3",
+		"volume_db": -9.0,
+	},
+	"burnt_orange_maze": {
+		"path": "res://audio/music/burnt-orange-maze.mp3",
+		"volume_db": -9.0,
+	},
+	"neon_maze_run": {
+		"path": "res://audio/music/neon-maze-run.mp3",
+		"volume_db": -9.0,
+	},
+	"acid_green_chase": {
+		"path": "res://audio/music/acid-green-chase.mp3",
+		"volume_db": -9.0,
+	},
+	"cold_minor_maze": {
+		"path": "res://audio/music/cold-minor-maze.mp3",
+		"volume_db": -9.0,
+	},
+	"factory_maze": {
+		"path": "res://audio/music/factory-maze.mp3",
+		"volume_db": -9.0,
+	},
 }
+
+# Tracks that suit any maze, drawn from when a maze's own pool does not win the
+# roll. This is the "sprinkle anywhere" tier: a maze's own list carries the
+# tracks written to its palette (section 8), and these carry the ones that
+# belong to the game rather than to one maze.
+#
+# A name here must also exist in TRACKS. MusicTest asserts it, because a typo
+# would otherwise fail silently at the exact moment a maze rolled it.
+const SHARED_TRACKS := [
+	"ah_eh_oh",
+	"find_the_way",
+]
+
+# Chance a maze plays from SHARED_TRACKS instead of its own pool.
+#
+# Low on purpose. The per-maze tracks are what make arriving in a maze read as
+# arriving somewhere (section 8), and that is exactly the job a shared track
+# cannot do -- so the sprinkle is a variation on the palette, never the usual
+# case. At 0.5 the palette association never forms; at 0 the run is identical
+# every time, which is what this exists to fix.
+const SHARED_TRACK_CHANCE := 0.25
 
 # --- Mazes (CLAUDE.md section 8) ---------------------------------------------
 
@@ -319,10 +377,18 @@ const MAZES := [
 		# by maze number -- that goes stale silently the moment a maze is added
 		# (docs/specs/music.md, the rule landmarks already follow).
 		#
-		# All five share one track because there are two tracks in hand, not
-		# because the system wants them to. Point a maze at a new name and it
-		# plays it.
-		"music": "ah_eh_oh",
+		# A maze names its own tracks, rather than an array indexed by maze
+		# number -- that goes stale the moment a maze is added, and silently
+		# (docs/specs/music.md, the rule landmarks already follow).
+		#
+		# A LIST, one of which is drawn per visit, so replaying a maze is not
+		# note-for-note the same. A bare string is still legal for a maze that
+		# wants exactly one. Music.play_for_maze may instead draw from
+		# SHARED_TRACKS -- see SHARED_TRACK_CHANCE.
+		#
+		# The first entry is the track written to this maze's palette; the rest
+		# are the ones that also suit it.
+		"music": ["cyan_plucks", "neon_maze_run"],
 		"palette": 0,
 		"width": 60,
 		"height": 60,
@@ -350,7 +416,7 @@ const MAZES := [
 	},
 	{
 		"name": "The Ember",
-		"music": "ah_eh_oh",
+		"music": ["burnt_orange_maze", "factory_maze"],
 		"palette": 3,
 		"width": 70,
 		"height": 70,
@@ -363,7 +429,7 @@ const MAZES := [
 	},
 	{
 		"name": "The Tangle",
-		"music": "ah_eh_oh",
+		"music": ["neon_maze_run", "cyan_plucks"],
 		"palette": 1,
 		"width": 80,
 		"height": 80,
@@ -376,7 +442,7 @@ const MAZES := [
 	},
 	{
 		"name": "The Labyrinth",
-		"music": "ah_eh_oh",
+		"music": ["acid_green_chase", "neon_maze_run"],
 		"palette": 2,
 		"width": 90,
 		"height": 90,
@@ -389,7 +455,7 @@ const MAZES := [
 	},
 	{
 		"name": "The Vault",
-		"music": "ah_eh_oh",
+		"music": ["cold_minor_maze", "factory_maze", "acid_green_chase"],
 		"palette": 4,
 		"width": 100,
 		"height": 100,
@@ -432,9 +498,8 @@ const MAZES := [
 # Hue is the whole signal, and consecutive mazes are spaced far apart on the
 # wheel so no two in a row are confusable at a glance. Value and saturation stay
 # in the same band across all five, because brightness is already doing a job --
-# the wall indicator ramps amber-to-red by distance, the barrier bar goes red
-# when low -- and a dim maze would make those reads land differently maze to
-# maze.
+# the barrier bar goes red when low -- and a dim maze would make that read land
+# differently maze to maze.
 #
 # THE ORDER IS NOT THE ORDER THEY WERE ADDED. Cyan, ember, magenta, green,
 # violet: the two warm hues are held apart by magenta, and violet is kept off
@@ -442,10 +507,9 @@ const MAZES := [
 # to the end instead would have run magenta straight into violet, which is the
 # one adjacency on this wheel that reads as the same maze twice.
 #
-# Ember is deliberately RED-orange rather than amber. Amber is spoken for twice
-# over: NEON_GATE is amber-yellow, and the wall indicator's far end is amber, so
-# an amber maze would put the two navigation signals the player most needs to
-# pick out into the same hue as every wall around them.
+# Ember is deliberately RED-orange rather than amber. NEON_GATE is amber-yellow,
+# so an amber maze would put the navigation signal the player most needs to pick
+# out into the same hue as every wall around them.
 #
 # `grid` must stay the readable one. It is the floor reference the whole control
 # scheme rests on, so it is the one entry that should never be tuned dark to
@@ -482,7 +546,7 @@ const PALETTES := [
 	},
 	{
 		# Palette 3 -- ember. Bright red-orange, held clear of the amber the
-		# gate markers and the far end of the wall indicator both use.
+		# gate markers use.
 		#
 		# The grid line lifts toward gold, but only just. It first went to a
 		# bright yellow (0.95, 0.68, 0.30) on the reasoning that a grid in the
@@ -533,6 +597,57 @@ const PALETTES := [
 # the bright thing in the corridor once per maze.
 const NEON_GATE := Color(1.0, 0.85, 0.15)
 const NEON_EXIT := Color(1.0, 1.0, 1.0)
+
+# A gate already taken. Cool and dim against the live gate's warm amber, so the
+# two separate on HUE as well as brightness -- brightness alone is what the wall
+# indicator ramps on (section 5.6), and a spent gate seen far off through fog
+# would otherwise read as a live one that is merely distant.
+#
+# A taken gate used to be DELETED outright, which threw away the one thing it is
+# still good for. It carries no upgrade any more, but it is a landmark the
+# player unquestionably visited -- the strongest possible answer to "have I been
+# here before?" in a looped maze (section 6), and unlike a landmark it is
+# already known to sit on the solve path.
+#
+# It must never be mistaken for the exit, which is why this is blue-grey rather
+# than a desaturated amber: the exit is white, and washing a gate toward
+# neutral would walk it straight into the exit's colour.
+#
+# Rendered and checked rather than picked on paper: at (0.35, 0.5, 0.65) the
+# marker came out close to WHITE against the night sky, which walks it into the
+# exit's colour -- and mistaking a spent gate for the exit is a far worse error
+# than mistaking it for a live one. Deepened and pushed further toward blue so
+# the hue survives the unshaded material and the bloom around it.
+const NEON_GATE_SPENT := Color(0.16, 0.34, 0.62)
+
+# How much of a live gate's glow a spent one keeps. It has to stay visible as a
+# marker while losing every bit of its pull as a destination -- the whole reason
+# the marker is bright is that the player is routing toward it, and a taken gate
+# is the one thing in the maze they specifically should not route toward.
+const GATE_SPENT_ENERGY := 0.35
+const GATE_SPENT_ALPHA := 0.28
+
+# Where a spent gate's marker STARTS, as a multiple of WALL_HEIGHT. A live gate
+# runs from the floor up; a spent one is cut off at the ankles and left hanging.
+#
+# This is not decoration, it fixes a real failure. The marker is transparent and
+# CULL_DISABLED (the player drives THROUGH a gate, so both faces have to draw),
+# and the camera sits at CAM_HEIGHT -- well inside the slab. Driving through a
+# live gate therefore puts the eye inside the marker for a frame or two, which
+# washes the whole screen its colour. That was invisible while a taken gate was
+# deleted on the spot; keeping the marker made it permanent, and a player who
+# re-crossed a cleared gate got a full-screen tint every time.
+#
+# Raising the base above the camera is better than making the marker opaque or
+# thinner: it keeps the part that does the work. What makes a gate visible from
+# several corridors away is the section ABOVE the wall line (GATE_MARKER_HEIGHT
+# is 1.85x wall height for exactly that reason), and none of that is touched.
+# The only part removed is the part at eye level, which on a spent gate is not
+# a doorway any more -- there is nothing left to drive through.
+#
+# Sits just above CAM_HEIGHT / WALL_HEIGHT, with clearance for the camera's
+# vertical give on a crash pull-back.
+const GATE_SPENT_BASE := 0.95
 
 
 # Marker heights, as a multiple of WALL_HEIGHT.
@@ -708,8 +823,9 @@ const MARKER_HEIGHT := 0.22
 # That line is what makes the feature safe to add at all. Three upgrade lines
 # are sold on answering "which way" -- Path Indicator (the headline upgrade),
 # Gate Compass, Golden Trail -- and free scenery that hinted at the route would
-# cannibalise all three, the same way the wall indicator would have if it were
-# allowed to mark correct turns rather than only true dead ends (section 5.6).
+# cannibalise all three. This is the line the wall indicator held too, before it
+# was removed in favour of the landmark itself (section 5.6) -- a dead end is now
+# marked by the decoration standing in it, nothing more.
 #
 # What they DO fix is that a braided maze is unreadable as a loop: a re-crossed
 # junction is indistinguishable from a fresh one, so the distance-and-time
@@ -739,9 +855,9 @@ enum {
 # distance, which is why each one is shaped to be identifiable from its top
 # alone.
 #
-# The hues are held clear of every reserved colour in the game. Amber-to-red is
-# the wall indicator, amber-yellow is gates, white is the exit and the player
-# marker, green/red is the Path Indicator, red is the barrier bar when low, and
+# The hues are held clear of every reserved colour in the game. Amber-yellow is
+# gates, white is the exit and the player marker, green/red is the Path
+# Indicator, red is the barrier bar when low, and
 # the five maze palettes own cyan, magenta, green, ember and violet. Landmarks
 # take the gaps: deep blue, bone, teal, rose, pale violet, slate.
 #

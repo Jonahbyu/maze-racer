@@ -30,6 +30,7 @@ func _init() -> void:
 	_test_legendaries()
 	_test_gates()
 	_test_indicator()
+	_test_branch_quality()
 	_test_golden_trail()
 	_test_wall_position()
 	_test_lanes()
@@ -707,8 +708,14 @@ func _test_barrier_grace() -> void:
 
 	check("scrape fires on wall contact", scrape_rec.fired())
 
-	# Hold against the wall for 0.2s -- well inside the 0.5s base barrier.
-	for i in 20:
+	# Hold against the wall for HALF the barrier, derived rather than written
+	# out. A literal 0.2s was chosen as "well inside" a 0.5s pool and would have
+	# silently become 80% of it when the base was halved -- a margin that shrinks
+	# with a tuning change is the transcription trap (CLAUDE.md section 12) in
+	# its quieter form: the assertion still passes, but it stops testing grace
+	# and starts testing arithmetic.
+	var hold_steps := int(Tuning.BASE_BARRIER * 0.5 / 0.01)
+	for i in hold_steps:
 		r.step(0.01)
 
 	check("no crash yet -- barrier is holding", not crash_rec.fired())
@@ -723,7 +730,7 @@ func _test_barrier_grace() -> void:
 		clean.step(0.01)
 		if clean.scraping:
 			break
-	for i in 20:
+	for i in hold_steps:
 		clean.step(0.01)
 	var hp_before := clean.hp
 	clean.request_reverse()
@@ -737,7 +744,7 @@ func _test_crash_and_unstick() -> void:
 
 	var crash_rec := record(r.crashed)
 
-	# ~2s of travel to reach the wall, then 0.5s of barrier before the crash.
+	# ~2s of travel to reach the wall, then the barrier's worth before the crash.
 	for i in 600:
 		r.step(0.01)
 		if crash_rec.fired():
@@ -1388,6 +1395,113 @@ func _test_gates() -> void:
 			ordered = false
 	check("gates are spaced in order", ordered)
 
+	_test_gates_cleared()
+
+
+# A gate the player has already taken must stay KNOWN, not merely be dropped.
+#
+# The racer used to remove a gate from its pending list and forget it, so
+# nothing downstream could tell a cleared gate from plain corridor -- the world
+# marker was deleted and the minimap painted the cell as floor. In a looped maze
+# "have I been here?" is the question the player is actually asking (CLAUDE.md
+# section 6), and a gate is the single most recognisable answer to it.
+#
+# Asserted at the rules layer because `gates_cleared` is what both the mesh and
+# the minimap read. It is a RECORD, not a rule: nothing about movement, turn
+# resolution or the distance field may consult it, which is why the check below
+# also confirms the pending list and the record stay disjoint -- a cell in both
+# would let a gate be taken twice.
+func _test_gates_cleared() -> void:
+	var m := _make_corridor(12)
+	# Two gates in the corridor's path. Placed by hand rather than by generation
+	# so the test knows exactly which cells should end up recorded.
+	m.gates = [Vector2i(3, 0), Vector2i(7, 0)] as Array[Vector2i]
+
+	var r := _make_racer(m)
+	check_eq("no gates cleared at the start", r.gates_cleared.size(), 0)
+
+	# Drive east down the corridor, past both gates.
+	for i in 600:
+		r.step(1.0 / 60.0)
+
+	check_eq("both gates recorded as cleared", r.gates_cleared.size(), 2)
+	check_eq("cleared gates match gates_taken",
+		r.gates_cleared.size(), r.gates_taken)
+	check("the first gate is recorded by cell",
+		r.gates_cleared.has(Vector2i(3, 0)))
+	check("the second gate is recorded by cell",
+		r.gates_cleared.has(Vector2i(7, 0)))
+
+	# Order matters: the minimap does not care, but a cleared list that did not
+	# follow the driving order would make any future "most recent gate" read
+	# wrong, and it costs nothing to guarantee here.
+	check_eq("cleared in the order taken", r.gates_cleared[0], Vector2i(3, 0))
+
+	# A gate may never be both pending and cleared -- that would let it be taken
+	# a second time and hand out a duplicate upgrade pick.
+	var both := 0
+	for cell in r.gates_cleared:
+		if r._gate_cells.has(cell):
+			both += 1
+	check_eq("no gate is both pending and cleared", both, 0)
+
+	# setup() must clear the record, or a gate taken in maze 1 would still be
+	# drawn as visited in maze 2 -- the stale-reference trap section 12 records,
+	# arriving through state rather than through a node handle.
+	r.setup(m, Upgrades.new(1))
+	check_eq("a new maze starts with nothing cleared", r.gates_cleared.size(), 0)
+
+	_test_gate_index_is_placement()
+
+
+# `gate_entered` must carry the gate's PLACEMENT in `maze.gates`, never a count
+# of gates taken.
+#
+# The mesh names each marker "Gate<placement>", so the two numbers have to be
+# the same thing or the wrong marker gets recoloured. They agree by accident on
+# any maze driven in placement order, which is why this went unnoticed on maze 1
+# -- 6% braid leaves few enough loops that the player meets the gates in the
+# order they were laid down. In the loopier later mazes a player can reach a
+# further gate first, and from that moment every recolour lands on a gate they
+# have never driven through, while the one they just took stays lit.
+#
+# The minimap was correct throughout because it reads `gates_cleared`, a list of
+# CELLS -- which is the lesson worth keeping: an index into a second array is a
+# claim that two orderings agree, and this one did not.
+func _test_gate_index_is_placement() -> void:
+	var m := _make_corridor(12)
+	m.gates = [Vector2i(7, 0), Vector2i(3, 0)] as Array[Vector2i]
+
+	var r := _make_racer(m)
+	var seen: Array[int] = []
+	r.gate_entered.connect(func(i: int) -> void: seen.append(i))
+
+	for i in 600:
+		r.step(1.0 / 60.0)
+
+	check_eq("both gates emitted", seen.size(), 2)
+	if seen.size() == 2:
+		# Driving east, cell (3,0) is met FIRST but is placed SECOND. A count
+		# would emit 1 then 2; the placement emits 1 then 0.
+		check_eq("the first gate driven emits its placement, not its ordinal",
+			seen[0], 1)
+		check_eq("the second gate driven emits its placement", seen[1], 0)
+
+	# And the emitted index must actually name the cell that was driven through,
+	# which is the property the mesh depends on.
+	for i in mini(seen.size(), r.gates_cleared.size()):
+		# Range-checked rather than indexed straight in. A wrong emission is
+		# exactly what this test exists to catch, and an out-of-range index is
+		# one of its shapes -- indexing blind turns that failure into a crashed
+		# harness, which reports nothing about the other assertions after it.
+		var placement: int = seen[i]
+		check("emitted index is a real gate placement",
+			placement >= 0 and placement < m.gates.size(),
+			"got %d against %d gates" % [placement, m.gates.size()])
+		if placement >= 0 and placement < m.gates.size():
+			check_eq("emitted index resolves to the cell taken",
+				m.gates[placement], r.gates_cleared[i])
+
 
 # Pressed into a wall, the rendered position must stay INSIDE the cell.
 #
@@ -1509,6 +1623,96 @@ func _test_indicator() -> void:
 	# In a plain corridor the answer is straight ahead.
 	var straight := _make_racer(_make_corridor(10, true))
 	check_eq("indicator says straight in a corridor", straight.correct_relative_turn(), 0)
+
+
+# The three-way branch classification the Path Indicator paints (section 7).
+#
+# This is the rule behind a COLOUR the player reads and routes on, so it belongs
+# in the rules layer and gets asserted here rather than being trusted to look
+# right in a screenshot. The case worth protecting is the middle one: a branch
+# that is not optimal but genuinely reaches the exit must come back VIABLE, not
+# BAD. Collapsing it into "wrong" would tell the player to reverse out of a
+# corridor that works, which is the misread the third colour exists to prevent.
+func _test_branch_quality() -> void:
+	# A corridor east with a southward branch at x=3 that holds the exit.
+	var m := _make_branch(10, 3)
+	var j := Vector2i(3, 0)
+
+	check_eq("branch onto the exit is BEST",
+		m.branch_quality(j, Maze.S), Maze.Branch.BEST)
+	check_eq("corridor past the exit branch is BAD",
+		m.branch_quality(j, Maze.E), Maze.Branch.BAD)
+	check_eq("a solid side is BAD",
+		m.branch_quality(j, Maze.N), Maze.Branch.BAD)
+
+	# A loop: both ways round reach the exit, one of them longer.
+	var loop := _make_loop()
+	var top := Vector2i(0, 0)
+	check_eq("the short way round a loop is BEST",
+		loop.branch_quality(top, Maze.S), Maze.Branch.BEST)
+	check_eq("the long way round a loop is VIABLE",
+		loop.branch_quality(top, Maze.E), Maze.Branch.VIABLE)
+
+	# Across a real generated maze, every BEST branch must be as short as the
+	# one best_direction() picks -- the green strip and the Golden Trail read
+	# the same field and can never be allowed to disagree about the way out.
+	#
+	# Matched on DISTANCE, not on direction. A braided maze has ties, where two
+	# openings both cut the distance by one and are genuinely equally optimal;
+	# best_direction() returns whichever it scanned first, which is an
+	# implementation detail and not a statement that the other way is worse.
+	# Green on both is the honest answer -- painting one of them yellow would
+	# send the player down a route that is not slower, teaching them the colours
+	# lie.
+	var big := _make_maze(20, 20, 0.15, 99)
+	var worse := 0
+	var bests := 0
+	var ties := 0
+	for y in big.height:
+		for x in big.width:
+			var cell := Vector2i(x, y)
+			var best := big.best_direction(cell)
+			if best == -1:
+				continue
+			var best_dist := big.get_distance(cell + Maze.DIR_VECTORS[best])
+			var here := 0
+			for dir in Maze.DIRS:
+				var d := int(dir)
+				if big.branch_quality(cell, d) != Maze.Branch.BEST:
+					continue
+				bests += 1
+				here += 1
+				if big.get_distance(cell + Maze.DIR_VECTORS[d]) != best_dist:
+					worse += 1
+			if here > 1:
+				ties += 1
+	check("BEST branches exist to check", bests > 0, "found %d" % bests)
+	check("every BEST branch is as short as best_direction", worse == 0,
+		"%d were longer" % worse)
+	# Not a requirement, just proof the tie case above is real and being
+	# exercised rather than reasoned about in the abstract.
+	check("ties are actually present in a braided maze", ties > 0,
+		"%d cells had two equally-best ways on" % ties)
+
+
+# A 2x2 ring: every cell connects to two neighbours, so from the top-left both
+# ways round arrive at the exit and exactly one of them is shorter.
+func _make_loop() -> Maze:
+	var m := Maze.new()
+	m.width = 2
+	m.height = 2
+	m.cells = PackedInt32Array()
+	m.cells.resize(4)
+	m.cells.fill(Maze.N | Maze.E | Maze.S | Maze.W)
+	m.start_cell = Vector2i(0, 0)
+	m.exit_cell = Vector2i(0, 1)
+	m._knock_wall(Vector2i(0, 0), Maze.E)
+	m._knock_wall(Vector2i(1, 0), Maze.S)
+	m._knock_wall(Vector2i(0, 1), Maze.E)
+	m._knock_wall(Vector2i(0, 0), Maze.S)
+	m._build_distance_field()
+	m._build_solve_path()
+	return m
 
 
 # --- Landmarks (docs/specs/landmarks.md) -------------------------------------

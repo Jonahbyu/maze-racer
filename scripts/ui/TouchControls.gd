@@ -280,9 +280,9 @@ func _size_arrow(key: String, pad_size: Vector2) -> void:
 # LEFT AND RIGHT TOGETHER is the reverse gesture. The 180 lost its own pad
 # because that pad sat in the middle of the bottom edge -- directly under the
 # player marker and the corridor vanishing point, which is where the Path
-# Indicator panels, the Golden Trail and the wall indicator all draw. A control
-# parked over the thing it is helping you read is the same mistake the HUD
-# chevrons were (section 7).
+# Indicator panels and the Golden Trail both draw. A control parked over the
+# thing it is helping you read is the same mistake the HUD chevrons were
+# (section 7).
 #
 # The FIRST press turns immediately and the SECOND completes the chord. The
 # obvious alternative -- hold both presses briefly to see whether a chord is

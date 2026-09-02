@@ -14,6 +14,15 @@ signal slowdown()          # an expired turn input
 signal scraped()           # barrier began draining
 signal crashed()
 signal unstuck()
+# Carries the gate's index into `maze.gates` -- its POSITION in the maze, not
+# a count of how many have been taken. Those are the same number only when the
+# player collects gates in the order they were placed, which is true on a maze
+# with few loops and false the moment braiding lets the player reach gate 3
+# before gate 2. The mesh names its markers by the placement index, so emitting
+# the count recoloured whichever marker happened to sit at that position -- a
+# gate the player had never driven through, while the one they just took stayed
+# lit. The minimap was right the whole time because it reads `gates_cleared`,
+# which is a list of cells and cannot drift out of step with anything.
 signal gate_entered(index: int)
 signal exit_reached()
 signal died()              # HP reached 0 with Tuning.DEATH_ENABLED
@@ -103,6 +112,20 @@ var slowdown_count := 0
 var gates_taken := 0
 var _gate_cells: Array[Vector2i] = []
 
+# Gates already passed through, in the order they were taken.
+#
+# The racer used to simply drop a gate out of _gate_cells and forget it, which
+# left nothing able to answer "have I been here?" -- the mesh deleted the marker
+# and the minimap painted the cell as plain corridor, so a cleared gate and a
+# stretch of empty floor looked identical. In a looped maze that is exactly the
+# question the player is asking (CLAUDE.md section 6), and it is the same job
+# landmarks do for corridors: recognising re-crossed ground.
+#
+# Kept as cells rather than as indices so a listener can ask about a POSITION
+# without knowing the gate order -- which is what the minimap needs, since it
+# draws cells and knows nothing about gate numbering.
+var gates_cleared: Array[Vector2i] = []
+
 var finished := false
 
 # True once HP has hit 0 with death enabled. The run is over; Game reads this
@@ -168,6 +191,7 @@ func setup(p_maze: Maze, p_upgrades: Upgrades, p_maze_index: int = 0) -> void:
 	_entry_lockout = -1
 
 	_gate_cells = maze.gates.duplicate()
+	gates_cleared.clear()
 	gates_taken = 0
 
 
@@ -572,9 +596,14 @@ func _on_enter_cell() -> void:
 
 	for i in _gate_cells.size():
 		if _gate_cells[i] == cell:
+			# Resolved against `maze.gates` rather than against `i`: this list
+			# is a working copy that shrinks as gates are taken, so its indices
+			# slide the moment one is removed.
+			var placement := maze.gates.find(cell)
 			_gate_cells.remove_at(i)
+			gates_cleared.append(cell)
 			gates_taken += 1
-			gate_entered.emit(gates_taken)
+			gate_entered.emit(placement)
 			return
 
 

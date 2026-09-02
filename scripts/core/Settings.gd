@@ -14,9 +14,21 @@
 extends Node
 
 signal touch_controls_changed(enabled: bool)
+signal music_changed(volume: float, muted: bool)
 
 const CONFIG_PATH := "user://settings.cfg"
 const SECTION := "controls"
+const SECTION_AUDIO := "audio"
+
+# Where the music sits on a fresh install. Deliberately low: the tracks are
+# already trimmed per-entry in Tuning.TRACKS, and a first launch at full bus
+# gain lands louder than anything else the player has open. This leaves a lot of
+# headroom to turn UP, which a default near 1.0 does not.
+#
+# 0.25 linear is about -12dB. Loudness is not linear in amplitude, so this is a
+# deeper cut than the number suggests -- which is the intent: quiet by default,
+# with the slider right there for anyone who wants more.
+const MUSIC_VOLUME_DEFAULT := 0.25
 
 # Whether the on-screen driving pads are drawn.
 #
@@ -26,6 +38,14 @@ const SECTION := "controls"
 # setter cannot tell a restore from a choice -- it re-saved the file it had just
 # read and fired the signal before the menu existed to hear it.
 var touch_controls := false
+
+# Music bus level, 0..1 linear. Read directly, written through set_music_volume().
+var music_volume := MUSIC_VOLUME_DEFAULT
+
+# Kept separate from a zero volume rather than folded into it, so unmuting
+# restores the level the player chose instead of dumping them at silence and
+# making them find it again.
+var music_muted := false
 
 
 func _ready() -> void:
@@ -52,6 +72,26 @@ func set_touch_controls(value: bool) -> void:
 	emit_signal("touch_controls_changed", value)
 
 
+# The only way the music preference should ever change at runtime, for the same
+# reason set_touch_controls exists: persisting and announcing a change must not
+# be forgettable at a call site.
+func set_music_volume(value: float) -> void:
+	var v := clampf(value, 0.0, 1.0)
+	if is_equal_approx(v, music_volume):
+		return
+	music_volume = v
+	_save()
+	emit_signal("music_changed", music_volume, music_muted)
+
+
+func set_music_muted(value: bool) -> void:
+	if value == music_muted:
+		return
+	music_muted = value
+	_save()
+	emit_signal("music_changed", music_volume, music_muted)
+
+
 func _load() -> void:
 	var config := ConfigFile.new()
 	# No file on first run is the normal case, not an error -- fall through to
@@ -61,10 +101,15 @@ func _load() -> void:
 		return
 	touch_controls = bool(
 		config.get_value(SECTION, "touch_controls", device_has_touch()))
+	music_volume = clampf(float(config.get_value(
+		SECTION_AUDIO, "music_volume", MUSIC_VOLUME_DEFAULT)), 0.0, 1.0)
+	music_muted = bool(config.get_value(SECTION_AUDIO, "music_muted", false))
 
 
 func _save() -> void:
 	var config := ConfigFile.new()
 	config.load(CONFIG_PATH)   # keep any keys this build does not know about
 	config.set_value(SECTION, "touch_controls", touch_controls)
+	config.set_value(SECTION_AUDIO, "music_volume", music_volume)
+	config.set_value(SECTION_AUDIO, "music_muted", music_muted)
 	config.save(CONFIG_PATH)

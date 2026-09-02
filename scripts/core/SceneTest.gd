@@ -5,10 +5,10 @@
 # RulesTest proves the rules are right. This proves the game actually runs.
 extends SceneTree
 
-# Seed for the wall-indicator check's maze. Any seed whose maze 1 puts a dead
-# end within reach of the seeker inside the frame budget will do; this one is
-# checked in because the check must not depend on the wall clock.
-const INDICATOR_SEED := 20250829
+# Seed for the dead-end decoration check's maze. Any seed whose maze 1 puts a
+# dead end within reach of the seeker inside the frame budget will do; this one
+# is checked in because the check must not depend on the wall clock.
+const DEAD_END_SEED := 20250829
 
 var _passed := 0
 var _failed := 0
@@ -94,9 +94,88 @@ func _run() -> void:
 	# that UI is the most node-heavy thing in the game and the most likely to
 	# break silently.
 	var before: int = game.upgrades.started_line_count()
-	game._on_gate_entered(1)
+
+	# Colour of the gate marker about to be taken, read BEFORE the gate fires so
+	# the comparison below is against what was actually on screen rather than
+	# against a constant restated here (the transcription trap, section 12).
+	var gate_node := game._mesh.get_node_or_null("Gate0") as MeshInstance3D
+	check("the gate marker exists before it is taken", gate_node != null)
+	var live_colour := Color.BLACK
+	if gate_node != null:
+		live_colour = (gate_node.material_override as StandardMaterial3D).emission
+
+	# The argument is the gate's PLACEMENT in `maze.gates`, so gate 0's marker
+	# is cleared by passing 0. This read `_on_gate_entered(1)` against a handler
+	# that subtracted one, which meant the harness was asserting the off-by-one
+	# rather than the contract -- and so could not see the mismatch that left
+	# out-of-order gates recolouring the wrong marker.
+	game._on_gate_entered(0)
 	check("gate pauses the run", game.phase == 1)
 	check("minimap blurs at a gate", game._minimap.blurred)
+
+	# A taken gate DIMS; it does not disappear. It used to be queue_free'd, which
+	# threw away the most recognisable landmark the maze has -- and one that is
+	# tall enough to clear the wall line, so it is visible from several corridors
+	# away. Deleting it made ground the player had demonstrably driven look
+	# exactly like ground they had never seen (section 6).
+	#
+	# queue_free is deferred, so a check for the node still being there would
+	# pass for a frame either way. Processing frames first is what makes this an
+	# assertion rather than a race.
+	for i in 5:
+		game._process(0.016)
+
+	var spent := game._mesh.get_node_or_null("Gate0") as MeshInstance3D
+	check("a taken gate keeps its marker", spent != null)
+	if spent != null:
+		var mat := spent.material_override as StandardMaterial3D
+		check("the spent marker still has a material", mat != null)
+		if mat != null:
+			check("a taken gate changes colour", mat.emission != live_colour,
+				"still %s" % mat.emission)
+			# Separated by HUE, not only by brightness: the wall indicator
+			# already ramps amber-to-red on distance (section 5.6), so a spent
+			# gate that was merely a dimmer amber would read as a live one seen
+			# far off through fog.
+			check("the spent colour is cool where the live one is warm",
+				mat.emission.b > mat.emission.r,
+				"spent %s vs live %s" % [mat.emission, live_colour])
+			check("a taken gate stops shouting",
+				mat.emission_energy_multiplier < 2.0,
+				"energy %.2f" % mat.emission_energy_multiplier)
+
+		# The spent marker must sit ABOVE the camera, and this is the assertion
+		# that would have caught the bug a rendered frame found: the marker is
+		# transparent and CULL_DISABLED, so one still running to the floor puts
+		# the eye inside it whenever the player re-crosses the cell and washes
+		# the entire screen its colour. Deleting the marker used to hide this;
+		# keeping it made it permanent.
+		#
+		# Measured off the mesh's own AABB rather than off the tuning constant,
+		# so this asserts the geometry actually MOVED rather than restating a
+		# number (section 12).
+		var box: AABB = spent.mesh.get_aabb()
+		check("a spent gate clears the camera",
+			box.position.y > Tuning.CAM_HEIGHT,
+			"base %.2f vs camera %.2f" % [box.position.y, Tuning.CAM_HEIGHT])
+
+		# And it must still clear the wall line, which is the entire reason the
+		# marker is worth keeping: only the part above the walls is visible from
+		# another corridor, and that visibility is what makes a spent gate a
+		# landmark rather than clutter in one cell.
+		check("a spent gate still clears the wall line",
+			box.end.y > Tuning.WALL_HEIGHT,
+			"top %.2f vs wall %.2f" % [box.end.y, Tuning.WALL_HEIGHT])
+
+	# The gates NOT yet taken must be untouched. _make_marker builds one material
+	# per marker, but a recolour that reached through a shared resource would dim
+	# every gate in the maze at the first one taken -- and nothing about the look
+	# of a single frame would reveal it.
+	var next_gate := game._mesh.get_node_or_null("Gate1") as MeshInstance3D
+	if next_gate != null:
+		var next_mat := next_gate.material_override as StandardMaterial3D
+		check("taking one gate leaves the others live",
+			next_mat != null and next_mat.emission == live_colour)
 
 	var offered: Array = game._upgrade_screen._lines
 	check("cards were offered", offered.size() > 0, "got %d" % offered.size())
@@ -128,11 +207,13 @@ func _run() -> void:
 	_check_flying_vision(game)
 	_check_wall_winding()
 	_check_path_indicator(game)
-	_check_wall_indicator(game)
+	_check_dead_end_decoration(game)
 	_check_camera_never_clips(game)
 	_check_crash_camera(game)
 	_check_pause(game)
 	_check_landmark_meshes(game)
+	_check_minimap_placement(game)
+	_check_gate_names_survive_a_rebuild()
 
 	_finish()
 
@@ -141,9 +222,15 @@ func _run() -> void:
 # everywhere else.
 #
 # This is the assertion that stops it silently reverting to "floating in the
-# air": every lit panel is checked to be flush against an actual wall face. A
-# panel positioned in open space would still LOOK lit from most angles and would
-# never be caught by a smoke test that only asks whether the node is visible.
+# air": every lit strip is checked to lie on the boundary between the player's
+# cell and a genuinely open neighbour -- the gap it is marking. A strip laid
+# over a wall, or adrift mid-cell, would still LOOK lit from most angles and
+# would never be caught by a smoke test that only asks whether the node is
+# visible.
+#
+# Note this is the INVERSE of the check it replaces. The panels had to be flush
+# against a wall face; a strip marks an opening, so a wall under it is now the
+# failure rather than the requirement.
 func _check_path_indicator(game) -> void:
 	var indicator: PathIndicator = game._path_indicator
 	check("path indicator exists", indicator != null)
@@ -161,12 +248,12 @@ func _check_path_indicator(game) -> void:
 
 	var junctions := 0
 	var lit_somewhere := false
-	var off_wall := 0
+	var misplaced := 0
 	var lit_at_corner := 0
 
 	# Walk the maze and drive the indicator through real cells rather than
 	# waiting for an autopilot to wander into a junction -- the same reason the
-	# wall-indicator check seeks its own fixture.
+	# dead-end decoration check seeks its own fixture.
 	for y in maze.height:
 		for x in maze.width:
 			if junctions >= 40:
@@ -193,8 +280,8 @@ func _check_path_indicator(game) -> void:
 					if not panel.visible:
 						continue
 					lit += 1
-					if not _panel_is_on_a_wall(maze, panel):
-						off_wall += 1
+					if not _strip_is_in_a_gap(maze, cell, panel):
+						misplaced += 1
 
 				if onward >= 2:
 					junctions += 1
@@ -211,42 +298,63 @@ func _check_path_indicator(game) -> void:
 	check("path indicator found junctions to test", junctions > 0,
 		"checked %d" % junctions)
 	check("path indicator lights at a junction", lit_somewhere)
-	check("path indicator panels sit on a wall, not in the air", off_wall == 0,
-		"%d panels were not against any wall face" % off_wall)
+	check("path indicator strips lie across an opening, not in the air",
+		misplaced == 0,
+		"%d strips were off the boundary or turned the wrong way" % misplaced)
 	check("path indicator stays dark where there is no choice", lit_at_corner == 0,
 		"%d corners were lit" % lit_at_corner)
 
 
-# Is this panel flush against a real wall face?
+# Is this strip lying across a real opening out of `cell`?
 #
-# A panel is placed half a cell out from some cell centre along one axis. So the
-# cell it belongs to is the one it rounds to, the axis it is offset along names
-# the wall, and that wall must actually be solid.
-func _panel_is_on_a_wall(maze: Maze, panel: Node3D) -> bool:
-	var pos: Vector3 = panel.position
-	var cell := Vector2i(
-		int(round(pos.x / Tuning.CELL_SIZE)),
-		int(round(pos.z / Tuning.CELL_SIZE)))
-	if not maze._in_bounds(cell):
-		return false
-
+# It has to sit on a cell boundary -- half a cell out from the centre along one
+# axis, dead centre on the other -- and the side it names must actually be open.
+# That covers both ways the placement can go wrong: a strip drawn over a solid
+# wall (marking a route that does not exist) and one adrift inside a cell
+# (marking nothing at all, the floating-in-air failure).
+func _strip_is_in_a_gap(maze: Maze, cell: Vector2i, strip: Node3D) -> bool:
+	var pos: Vector3 = strip.position
 	var offset := Vector3(
 		pos.x - float(cell.x) * Tuning.CELL_SIZE,
 		0.0,
 		pos.z - float(cell.y) * Tuning.CELL_SIZE)
 
+	var half: float = Tuning.CELL_SIZE * 0.5
 	var dir := -1
-	if absf(offset.x) > absf(offset.z):
-		dir = Maze.E if offset.x > 0.0 else Maze.W
-	else:
-		dir = Maze.S if offset.z > 0.0 else Maze.N
+	var across := 0.0
 
-	# It has to be pushed out to (near) the face, not sitting mid-cell.
-	var reach: float = maxf(absf(offset.x), absf(offset.z))
-	if reach < Tuning.CELL_SIZE * 0.4:
+	if is_equal_approx(absf(offset.x), half):
+		dir = Maze.E if offset.x > 0.0 else Maze.W
+		across = offset.z
+	elif is_equal_approx(absf(offset.z), half):
+		dir = Maze.S if offset.z > 0.0 else Maze.N
+		across = offset.x
+	else:
+		# Not on any boundary of this cell.
 		return false
 
-	return not maze.is_open(cell, dir)
+	# Centred in the corridor it spans, not shunted to one side of it.
+	if absf(across) > 0.001:
+		return false
+
+	if not maze.is_open(cell, dir):
+		return false
+
+	# It must lie ACROSS the gap, not lengthwise down the corridor.
+	#
+	# Orientation needs asserting separately from position because the two fail
+	# independently, and a mis-yawed strip sits in exactly the right place: it
+	# passed every positional check here while rendering as a bar running down
+	# the corridor instead of over its mouth. Worse, the branch straight ahead
+	# looks correct under a flipped sign, so half the strips on screen agree
+	# with the bug.
+	#
+	# The mesh spans local X, so the world span is the basis X column. Against
+	# the direction it marks it must be perpendicular -- dot product zero.
+	var v: Vector2i = Maze.DIR_VECTORS[dir]
+	var span: Vector3 = strip.transform.basis.x.normalized()
+	var along := Vector3(float(v.x), 0.0, float(v.y)).normalized()
+	return absf(span.dot(along)) < 0.01
 
 
 # The third-person camera must never end up inside a wall or outside the maze.
@@ -328,43 +436,58 @@ func _check_camera_never_clips(game) -> void:
 		"%d of %d frames with sight blocked" % [blind, frames])
 
 
-# The wall indicator must only ever mark a REAL DEAD END.
+# Every dead end the player can actually drive into must carry a landmark.
 #
-# This is the design constraint, not an implementation detail: the mark says
-# "not through here" and never "go left". If it ever lit up an open direction it
-# would be answering routing, which is Path Indicator's job and the headline
-# paid upgrade (CLAUDE.md section 7). And a cell with a turn available is not a
-# dead end -- marking those fired the sign on roughly half the cells in a DFS
-# maze, which is frequent enough to stop reading as a warning. A scan-loop tweak
-# could break either half silently, so both are asserted over real play rather
-# than eyeballed.
-func _check_wall_indicator(game) -> void:
-	var indicator = game._wall_indicator
-	check("wall indicator exists", indicator != null)
-	if indicator == null:
-		return
-
-	# Pin the maze. Game seeds itself from the wall clock, so this check drew a
-	# different maze on every run and whether the autopilot met a dead end
-	# inside the frame budget was luck -- it failed roughly two runs in three
-	# once the one-cell stubs were culled. A fixed seed makes the check answer
-	# "does the indicator obey its rule" rather than "did we get a lucky maze".
-	# Verified to contain reachable dead ends within the frame budget.
-	game.run_seed = INDICATOR_SEED
+# This replaced the wall indicator, and it inherits its job. The indicator was a
+# free no-entry mark on the end wall; removing it means the landmark is now the
+# ONLY thing that tells the end of a corridor apart from a corridor that merely
+# turns. A bare dead end is a reversal with nothing to remember it by -- the
+# "punishment without the lesson" case in CLAUDE.md section 6.
+#
+# Asserted over real PLAY rather than over the grid, because the placement pass
+# and the mesh builder can disagree: Maze._place_landmarks can list a cell that
+# MazeMesh never emits. Driving into dead ends is what catches that.
+func _check_dead_end_decoration(game) -> void:
+	# Pin the maze. Game seeds itself from the wall clock, so this drew a
+	# different maze every run and whether the autopilot met a dead end inside
+	# the frame budget was luck. A fixed seed makes it answer "does the rule
+	# hold" rather than "did we get a lucky maze".
+	game.run_seed = DEAD_END_SEED
 	game._start_maze(0)
 
-	# Re-read racer and maze from `game` every frame, never cached: _start_maze
-	# builds a NEW Racer and a NEW Maze for each maze in the run, so a
-	# reference captured up front goes stale the moment maze 1 is cleared and
-	# leaves the test inspecting an orphaned racer.
+	var decorated := {}
+	for landmark in game.maze.landmarks:
+		decorated[landmark["cell"]] = true
+
+	# The whole-grid claim first: no dead end may be left bare, whether or not
+	# this run's autopilot happens to reach it.
+	var maze: Maze = game.maze
+	var total_dead_ends := 0
+	var bare := 0
+	for y in maze.height:
+		for x in maze.width:
+			var cell := Vector2i(x, y)
+			if maze.open_directions(cell).size() != 1:
+				continue
+			# The start, the exit and the gate cells are deliberately excluded
+			# from placement -- each already carries its own marker, and a
+			# landmark on top of one would be scenery competing with navigation.
+			if cell == maze.start_cell or cell == maze.exit_cell or maze.gates.has(cell):
+				continue
+			total_dead_ends += 1
+			if not decorated.has(cell):
+				bare += 1
+
+	check("the maze has dead ends to decorate", total_dead_ends > 0,
+		"found none, so the check below asserts nothing")
+	check("every dead end carries a landmark", bare == 0,
+		"%d of %d dead ends were left bare" % [bare, total_dead_ends])
+
+	# And now the same claim over play. Re-read racer and maze from `game` every
+	# frame, never cached: _start_maze builds a NEW Racer and a NEW Maze per
+	# maze, so a reference captured up front goes stale the moment maze 1 ends.
 	var racer: Racer = null
-	var maze: Maze = null
-	var marked_open := 0
-	var marked_turnable := 0
-	var marked_sideways := 0
-	var marked_too_far := 0
-	var missed_blocked := 0
-	var shown := 0
+	var visited_dead_ends := {}
 	var frames := 900
 	var last := Vector2i(-999, -999)
 
@@ -383,83 +506,33 @@ func _check_wall_indicator(game) -> void:
 				last = racer.cell
 				# Steer TOWARD dead ends, not toward the exit. The solve-path
 				# autopilot the other checks use is optimal, so it never enters a
-				# dead end and the mark never fires -- which left this whole
-				# block asserting nothing. Hunt for the case under test instead.
+				# dead end and this would assert nothing. Hunt for the case under
+				# test instead.
 				var want := _dead_end_seeking_turn(maze, racer)
 				if want != 0:
 					racer.request_turn(want)
 
 		game._process(1.0 / 60.0)
 
-		# Recover which wall the mark landed on from its world transform, so the
-		# test reads the rendered result rather than trusting internal state.
 		racer = game.racer
 		maze = racer.maze
-
-		if not indicator.visible:
-			# A wall inside the window must always be marked WHILE RACING, or the
-			# player gets no warning at exactly the moment the mark exists for.
-			# Between mazes it is deliberately hidden: the racer still sits on the
-			# old exit cell for a frame after the new maze is swapped in.
-			if game.phase != 0:
-				continue
-
-			var cell := racer.cell
-			var ahead := 1.0 - racer.progress
-			while ahead <= WallIndicator.SHOW_WITHIN_CELLS:
-				if not maze.is_open(cell, racer.facing):
-					# Only a dead end is a miss now. A corner inside the window
-					# is correctly left unmarked -- the player has a turn.
-					if _dead_end_ahead(maze, cell, racer.facing):
-						missed_blocked += 1
-					break
-				cell += Maze.DIR_VECTORS[racer.facing]
-				ahead += 1.0
+		if game.phase != 0:
 			continue
+		if maze.open_directions(racer.cell).size() == 1:
+			visited_dead_ends[racer.cell] = true
 
-		shown += 1
-		var p: Vector3 = indicator.position
-		var marked_cell := Vector2i(
-			int(round(p.x / Tuning.CELL_SIZE)),
-			int(round(p.z / Tuning.CELL_SIZE))
-		)
-		var offset := Vector3(p.x, 0.0, p.z) - Vector3(
-			marked_cell.x * Tuning.CELL_SIZE, 0.0, marked_cell.y * Tuning.CELL_SIZE)
+	var driven := visited_dead_ends.size()
+	var driven_bare := 0
+	for cell in visited_dead_ends:
+		if maze.gates.has(cell) or cell == maze.start_cell or cell == maze.exit_cell:
+			continue
+		if not decorated.has(cell):
+			driven_bare += 1
 
-		var dir := -1
-		if absf(offset.x) > absf(offset.z):
-			dir = Maze.E if offset.x > 0.0 else Maze.W
-		else:
-			dir = Maze.S if offset.z > 0.0 else Maze.N
-
-		if maze.is_open(marked_cell, dir):
-			marked_open += 1
-
-		# The new rule: a marked cell must offer no way out but a 180. If a turn
-		# exists there, the sign is firing on an ordinary corner.
-		if not _dead_end_ahead(maze, marked_cell, dir):
-			marked_turnable += 1
-
-		# And it must be the wall AHEAD, not one off to the side.
-		if dir != racer.facing:
-			marked_sideways += 1
-
-		var gap := (Vector2(marked_cell) - Vector2(racer.cell)).length()
-		if gap > WallIndicator.SHOW_WITHIN_CELLS + 1.0:
-			marked_too_far += 1
-
-	check("indicator was exercised", shown > 0, "never shown in %d frames" % frames)
-	check("indicator never marks an open direction", marked_open == 0,
-		"%d frames marked a passable side -- it would be acting as a free Path Indicator"
-			% marked_open)
-	check("indicator only marks real dead ends", marked_turnable == 0,
-		"%d frames marked a cell with a turn available" % marked_turnable)
-	check("indicator marks the wall straight ahead", marked_sideways == 0,
-		"%d frames marked a side wall" % marked_sideways)
-	check("indicator never marks a distant wall", marked_too_far == 0,
-		"%d frames marked past the window" % marked_too_far)
-	check("indicator never misses a dead end in the window", missed_blocked == 0,
-		"%d frames hid a dead end the player was driving into" % missed_blocked)
+	check("the autopilot reached a dead end", driven > 0,
+		"entered none in %d frames, so nothing was exercised" % frames)
+	check("every dead end driven into was decorated", driven_bare == 0,
+		"%d of %d dead ends reached were bare" % [driven_bare, driven])
 
 
 # Pick a turn that heads for a dead end when one is adjacent, so the indicator
@@ -524,17 +597,6 @@ func _leads_to_dead_end(maze: Maze, cell: Vector2i, dir: int, depth: int = 6) ->
 	return false
 
 
-# Mirrors WallIndicator's own rule, written out independently so the test does
-# not simply restate the implementation it is checking.
-func _dead_end_ahead(maze: Maze, cell: Vector2i, facing: int) -> bool:
-	for dir in Maze.DIRS:
-		if dir == Maze.OPPOSITE[facing]:
-			continue
-		if maze.is_open(cell, dir):
-			return false
-	return true
-
-
 # A crash must visibly change the view, and must still never clip.
 #
 # The autopilot in the other harnesses never crashes, so every part of the crash
@@ -573,14 +635,67 @@ func _check_pause(game) -> void:
 		game.racer.cell == cell_before and is_equal_approx(game.racer.progress, progress_before),
 		"cell %s progress %.3f" % [str(game.racer.cell), game.racer.progress])
 
+	# The settings cog is a PAUSE-screen control: on a live corridor it would be
+	# a mouse target sitting over the thing the player is steering through.
+	check("paused: the settings cog is shown",
+		game._settings_cog != null and game._settings_cog.visible)
+
+	_check_pause_settings(game)
+
 	game._set_paused(false)
 	check("unpause returns to racing", game.phase == game.Phase.RACING)
 	check("unpause unblurs the minimap", not game._minimap.blurred)
+	check("unpause hides the settings cog",
+		game._settings_cog != null and not game._settings_cog.visible)
 
 	for _i in range(30):
 		game._process(1.0 / 60.0)
 	check("unpaused: the run timer resumes", game.elapsed > elapsed_before,
 		"%.3f -> %.3f" % [elapsed_before, game.elapsed])
+
+
+# The panel mounted over a paused game, which is where the interactions that
+# can actually go wrong live: a modal that outlives the pause would swallow the
+# steering inputs the player just went back to.
+func _check_pause_settings(game) -> void:
+	game._open_settings()
+	check("the cog opens the settings panel", game.settings_open())
+
+	var panel = game._settings_panel
+	check("the panel is a SettingsPanel", panel is SettingsPanel)
+	check("the panel is under the UI root",
+		panel != null and panel.get_parent() != null
+			and String(panel.get_parent().name) == "UIRoot")
+
+	# Opening must not itself write a preference -- the slider is assigned from
+	# the stored value on open, and an unblocked assignment would echo straight
+	# back into Settings and re-save the config on every open.
+	# Explicitly typed, not inferred: `game` is untyped here, so the return of
+	# get_node_or_null through it carries no static type and `:=` is a parse
+	# error -- which fails the whole FILE to load, so the harness reports a
+	# bare "Parse error" and none of its assertions run at all.
+	var settings: Node = game.get_node_or_null("/root/Settings")
+	if settings != null and panel != null:
+		var volume_before: float = float(settings.music_volume)
+		game._close_settings()
+		game._open_settings()
+		check("opening the panel does not change the volume",
+			is_equal_approx(float(settings.music_volume), volume_before),
+			"%.3f -> %.3f" % [volume_before, float(settings.music_volume)])
+
+	# A pause press with the panel up is aimed at the panel. Resuming
+	# underneath it would hand back a running corridor with a modal on screen.
+	game._on_pause_input()
+	check("a pause press closes the panel first", not game.settings_open())
+	check("...and does NOT resume the game",
+		game.phase == game.Phase.PAUSED, str(game.phase))
+
+	# Still paused, so the next press is the ordinary resume.
+	game._open_settings()
+	check("the panel reopens", game.settings_open())
+	game._set_paused(false)
+	check("resuming frees the panel", not game.settings_open())
+	game._set_paused(true)
 
 
 func _check_crash_camera(game) -> void:
@@ -619,6 +734,19 @@ func _check_crash_camera(game) -> void:
 	racer.cell = target
 	racer.facing = blocked
 	racer.progress = 0.0
+	# Clear whatever the earlier checks left armed. A pending turn survives a
+	# bare cell/facing assignment, so the racer would resolve it at the next
+	# boundary and steer AROUND the wall this check just went to the trouble of
+	# finding -- failing as "driving into a wall crashes", which points at the
+	# crash rules rather than at the stale input that actually caused it.
+	#
+	# The same trap CLAUDE.md section 12 records for shared-scene harnesses:
+	# state the test needs must be established, never inherited. It stayed
+	# hidden while the checks ahead of this one happened to leave nothing armed.
+	racer.pending_turn = -1
+	racer.pending_buffer = 0.0
+	racer.scraping = false
+	racer.state = Racer.State.RUNNING
 	# This check is about the CRASH path, and by now the harness has taken every
 	# upgrade line -- including Wall Smasher, which correctly breaks through a
 	# wall instead of crashing into it. Hold it on cooldown so the racer is
@@ -761,6 +889,91 @@ func _check_wall_winding() -> void:
 		"got %.3f" % signed_volume)
 
 
+# The minimap sits centred under the player marker and must not cover the
+# barrier and integrity bars.
+#
+# It moved out of the bottom-left corner so it would sit directly below the
+# marker -- the shortest possible glance, on the axis the player is already
+# looking along. The cost of centring is a collision the corner placement could
+# never have: the bars are hard against the left margin in the SAME bottom
+# band, so on a narrow window the map runs straight over them. The barrier bar
+# is the most important element on screen (CLAUDE.md section 5.1), so the map
+# has to give way, and the clamp that makes it give way is exactly the sort of
+# layout arithmetic that is right by luck until a number moves.
+#
+# Checked at two widths because the wide case passes trivially -- the clamp is
+# not even binding there -- so a broken clamp would show up at neither size if
+# only one were tested.
+func _check_minimap_placement(game) -> void:
+	# UIRoot is driven directly rather than by resizing the window: --headless
+	# runs a dummy DisplayServer that ignores window_set_size entirely, so the
+	# viewport stays at the project's 1600x900 and every size below would be
+	# tested against the same rect. This is the "did we actually vary anything"
+	# trap -- the checks passed at one size and silently never saw the other.
+	#
+	# Its full-rect anchors have to be released first, or the assignment is
+	# overridden on the next layout (the engine warns about exactly that).
+	var ui: Control = game._minimap.get_parent()
+	ui.anchor_right = 0.0
+	ui.anchor_bottom = 0.0
+
+	for width in [1280.0, 760.0]:
+		ui.size = Vector2(width, 720.0)
+		game._place_minimap()
+		# Anchors and offsets resolve into a rect on layout, not on assignment.
+		for i in 3:
+			game._process(0.016)
+
+		var box: Rect2 = game._minimap.get_rect()
+		var label := "at %dpx" % int(width)
+
+		# Centred where there is room for it. On a window too narrow to both
+		# centre the map and clear the bars, the map gives ground to the right
+		# -- the bars win those pixels -- so this asserts "centred, or pushed
+		# right", never "pushed left", which would put it back over them.
+		var centred: bool = absf(box.get_center().x - width * 0.5) <= 1.0
+		var nudged_right: bool = box.get_center().x > width * 0.5
+		check("the map is centred or nudged right %s" % label,
+			centred or nudged_right,
+			"centre %.1f vs %.1f" % [box.get_center().x, width * 0.5])
+
+		# At a normal desktop width the clamp must not be binding at all -- the
+		# map is exactly centred and full size. Without this the checks above
+		# would be satisfied by a clamp that fired at every width and quietly
+		# pushed the map off-centre on every screen.
+		if width >= 1280.0:
+			check("a desktop window centres the map exactly %s" % label, centred,
+				"centre %.1f" % box.get_center().x)
+			check("a desktop window draws the map full size %s" % label,
+				box.size.x >= Minimap.SIZE - 1.0, "span %.1f" % box.size.x)
+
+		# Clear of the bars, which run from the left margin to HUD_BARS_RIGHT.
+		check("the map clears the barrier bars %s" % label,
+			box.position.x >= game.HUD_BARS_RIGHT,
+			"left edge %.1f vs bars ending %.1f" % [
+				box.position.x, game.HUD_BARS_RIGHT])
+
+		# And still large enough to read: a clamp that satisfied the line above
+		# by collapsing the map to nothing would be worse than the overlap.
+		check("the map stays legible %s" % label,
+			box.size.x >= game.MINIMAP_MIN,
+			"span %.1f" % box.size.x)
+
+		# On screen. A bottom anchor with the wrong sign puts it off the edge,
+		# which is the failure the touch pads had (section 9d).
+		check("the map stays on screen %s" % label,
+			box.position.y >= 0.0 and box.end.y <= 720.0,
+			"y %.1f..%.1f" % [box.position.y, box.end.y])
+
+	# Left as it was found: a tool must not write the state it is inspecting
+	# (section 9d), and later checks in this harness share the same scene.
+	ui.anchor_right = 1.0
+	ui.anchor_bottom = 1.0
+	ui.offset_right = 0.0
+	ui.offset_bottom = 0.0
+	game._place_minimap()
+
+
 func _finish() -> void:
 	print("")
 	print("passed: %d   failed: %d" % [_passed, _failed])
@@ -897,3 +1110,75 @@ func _check_flying_vision(game) -> void:
 	game._on_reverse_input()
 	check("a parked racer cannot trigger the vision", game.phase == 0)
 	game.racer.state = Racer.State.RUNNING
+
+
+# A gate marker must still be called "Gate<n>" after the mesh is rebuilt.
+#
+# `clear_gate` finds its marker with get_node("Gate<n>"), so these names are
+# load-bearing rather than cosmetic -- and they were being lost silently. Godot
+# assigns a node's name on ENTRY TO THE TREE, so a name set before add_child is
+# overwritten (the trap CLAUDE.md section 12 records for the Music autoload);
+# and a name colliding with a node still in the tree -- one queue_freed earlier
+# in the same frame -- is resolved by renaming the NEW node.
+#
+# Measured: on the old code the second build left 6 renamed markers and the
+# third left 12, accumulating per maze, while the gate lookups still "succeeded"
+# by resolving to the DYING originals. That is why no existing check saw it, and
+# why the report was that gates stop recolouring in the later zones but not in
+# maze 1 -- maze 1 has nothing to collide with.
+#
+# Driven against MazeMesh directly on a small maze, not through Game: the rule
+# belongs to the mesh, and a real _start_maze on the shipped grids costs minutes
+# per maze while telling us nothing more about naming. Three builds, because the
+# first is always clean -- the failure needs a previous set of markers present.
+#
+# No frames are processed between builds, which is the whole point: that is what
+# Game._start_maze does, and ticking the tree in between would let the deferred
+# frees land and pass against the broken code.
+func _check_gate_names_survive_a_rebuild() -> void:
+	var mesh := MazeMesh.new()
+	get_root().add_child(mesh)
+
+	for pass_index in 3:
+		var maze := Maze.new()
+		maze.generate(12, 12, 1234 + pass_index * 7919, 0.15, 0.03, 5)
+		mesh.build(maze, 0)
+
+		var expected: int = maze.gates.size()
+		var reachable := 0
+		for i in expected:
+			if mesh.get_node_or_null("Gate%d" % i) != null:
+				reachable += 1
+
+		check("every gate marker is reachable by name on build %d" % (pass_index + 1),
+			reachable == expected and expected > 0,
+			"found %d of %d" % [reachable, expected])
+
+		check("the exit marker is reachable by name on build %d" % (pass_index + 1),
+			mesh.get_node_or_null("Exit") != null)
+
+		# A renamed marker still EXISTS, just unreachable, so counting strays is
+		# what tells a rename apart from a missing node -- and it is the half
+		# that actually caught this, since the lookups above kept "passing"
+		# against the dying originals.
+		#
+		# The "@" prefix alone is NOT the signal: the floor, walls, grid lines
+		# and wall tops are added unnamed and correctly carry generated names on
+		# every build. Only a marker is meant to hold a name, so a stray is
+		# identified by shape -- a mesh rising clear of the wall line that is
+		# not called Gate<n> or Exit.
+		var strays := 0
+		for child in mesh.get_children():
+			var n := String(child.name)
+			if n.begins_with("Gate") or n == "Exit":
+				continue
+			var mi := child as MeshInstance3D
+			if mi == null or mi.mesh == null:
+				continue
+			if mi.mesh.get_aabb().end.y > Tuning.WALL_HEIGHT * 1.2:
+				strays += 1
+
+		check("no renamed markers left behind on build %d" % (pass_index + 1),
+			strays == 0, "%d strays" % strays)
+
+	mesh.queue_free()
