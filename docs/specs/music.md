@@ -144,6 +144,41 @@ this project has (CLAUDE.md §12).
 
 ---
 
+## 6b. The browser blocks audio until a gesture
+
+Browsers start every `AudioContext` **suspended** and refuse to run it until the
+user has interacted with the page. Godot creates its context during boot, long
+before any click, and **does not resume it on its own** — measured against the
+live build, the context was still `suspended` after both a click and a keypress.
+
+So the first web deploy was completely silent, while every desktop check passed:
+desktop has no autoplay policy, so nothing local can reproduce it.
+
+**The fix cannot live in GDScript.** `AudioServer` has no reach into the
+context's suspended state, so a "replay the track on first input" retry in
+`Music` just restarts the track into a context that is still dead. It has to be
+JavaScript, and it lives in `tools/web/shell.html`:
+
+1. A hook in `<head>`, before the engine script, wraps the `AudioContext`
+   constructor and collects each one the engine creates. This is necessary
+   because `GodotAudio` is module-internal and never reaches `window`, so there
+   is otherwise no reference to resume.
+2. The PLAY click calls `resume()` on every collected context. The shell already
+   gated startup behind that button, so the gesture was there — it simply was
+   not being used for this.
+3. Any later `pointerdown` / `keydown` / `touchstart` retries, because a browser
+   can re-suspend a context when a tab is backgrounded and a player who tabs away
+   mid-run should not come back to silence.
+
+**Verifying it needs a real browser.** The harnesses are headless, `MusicProbe`
+runs on the desktop audio driver, and the export builds cleanly either way — so
+nothing in the ordinary loop can tell a working web build from a mute one. The
+check that answers it is driving the built page over the Chrome DevTools
+Protocol and reading the context state plus `currentTime`: the clock only
+advances while audio is genuinely running.
+
+---
+
 ## 7. Adding a track
 
 1. Drop the file in `audio/music/`.

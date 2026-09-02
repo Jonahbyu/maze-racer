@@ -4,12 +4,43 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0">
 	<title>Maze Racer</title>
-	<meta name="description" content="A fast-paced 3D maze racer. Speed is not a choice, it is a condition.">
+	<meta name="description" content="A fast-paced 3D maze racer with roguelike progression.">
 	<meta property="og:title" content="Maze Racer">
-	<meta property="og:description" content="A fast-paced 3D maze racer with roguelike progression. Three keys, ever-increasing speed.">
+	<meta property="og:description" content="A fast-paced 3D maze racer with roguelike progression.">
 	<meta property="og:type" content="website">
 	<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png">
 	<link rel="apple-touch-icon" type="image/png" href="index.apple-touch-icon.png">
+
+	<!--
+		Collect every AudioContext the engine creates, so the PLAY click can
+		resume them.
+
+		This has to run BEFORE the engine script, which is why it sits in
+		<head> rather than with the rest of the boot code: Godot builds its
+		context during startup, and there is no other way to get a reference
+		to it -- GodotAudio is module-internal and is not exposed on window.
+
+		Wrapping the constructor is the whole trick. Without it there is
+		nothing to call resume() on, and the game is silent in every browser
+		until a reload that happens to race the policy.
+	-->
+	<script>
+	(function () {
+		var Native = window.AudioContext || window.webkitAudioContext;
+		if (!Native) { return; }
+		window.__godotAudioContexts = [];
+		function Tracked() {
+			var ctx = new (Function.prototype.bind.apply(Native,
+				[null].concat(Array.prototype.slice.call(arguments))))();
+			window.__godotAudioContexts.push(ctx);
+			return ctx;
+		}
+		Tracked.prototype = Native.prototype;
+		window.AudioContext = Tracked;
+		window.webkitAudioContext = Tracked;
+	})();
+	</script>
+
 	<style>
 		:root {
 			--neon: #22d3ee;
@@ -49,11 +80,6 @@
 			letter-spacing: .22em; text-transform: uppercase;
 			font-weight: 600; color: #fff;
 			text-shadow: 0 0 12px var(--neon), 0 0 38px rgba(34,211,238,.55);
-		}
-		.tag {
-			margin: 0; color: var(--dim);
-			font-size: clamp(.72rem, 2.1vw, .86rem);
-			letter-spacing: .16em; text-transform: uppercase;
 		}
 		.keys { display: flex; gap: .6rem; flex-wrap: wrap; justify-content: center; }
 		.keys div {
@@ -104,7 +130,6 @@
 
 	<div id="boot">
 		<h1>Maze Racer</h1>
-		<p class="tag">Speed is not a choice &mdash; it is a condition</p>
 		<div class="keys">
 			<div><b>&larr;</b> turn left</div>
 			<div><b>&rarr;</b> turn right</div>
@@ -161,10 +186,43 @@
 			fail('Failed to start: ' + err);
 		});
 
+		// Resume every AudioContext the engine created.
+		//
+		// This is what actually makes the game audible in a browser. Godot
+		// creates its AudioContext during boot -- before any gesture -- so it
+		// starts SUSPENDED under every browser's autoplay policy, and the
+		// engine never resumes it on its own: measured over CDP, the context
+		// was still "suspended" after both a click and a keypress, so the
+		// music played into a dead context and the game shipped silent.
+		//
+		// Nothing in GDScript can fix this. AudioServer has no reach into the
+		// context's suspended state, which is why every desktop harness and
+		// probe passed against the same code.
+		//
+		// The contexts are collected by the constructor hook installed in
+		// <head>, because the engine does not expose its own.
+		function resumeAudio() {
+			var list = window.__godotAudioContexts || [];
+			for (var i = 0; i < list.length; i++) {
+				if (list[i].state !== 'running') {
+					list[i].resume().catch(function () { /* nothing to do */ });
+				}
+			}
+		}
+
 		play.addEventListener('click', function () {
 			boot.classList.add('done');
 			setTimeout(function () { boot.style.display = 'none'; }, 500);
 			canvas.focus();
+			resumeAudio();
+		});
+
+		// A belt-and-braces retry on any later gesture. The PLAY click is the
+		// gesture that should unlock audio, but a context can be suspended
+		// again by the browser -- a backgrounded tab is the common case -- and
+		// a player who tabs away mid-run should not come back to silence.
+		['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) {
+			window.addEventListener(ev, resumeAudio, { capture: true });
 		});
 	})();
 	</script>

@@ -38,9 +38,25 @@ var _active := 0
 # play() so a shared track across a transition is not restarted.
 var _current := ""
 
+# The stream track selection draws on. Its own generator, never the maze's --
+# see pick_for_maze. Randomized rather than seeded: two runs of the same maze
+# should not open on the same track, which is the whole point of a pool.
+var _rng := RandomNumberGenerator.new()
+
 var _bus_index := 0
 var _duck := 0.0
 var _duck_target := 0.0
+
+# Browsers refuse to start audio until the user has interacted with the page,
+# so a track requested during boot -- which the menu's is -- starts against a
+# suspended AudioContext and is silently discarded. Nothing errors, the player
+# reports playing == true, and the game is mute until a reload.
+#
+# Desktop has no such policy, which is why every local check passed and only
+# production was silent. `_unlocked` stays true off the web, so this whole path
+# costs nothing there.
+var _unlocked := true
+var _pending := ""
 
 # Track names already reported as broken. Warn once per name, not once per
 # call -- a bad per-maze key would otherwise print every frame of a fade.
@@ -58,7 +74,21 @@ func _ready() -> void:
 	# -- which is exactly what a headless harness cannot see.
 	set_process(true)
 
+	# RandomNumberGenerator is NOT random until seeded -- an unseeded one gives
+	# the same sequence every launch, so every run would open on the same track.
+	_rng.randomize()
+
 	_bus_index = _ensure_bus()
+
+	# Only the web has an autoplay policy to satisfy. Checking the platform
+	# rather than the AudioContext state because Godot exposes no way to read
+	# that from GDScript -- the engine resumes the context itself once input
+	# has been seen, so what this needs to know is when to RETRY the track.
+	if OS.has_feature("web"):
+		_unlocked = false
+		set_process_input(true)
+
+	_follow_settings()
 
 	for i in 2:
 		var player := AudioStreamPlayer.new()
@@ -95,6 +125,15 @@ func play(track: String) -> void:
 	if track != "" and not _resolve(track):
 		return
 
+	# Before the browser has unlocked audio, starting the stream would burn the
+	# track against a suspended context: it advances, finishes its fade, and is
+	# never heard, so the first thing the player hears is whatever plays SECOND.
+	# Hold the request instead and start it for real on the first input.
+	if not _unlocked:
+		_pending = track
+		_current = track
+		return
+
 	_current = track
 
 	var incoming := 1 - _active
@@ -122,20 +161,112 @@ func stop() -> void:
 	play("")
 
 
-# The track a maze names in its own config, rather than an array indexed by
+# The tracks a maze names in its own config, rather than an array indexed by
 # maze number -- that goes stale the moment a maze is added, and silently
 # (CLAUDE.md section 6, the same rule landmarks follow).
+#
+# One is drawn per visit, so a maze is not note-for-note the same on a replay,
+# and a maze may instead draw from Tuning.SHARED_TRACKS -- the tracks that
+# belong to the game rather than to one palette.
 func play_for_maze(index: int) -> void:
 	if index < 0 or index >= Tuning.MAZES.size():
 		return
-	var name := String(Tuning.MAZES[index].get("music", ""))
-	if name == "":
+	var track := pick_for_maze(index)
+	if track == "":
 		return
-	play(name)
+	play(track)
+
+
+# Chosen separately from play() so a test can ask what a maze WOULD play
+# without an audio device deciding the answer.
+#
+# Runs on its own RNG, for the reason landmark placement does (CLAUDE.md
+# section 6): sharing the maze generator would mean adding a track silently
+# redrew every maze, since each extra draw shifts the whole downstream
+# sequence. Nothing in the simulation may read this either way.
+func pick_for_maze(index: int) -> String:
+	if index < 0 or index >= Tuning.MAZES.size():
+		return ""
+
+	var own := _track_list(Tuning.MAZES[index].get("music", ""))
+	var shared := _track_list(Tuning.SHARED_TRACKS)
+
+	# The roll only stands if the pool it chose has anything in it -- a maze
+	# with no tracks of its own should still play a shared one rather than
+	# falling silent, and vice versa.
+	var pool := own
+	if shared.size() > 0 and (own.size() == 0
+			or _rng.randf() < Tuning.SHARED_TRACK_CHANCE):
+		pool = shared
+	if pool.size() == 0:
+		return ""
+
+	# Prefer not to redraw what is already playing: play() returns early on a
+	# repeat, so arriving in a new maze on the same track would give no audible
+	# transition at all. Only when there is something else to pick.
+	var choice := String(pool[_rng.randi() % pool.size()])
+	if choice == _current and pool.size() > 1:
+		var others: Array = []
+		for t in pool:
+			if String(t) != _current:
+				others.append(t)
+		choice = String(others[_rng.randi() % others.size()])
+	return choice
+
+
+# Accepts either a bare name or a list of them, so a maze wanting exactly one
+# track is not forced into list syntax. Unknown names are dropped here rather
+# than at play() time, so a typo in a pool cannot make a maze silent -- it just
+# stops being drawn, and MusicTest asserts the names resolve.
+func _track_list(value: Variant) -> Array:
+	var names: Array = []
+	if value is String:
+		if String(value) != "":
+			names.append(String(value))
+	elif value is Array:
+		for v in value:
+			names.append(String(v))
+	var out: Array = []
+	for n in names:
+		if Tuning.TRACKS.has(n):
+			out.append(n)
+		else:
+			_warn(String(n), "named in a pool but not in Tuning.TRACKS")
+	return out
 
 
 func current_track() -> String:
 	return _current
+
+
+# --- Browser autoplay unlock -------------------------------------------------
+
+# The first real interaction is what lets the browser start audio. Godot resumes
+# the AudioContext itself once it has seen input; this just replays whatever was
+# requested while the page was still mute, and then gets out of the way.
+#
+# Any input counts -- a click on PLAY, or a key press. Deliberately not limited
+# to the menu button: the game can be reached by keyboard, and a player who
+# never touches the mouse would otherwise stay silent for the whole run.
+func _input(event: InputEvent) -> void:
+	if _unlocked:
+		return
+	if not (event is InputEventKey or event is InputEventMouseButton
+			or event is InputEventScreenTouch):
+		return
+	if not event.is_pressed():
+		return
+
+	_unlocked = true
+	set_process_input(false)
+
+	# Restart what was asked for while locked, from the top. _current is already
+	# set to it, so clear that first or play() returns early as a no-op.
+	var track := _pending
+	_pending = ""
+	if track != "":
+		_current = ""
+		play(track)
 
 
 # --- Ducking -----------------------------------------------------------------
@@ -158,6 +289,27 @@ func set_volume(linear: float) -> void:
 
 func set_muted(on: bool) -> void:
 	AudioServer.set_bus_mute(_bus_index, on)
+
+
+# Apply the stored preference, and keep applying it as the player changes it.
+#
+# Music reads Settings and never the other way round: the preference is what the
+# player asked for, this is the thing that obeys it. Guarded rather than assumed,
+# for the reason MainMenu guards the same lookup -- a harness that instantiates
+# Music bare has no autoloads, and a missing preference must never be what stops
+# the audio starting.
+func _follow_settings() -> void:
+	var settings := get_node_or_null("/root/Settings")
+	if settings == null:
+		return
+	_apply_settings(float(settings.music_volume), bool(settings.music_muted))
+	if settings.has_signal("music_changed"):
+		settings.music_changed.connect(_apply_settings)
+
+
+func _apply_settings(volume: float, muted: bool) -> void:
+	set_volume(volume)
+	set_muted(muted)
 
 
 func is_muted() -> bool:
