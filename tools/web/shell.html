@@ -20,24 +20,38 @@
 		context during startup, and there is no other way to get a reference
 		to it -- GodotAudio is module-internal and is not exposed on window.
 
-		Wrapping the constructor is the whole trick. Without it there is
-		nothing to call resume() on, and the game is silent in every browser
-		until a reload that happens to race the policy.
+		It is a Proxy on the construct trap rather than a wrapper function.
+		The first version was `function Tracked(){...}` with
+		`Tracked.prototype = Native.prototype`, which loses the constructor
+		identity: `ctx instanceof AudioContext` goes false, and any engine or
+		browser code branching on that takes the wrong path. Measured, it was NOT
+		the cause of the silent-audio bug -- audio init and both worklets were
+		fine either way -- so this is hardening, not a fix. The actual cause was
+		the single-threaded mixer stalling; see audio/driver/output_latency.web
+		in project.godot.
+
+		A Proxy forwards construction to the real class untouched, so identity,
+		instanceof and every per-instance accessor survive. Only the observation
+		is added.
 	-->
 	<script>
 	(function () {
 		var Native = window.AudioContext || window.webkitAudioContext;
-		if (!Native) { return; }
+		if (!Native || typeof Proxy === "undefined") { return; }
 		window.__godotAudioContexts = [];
-		function Tracked() {
-			var ctx = new (Function.prototype.bind.apply(Native,
-				[null].concat(Array.prototype.slice.call(arguments))))();
-			window.__godotAudioContexts.push(ctx);
-			return ctx;
+		var handler = {
+			construct: function (target, args, newTarget) {
+				var ctx = Reflect.construct(target, args, newTarget);
+				window.__godotAudioContexts.push(ctx);
+				return ctx;
+			}
+		};
+		if (window.AudioContext) {
+			window.AudioContext = new Proxy(window.AudioContext, handler);
 		}
-		Tracked.prototype = Native.prototype;
-		window.AudioContext = Tracked;
-		window.webkitAudioContext = Tracked;
+		if (window.webkitAudioContext) {
+			window.webkitAudioContext = new Proxy(window.webkitAudioContext, handler);
+		}
 	})();
 	</script>
 
