@@ -154,6 +154,223 @@
 		<button id="play" hidden>Play</button>
 	</div>
 
+	<!--
+		The leaderboard bridge (docs/plans/leaderboards.md).
+
+		Godot has no Firebase SDK, so the SDK loads here and GDScript reaches it
+		through JavaScriptBridge -- the same shape as the audio-unlock hook in
+		<head>. Everything is namespaced under window.mazeRacerLB.
+
+		Loaded BEFORE the engine so the bridge exists by the time any GDScript
+		can call it, and every entry point is null-safe: a blocked CDN, no
+		network, or a failed sign-in must leave the GAME completely playable and
+		only the boards empty.
+
+		The config is a public client identifier, not a secret -- access is
+		controlled by Firestore rules. Same project as the cookbook.
+	-->
+	<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+	<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+	<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+	<script>
+	(function () {
+		var LB = {
+			ready: false,
+			error: '',
+			uid: '',
+			name: '',
+			// Async results are parked here for GDScript to poll. The bridge
+			// cannot call back INTO Godot, so every result is written to a slot
+			// and picked up on a later frame.
+			results: {}
+		};
+		window.mazeRacerLB = LB;
+
+		var CONFIG = {
+			apiKey: 'AIzaSyBMZoufa0sSfk6Dv_vgQ0xogB_16GgwMcI',
+			authDomain: 'pistachio-kitchen.firebaseapp.com',
+			projectId: 'pistachio-kitchen',
+			storageBucket: 'pistachio-kitchen.firebasestorage.app',
+			messagingSenderId: '720061481410',
+			appId: '1:720061481410:web:f188eea83a51b4587dd65b'
+		};
+
+		// Namespaced under one root document so nothing here can collide with
+		// the cookbook's own collections in the same project.
+		var SCORES = 'mazeRacer/data/scores';
+		var PLAYERS = 'mazeRacer/data/players';
+
+		var db = null;
+
+		if (typeof firebase === 'undefined') {
+			LB.error = 'sdk-blocked';
+		} else {
+			try {
+				firebase.initializeApp(CONFIG);
+				db = firebase.firestore();
+			} catch (e) {
+				LB.error = 'init-failed';
+				db = null;
+			}
+		}
+
+		if (db) {
+			// Anonymous, deliberately: nobody makes an account before their
+			// first two-minute run, and a score that needs a signup to count is
+			// a score that gets thrown away. The display name is asked for
+			// separately, only when the player first posts.
+			firebase.auth().onAuthStateChanged(function (user) {
+				if (!user) { return; }
+				LB.uid = user.uid;
+				LB.ready = true;
+				db.collection(PLAYERS).doc(user.uid).get().then(function (doc) {
+					if (doc.exists && doc.data().name) { LB.name = doc.data().name; }
+				}).catch(function () { /* name stays empty; the game asks */ });
+			});
+
+			firebase.auth().signInAnonymously().catch(function (e) {
+				LB.error = 'auth-failed:' + (e && e.code ? e.code : 'unknown');
+			});
+		}
+
+		LB.status = function () {
+			return JSON.stringify({
+				ready: LB.ready, error: LB.error, uid: LB.uid, name: LB.name
+			});
+		};
+
+		LB.setName = function (name) {
+			if (!LB.ready || !db) { return false; }
+			LB.name = String(name).slice(0, 24);
+			db.collection(PLAYERS).doc(LB.uid).set(
+				{ name: LB.name, updatedAt: Date.now() }, { merge: true }
+			).catch(function () { /* the local name still stands */ });
+			return true;
+		};
+
+		// One score. The seed rides along with every entry so a suspicious run
+		// can later be checked against the maze it claims to have driven --
+		// which is what keeps a future replay-validation upgrade possible.
+		LB.postScore = function (payload) {
+			if (!LB.ready || !db) { return false; }
+			var p;
+			try { p = JSON.parse(payload); } catch (e) { return false; }
+
+			var doc = {
+				uid: LB.uid,
+				name: LB.name || 'anon',
+				score: Math.round(Number(p.score) || 0),
+				timeSeconds: Number(p.time) || 0,
+				seed: Number(p.seed) || 0,
+				board: String(p.board || 'general'),
+				mazesCleared: Number(p.mazes) || 0,
+				died: !!p.died,
+				createdAt: Date.now()
+			};
+
+			// Keyed by uid+seed on the shared boards, so one player holds one
+			// entry per shared maze and cannot flood a board by replaying it.
+			// The general board is any-seed, so each run is its own document.
+			var id = (doc.board === 'general')
+				? (LB.uid + '_' + doc.createdAt)
+				: (LB.uid + '_' + doc.board + '_' + doc.seed);
+
+			var ref = db.collection(SCORES).doc(id);
+			LB.results.post = 'pending';
+
+			// Best-of, not last: replaying a daily must never LOWER the entry
+			// already standing, which a plain set() would do.
+			ref.get().then(function (snap) {
+				if (snap.exists && Number(snap.data().score) >= doc.score) {
+					LB.results.post = 'kept';
+					return null;
+				}
+				return ref.set(doc);
+			}).then(function () {
+				if (LB.results.post !== 'kept') { LB.results.post = 'ok'; }
+			}).catch(function (e) {
+				LB.results.post = 'error:' + (e && e.code ? e.code : 'unknown');
+			});
+			return true;
+		};
+
+		LB.postState = function () {
+			return LB.results.post || '';
+		};
+
+		// Fetch a board. `sort` is 'score' (descending) or 'time' (ascending) --
+		// it changes the QUERY, not just the display, or the top ten would be
+		// the top ten by the wrong measure.
+		LB.fetchBoard = function (board, sort, limit) {
+			if (!LB.ready || !db) { return false; }
+			LB.results.board = '';
+			var q = db.collection(SCORES).where('board', '==', String(board));
+			if (sort === 'time') {
+				q = q.orderBy('timeSeconds', 'asc');
+			} else {
+				q = q.orderBy('score', 'desc');
+			}
+			q.limit(Number(limit) || 10).get().then(function (snap) {
+				var rows = [];
+				snap.forEach(function (d) {
+					var v = d.data();
+					rows.push({
+						name: v.name || 'anon',
+						score: v.score || 0,
+						time: v.timeSeconds || 0,
+						mazes: v.mazesCleared || 0,
+						died: !!v.died
+					});
+				});
+				LB.results.board = JSON.stringify({ ok: true, rows: rows });
+			}).catch(function (e) {
+				LB.results.board = JSON.stringify({
+					ok: false, error: (e && e.code ? e.code : 'unknown'), rows: []
+				});
+			});
+			return true;
+		};
+
+		LB.boardResult = function () {
+			return LB.results.board || '';
+		};
+
+		// The player's own runs, newest first. Same collection, filtered by uid.
+		LB.fetchHistory = function (limit) {
+			if (!LB.ready || !db) { return false; }
+			LB.results.history = '';
+			db.collection(SCORES)
+				.where('uid', '==', LB.uid)
+				.orderBy('createdAt', 'desc')
+				.limit(Number(limit) || 10)
+				.get().then(function (snap) {
+					var rows = [];
+					snap.forEach(function (d) {
+						var v = d.data();
+						rows.push({
+							score: v.score || 0,
+							time: v.timeSeconds || 0,
+							board: v.board || 'general',
+							mazes: v.mazesCleared || 0,
+							died: !!v.died,
+							at: v.createdAt || 0
+						});
+					});
+					LB.results.history = JSON.stringify({ ok: true, rows: rows });
+				}).catch(function (e) {
+					LB.results.history = JSON.stringify({
+						ok: false, error: (e && e.code ? e.code : 'unknown'), rows: []
+					});
+				});
+			return true;
+		};
+
+		LB.historyResult = function () {
+			return LB.results.history || '';
+		};
+	})();
+	</script>
+
 	<script src="$GODOT_URL"></script>
 	<script>
 	(function () {

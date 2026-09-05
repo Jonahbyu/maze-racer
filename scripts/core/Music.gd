@@ -78,7 +78,11 @@ func _ready() -> void:
 	# the same sequence every launch, so every run would open on the same track.
 	_rng.randomize()
 
-	_bus_index = _ensure_bus()
+	# DIAGNOSTIC: no custom bus on web -- use Master.
+	if OS.has_feature("web"):
+		_bus_index = 0
+	else:
+		_bus_index = _ensure_bus()
 
 	# Only the web has an autoplay policy to satisfy, so only the web starts
 	# locked. The platform check picks WHETHER to wait; _poll_unlock decides
@@ -91,7 +95,7 @@ func _ready() -> void:
 	for i in 2:
 		var player := AudioStreamPlayer.new()
 		player.name = "MusicPlayer%d" % i
-		player.bus = BUS_NAME
+		player.bus = "Master" if OS.has_feature("web") else BUS_NAME
 		player.volume_db = -80.0
 		add_child(player)
 		_players.append(player)

@@ -27,6 +27,8 @@ func _init() -> void:
 	_test_upgrades()
 	_test_hp_regen_and_death()
 	_test_score()
+	_test_visited_cells()
+	_test_seeded_boards()
 	_test_legendaries()
 	_test_gates()
 	_test_indicator()
@@ -35,6 +37,7 @@ func _init() -> void:
 	_test_wall_position()
 	_test_lanes()
 	_test_turn_keeps_progress()
+	_test_last_cell_before_a_wall()
 	_test_entry_corridor_lockout()
 	_test_turn_freeze()
 	_test_marker_heights()
@@ -179,6 +182,72 @@ func record_arg(sig: Signal) -> SignalRecorder:
 	return rec
 
 
+# The cell in front of a wall must be DRIVEN THROUGH, not skipped.
+#
+# Entering a blocked cell used to press into the wall on the same frame, which
+# pinned progress to the wall face and teleported the marker most of a cell in a
+# single step -- then held it motionless there while the barrier drained into a
+# crash. In play: "I get into the last cell before a wall, it freezes, jumps to
+# the wall and I crash there, with no movement in the last cell."
+#
+# Two separate paths did it, and both are asserted here by simply driving: the
+# boundary handler in _travel(), and step()'s own dispatch, which sent any racer
+# in a blocked cell straight to _press_into_wall regardless of how far into the
+# cell it had actually got.
+#
+# It was MASKED before progress was centred. The cell used to advance at the
+# centre, so a racer entering a blocked cell was already half way across it and
+# only half a cell of travel went missing. Crossing at the drawn line is correct
+# and made the whole cell's worth visible -- so this is a regression test for the
+# phase change as much as for the wall.
+func _test_last_cell_before_a_wall() -> void:
+	var m := _make_corridor(5)
+	var r := _make_racer(m)
+	r.cell = Vector2i(3, 0)
+	r.facing = Maze.E
+	r.progress = 0.0
+
+	# Drive until the racer is pinned, recording the largest single-frame jump.
+	var last_pos := r.world_position()
+	var biggest := 0.0
+	var frames_in_last := 0
+	var entered := false
+	var step := 1.0 / 60.0
+
+	for i in 400:
+		r.step(step)
+		var pos := r.world_position()
+		var moved: float = (pos - last_pos).length()
+		last_pos = pos
+		if r.cell == Vector2i(4, 0):
+			if not entered:
+				entered = true
+			else:
+				# Ignore the entry frame itself: it legitimately spans a
+				# boundary. Every frame AFTER it is ordinary travel.
+				biggest = maxf(biggest, moved)
+				if not r.scraping and r.state == Racer.State.RUNNING:
+					frames_in_last += 1
+		if r.state == Racer.State.PARKED:
+			break
+
+	check("reached the cell in front of the wall", entered)
+
+	# One frame of travel at the speed floor. Anything approaching a cell is a
+	# teleport -- the bug moved the marker ~3.4m in a single frame.
+	var per_frame: float = Tuning.BASE_CELL_RATE * Tuning.CELL_SIZE * step
+	check("no frame jumps across the cell", biggest < per_frame * 3.0,
+		"largest single-frame move %.3fm vs %.3fm expected" % [biggest, per_frame])
+
+	# And the cell is actually crossed rather than skipped. At the speed floor a
+	# cell is a second of travel, so this is dozens of frames, not one or two.
+	check("the last cell is driven through, not skipped", frames_in_last > 20,
+		"%d moving frames in the last cell" % frames_in_last)
+
+	# The wall must still stop the racer, and still crash it.
+	check("the wall still stops the racer", r.state == Racer.State.PARKED)
+
+
 # A turn must PIVOT, not rewind.
 #
 # Turning used to reset progress to 0, which yanked the racer back to the centre
@@ -190,9 +259,21 @@ func _test_turn_keeps_progress() -> void:
 	var r := _make_racer(_make_room(9, 9))
 
 	# Get well into a cell without crossing its far boundary.
-	r.step(0.6)
+	#
+	# Progress is centred on the cell centre and runs -0.5..+0.5, the two drawn
+	# grid lines. So "inside the cell, not on a boundary" is |progress| < 0.5 --
+	# it was `> 0.3 and < 1.0` when progress ran 0..1 between cell CENTRES. The
+	# racer having moved at all is the separate half, and `_travel` is what would
+	# break it.
+	# Driven PAST the cell centre, so the distance covered is a real distance
+	# along the corridor and the pivot must keep it. Progress is centred, so
+	# "past the centre" is simply > 0.
+	while r.progress <= 0.05 and r.cell == r.cell:
+		r.step(0.05)
+		if r.progress > 0.05:
+			break
 	var before := r.progress
-	check("moved partway into the cell", before > 0.3 and before < 1.0,
+	check("moved past the cell centre", before > 0.0 and before < 0.5,
 		"progress %.3f" % before)
 
 	var cell_before := r.cell
@@ -200,6 +281,35 @@ func _test_turn_keeps_progress() -> void:
 
 	check_near("a turn preserves progress", r.progress, before)
 	check_eq("a turn does not change cell", r.cell, cell_before)
+
+	# The other half of the rule, and it is NOT a rewind.
+	#
+	# Progress runs -0.5..+0.5 about the cell centre, so for the first half of
+	# every cell it is NEGATIVE -- distance still to cover before the centre.
+	# That number is measured along the OLD heading, and a pivot changes the
+	# heading, so carrying it through would re-read it as that distance
+	# BACKWARDS down the new corridor and draw the marker out through the side
+	# wall. Measured: 1.949m off a cell centre whose corridor half-width is
+	# 1.77m, which no camera position can see past -- it broke the "marker is
+	# never hidden" rule on 20-40 of every 2000 autopilot frames.
+	#
+	# CLAUDE.md section 2 records the same trade for the scrape case and reaches
+	# the same answer: the two distances are not the same point, and starting the
+	# new corridor from the cell centre is the smaller, honest move.
+	# The racer STARTS at a cell centre (progress 0), so it has to cross one
+	# grid line before it is ever on the approach side of a cell.
+	var r4 := _make_racer(_make_room(9, 9))
+	var start4 := r4.cell
+	var spin4 := 0
+	while (r4.cell == start4 or r4.progress >= 0.0) and spin4 < 500:
+		r4.step(0.01)
+		spin4 += 1
+	check("reached the approach side of a later cell", spin4 < 500)
+	check("still short of the cell centre", r4.progress < 0.0,
+		"progress %.3f" % r4.progress)
+	r4.request_turn(-1)
+	check("a turn on the way in starts the new corridor at the centre",
+		is_equal_approx(r4.progress, 0.0), "progress %.3f" % r4.progress)
 
 
 # After a turn, the corridor just left must not be immediately re-enterable.
@@ -620,8 +730,17 @@ func _test_double_tap() -> void:
 	# the cell rather than immediately after a turn.
 	var r3 := _make_racer(_make_room(9, 9))
 	r3.request_turn(-1)
-	while r3.progress < 0.7:
+	# "Late in the cell" is 0.2 of a cell short of the far grid line. Progress is
+	# centred on the cell centre and runs -0.5..+0.5 (the two drawn lines), so
+	# that is +0.3 -- it was 0.7 when progress ran 0..1 between cell CENTRES and
+	# the boundary sat at 1.0. Guarded, because an unbounded wait on a progress
+	# value that can no longer be reached is an infinite loop rather than a
+	# failing assertion: this one hung the whole harness with no output at all.
+	var spin3 := 0
+	while r3.progress < 0.3 and spin3 < 500:
 		r3.step(0.01)
+		spin3 += 1
+	check("r3 reached the late-cell position", spin3 < 500)
 	var want3 := r3.left_direction()
 	r3.request_turn(-1)
 	check_eq("late second press is buffered, not immediate", r3.pending_turn, want3)
@@ -720,22 +839,86 @@ func _test_barrier_grace() -> void:
 
 	check("no crash yet -- barrier is holding", not crash_rec.fired())
 	check("barrier is draining", r.barrier < r.upgrades.barrier_capacity())
-	check_eq("scraping costs no hp", r.hp, Tuning.MAX_HP)
 	check("still running while scraping", r.state == Racer.State.RUNNING)
 
-	# The payoff: turning out before the barrier empties costs NOTHING. This is
-	# the skill expression the whole design rests on (CLAUDE.md section 5.1).
+	# Contact costs a flat point, and the barrier no longer buys it back. Read
+	# off Tuning rather than written as a literal, for the reason the crash
+	# damage below is (CLAUDE.md section 12).
+	check_eq("contact costs hp", r.hp, Tuning.MAX_HP - Tuning.SCRAPE_DAMAGE)
+	check_eq("contact is counted", r.scrape_count, 1)
+
+	# Charged ONCE per contact, not per second: holding the wall longer must not
+	# cost more. This is the assertion that would catch a per-frame or per-second
+	# charge, which is the shape the rule was explicitly NOT given.
+	var held := r.hp
+	for i in int(Tuning.BASE_BARRIER * 0.25 / 0.01):
+		r.step(0.01)
+	check_eq("holding the wall costs no more", r.hp, held)
+	check_eq("still one contact", r.scrape_count, 1)
+
+	# Contact is NOT a crash. It moves HP and nothing else -- the racer keeps
+	# driving, at the speed it had, un-parked. This is the whole distinction the
+	# rule rests on, so it is asserted directly rather than implied.
+	check("contact does not crash", not crash_rec.fired())
+	check_eq("contact does not park", r.state, Racer.State.RUNNING)
+	check_eq("contact leaves crash count alone", r.crash_count, 0)
+
 	var clean := _make_racer(_make_corridor(3))
+	var speed_before := 0.0
 	for i in 400:
 		clean.step(0.01)
 		if clean.scraping:
+			speed_before = clean.speed
 			break
 	for i in hold_steps:
 		clean.step(0.01)
 	var hp_before := clean.hp
 	clean.request_reverse()
-	check_eq("escaping the wall costs no hp", clean.hp, hp_before)
+	# Escaping still avoids the CRASH -- the barrier's remaining job -- but no
+	# longer refunds the contact charge already paid.
 	check_eq("escaping the wall causes no crash", clean.crash_count, 0)
+	check_eq("escaping does not re-charge hp", clean.hp, hp_before)
+	check_eq("escaping cost exactly one contact", clean.scrape_count, 1)
+	check("contact does not touch speed", speed_before > 0.0)
+
+	# Leaving the wall and touching it again is a SECOND contact, and charges
+	# again. Without this, "once per contact" could be silently implemented as
+	# "once ever" and every assertion above would still pass.
+	var again := _make_racer(_make_corridor(4))
+	var reached_first := false
+	for i in 900:
+		again.step(0.01)
+		if again.scraping:
+			reached_first = true
+			break
+	check("the second-contact fixture reached the wall", reached_first)
+	var after_first := again.hp
+
+	# Reverse OFF the wall and wait for contact to actually clear before looking
+	# for the next one. Without this wait the loop below breaks instantly on the
+	# contact still in progress, so `scrape_count` never moves and the check
+	# reports the rule broken when the fixture simply never left the wall. That
+	# is the CLAUDE.md section 12 wait-loop trap: guard the wait and name the
+	# failure rather than asserting against a state that never changed.
+	again.request_reverse()
+	var left_wall := false
+	for i in 900:
+		again.step(0.01)
+		if not again.scraping:
+			left_wall = true
+			break
+	check("the racer left the wall before the second run", left_wall)
+
+	var reached_second := false
+	for i in 1200:
+		again.step(0.01)
+		if again.scraping:
+			reached_second = true
+			break
+	check("the second-contact fixture reached a wall again", reached_second)
+	check_eq("a second contact charges again", again.hp,
+		after_first - Tuning.SCRAPE_DAMAGE)
+	check_eq("two contacts counted", again.scrape_count, 2)
 
 
 func _test_crash_and_unstick() -> void:
@@ -756,8 +939,13 @@ func _test_crash_and_unstick() -> void:
 	# "MAX_HP - 1" was a transcription check, and it broke the moment wall damage
 	# became a per-maze curve -- while telling us nothing about whether the crash
 	# actually applied the damage the rules say it should (CLAUDE.md section 12).
+	# The crash damage lands ON TOP of the contact charge already paid when the
+	# racer first touched the wall -- a crash is always preceded by a contact,
+	# since the barrier has to drain before it can empty.
 	check_eq("crash deals damage", r.hp,
-		Tuning.MAX_HP - r.upgrades.wall_damage(r.maze_index))
+		Tuning.MAX_HP - Tuning.SCRAPE_DAMAGE
+			- r.upgrades.wall_damage(r.maze_index))
+	check_eq("the crash was preceded by one contact", r.scrape_count, 1)
 	check_near("speed reset to floor", r.speed, r.upgrades.speed_floor())
 
 	# Parked means parked: stepping does nothing.
@@ -950,38 +1138,46 @@ func _test_hp_regen_and_death() -> void:
 	var m := Maze.new()
 	m.generate(40, 40, 999, 0.25, 0.02, 3, 0.5, 0.2, 0.0, 0.6)
 
+	# Start well below the cap, DERIVED from it rather than written out. A literal
+	# was fine when the pool was 100 and silently broke the test when it came down
+	# to 50: the racer started already full, healed nothing, and the failure read
+	# as Repair Field being inert. That is the section 12 transcription trap -- a
+	# fixture that restates a tuning number tests the number, not the rule.
+	var start_hp := Tuning.MAX_HP / 2
+
 	# Untaken, the line is completely inert: HP only ever falls.
 	var bare := Upgrades.new(1)
 	var r_bare := Racer.new()
 	r_bare.setup(m, bare, 0)
-	r_bare.hp = 50
+	r_bare.hp = start_hp
 	_run_clean(m, r_bare, 500)
-	check_eq("no regen without Repair Field", r_bare.hp, 50)
+	check_eq("no regen without Repair Field", r_bare.hp, start_hp)
 
 	var u := Upgrades.new(1)
 	for i in 3:
 		u.take(Upgrades.Line.HP_REGEN)
 	var r := Racer.new()
 	r.setup(m, u, 0)
-	r.hp = 50
+	r.hp = start_hp
 	_run_clean(m, r, 500)
 	# 10s at the rank-3 rate, less the fraction still accumulating. Asserting a
 	# band rather than an exact value, since the last whole point lands whenever
-	# the accumulator happens to cross 1.0.
-	var want := 50.0 + u.hp_regen() * 10.0
+	# the accumulator happens to cross 1.0. Capped at the pool, or the assertion
+	# would demand a racer heal past full the moment the rate outruns the room.
+	var want := minf(float(start_hp) + u.hp_regen() * 10.0, float(Tuning.MAX_HP))
 	check("Repair Field restores on clean travel",
 		float(r.hp) >= want - 2.0 and float(r.hp) <= want,
-		"50 -> %d, expected about %.0f" % [r.hp, want])
+		"%d -> %d, expected about %.0f" % [start_hp, r.hp, want])
 	check_eq("regen never exceeds max hp", mini(r.hp, Tuning.MAX_HP), r.hp)
 
 	# It must not pay out while parked -- a crash would otherwise heal itself.
 	var parked := Racer.new()
 	parked.setup(m, u, 0)
-	parked.hp = 50
+	parked.hp = start_hp
 	parked.state = Racer.State.PARKED
 	for i in 300:
 		parked.step(0.02)
-	check_eq("no regen while parked", parked.hp, 50)
+	check_eq("no regen while parked", parked.hp, start_hp)
 
 	# Death: drive into walls until HP is gone.
 	var dying := Racer.new()
@@ -1107,7 +1303,124 @@ func _test_score() -> void:
 	var half := partial.bank_maze(0, "The Grid", 0.5)
 	check_near("half progress banks half the score", half, earned * 0.5)
 
+	# --- The repeat-cell penalty ---
+	var rep := Score.new()
+	rep.add_repeat()
+	check_near("a repeat costs the flat penalty", rep.maze_subtotal,
+		-Tuning.SCORE_REPEAT_CELL_PENALTY)
+	check_eq("repeats are counted", rep.repeat_cells, 1)
+
+	# Charged once per DISTINCT cell -- Racer decides which crossings qualify via
+	# `first_repeat`, and Score simply charges what it is told. What stops a
+	# farming loop is no longer this penalty but the suppressed earning below.
+	rep.add_repeat()
+	rep.add_repeat()
+	check_near("each charged cell costs the penalty", rep.maze_subtotal,
+		-3.0 * Tuning.SCORE_REPEAT_CELL_PENALTY)
+	check_eq("charged cells are counted", rep.repeat_cells, 3)
+
+	# --- No earning on repeat ground ---
+	#
+	# This is the actual anti-farming rule. A turn pays 60 x speed on fresh
+	# ground and nothing at all on ground already driven, which is what removes
+	# the income a farming lap runs on (CLAUDE.md section 8b).
+	var fresh := Score.new()
+	fresh.add_turn(6.0, false)
+	fresh.add_travel(1.0, 6.0)
+	check("fresh ground earns", fresh.maze_subtotal > 0.0)
+
+	var stale := Score.new()
+	stale.on_repeat_ground = true
+	stale.add_turn(6.0, false)
+	stale.add_travel(1.0, 6.0)
+	check_near("repeat ground earns the scaled share", stale.maze_subtotal,
+		fresh.maze_subtotal * Tuning.SCORE_EARN_ON_REPEAT)
+
+	# The turn is still TALLIED, only unpaid: the summary reports what the player
+	# did, and withholding the points must not also erase the record.
+	check_eq("an unpaid turn is still counted", stale.clean_turns, 1)
+
+	# Banking clears it: a new maze is fresh ground by definition.
+	stale.bank_maze(0, "The Grid")
+	check("banking clears repeat ground", not stale.on_repeat_ground)
+
+	# Flat, like the crash penalty: Score Multiplier is a bonus on points EARNED,
+	# so scaling the penalty by it would make backtracking more expensive the
+	# more of that line the player holds.
+	var boosted := Score.new()
+	boosted.earn_multiplier = 1.6
+	boosted.add_repeat()
+	check_near("the repeat penalty ignores earn_multiplier",
+		boosted.maze_subtotal, -Tuning.SCORE_REPEAT_CELL_PENALTY)
+
 	_check_score_monotonic()
+	_check_farming_loses()
+
+
+# A player who refuses to finish, driving a loop to farm turn income, must score
+# WORSE than one who simply drives the maze -- at EVERY lap count, not merely at
+# one chosen in advance.
+#
+# This is the case the monotonicity check cannot see: every run it models
+# finishes its maze, so all of them are disciplined by the time multiplier at
+# bank time. A farming run is defined by never banking until the subtotal has
+# been pumped high, and the multiplier floors at 0.20x.
+#
+# The sweep matters more than the model. An earlier version of this check
+# modelled ONE fixed lap count (60) and passed, while the exploit was live: a
+# farmer's score peaks early and then decays as the time multiplier bites, and
+# 60 laps sat past the peak. Measured at the time, 20 laps beat an honest run
+# even at the old 250 penalty. A single sample of a curve says nothing about its
+# maximum -- sweep it.
+func _check_farming_loses() -> void:
+	const LOOP_CELLS := 10.0
+	const FARM_SPEED := 6.0
+
+	# The honest run: 300 cells of fresh ground, turning on 55% of them.
+	var honest := Score.new()
+	honest.add_travel(55.0, 5.5)
+	for i in int(300.0 * 0.55):
+		honest.add_turn(5.5, false)
+	honest.advance_time(55.0)
+	var honest_score := honest.bank_maze(0, "honest")
+
+	# The worst case for the rule is a farmer who turns on EVERY cell -- a small
+	# braided ring circled at speed, which is the most lucrative loop the maze
+	# can offer. A pacing farmer reverses instead, which costs 0.75x a time and
+	# never reaches these speeds, so it is strictly weaker.
+	var worst := 0.0
+	var worst_laps := 0
+	var lap_counts: Array[int] = [1, 2, 5, 10, 20, 30, 60, 120, 240, 400]
+	for laps: int in lap_counts:
+		var farm := Score.new()
+		farm.add_travel(55.0, 5.5)
+		for i in int(300.0 * 0.55):
+			farm.add_turn(5.5, false)
+
+		var cells: int = int(LOOP_CELLS * laps)
+		var farm_seconds: float = LOOP_CELLS * laps / FARM_SPEED
+
+		# Every cell of the loop is charged once; the loop is fully marked after
+		# the first lap, which is why the penalty alone cannot bound this.
+		for i in int(LOOP_CELLS):
+			farm.add_repeat()
+
+		# And every lap of it earns at the repeat rate rather than the fresh one.
+		# This is the rule under test.
+		farm.on_repeat_ground = true
+		farm.add_travel(farm_seconds, FARM_SPEED)
+		for i in cells:
+			farm.add_turn(FARM_SPEED, false)
+
+		farm.advance_time(55.0 + farm_seconds)
+		var farm_score := farm.bank_maze(0, "farm")
+		if farm_score > worst:
+			worst = farm_score
+			worst_laps = laps
+
+	check("farming a loop scores worse than driving the maze, at every lap count",
+		worst < honest_score,
+		"best farm %.0f at %d laps vs honest %.0f" % [worst, worst_laps, honest_score])
 
 
 # Faster must always score higher, across a realistic spread of runs.
@@ -1154,6 +1467,151 @@ func _check_score_monotonic() -> void:
 
 # Legendaries: rarity, the one-per-run cap, and each ability's mechanics
 # (CLAUDE.md section 7).
+# Seed derivation for the daily and monthly boards
+# (docs/plans/leaderboards.md). Pure functions of a date string, which is what
+# lets them be asserted without a clock.
+func _test_seeded_boards() -> void:
+	# The same date must always give the same maze -- that is the entire premise
+	# of a shared board.
+	check_eq("a date always derives the same seed",
+		Tuning.seed_for_date("2026-09-02"), Tuning.seed_for_date("2026-09-02"))
+	check("different dates derive different seeds",
+		Tuning.seed_for_date("2026-09-02") != Tuning.seed_for_date("2026-09-03"))
+	check("different months derive different seeds",
+		Tuning.seed_for_month("2026-09") != Tuning.seed_for_month("2026-10"))
+
+	# The daily and monthly streams are namespaced apart, so the first of a month
+	# does not hand the monthly board the same maze as that day's daily.
+	check("daily and monthly never collide on the same key",
+		Tuning.seed_for_date("2026-09") != Tuning.seed_for_month("2026-09"))
+
+	# Positive and inside 31 bits: the value is handed to RandomNumberGenerator
+	# and then used in `run_seed + index * 7919`, so a negative or near-overflow
+	# seed would break maze generation rather than merely looking odd.
+	for key in ["2026-01-01", "2026-09-02", "1999-12-31", "2100-06-15"]:
+		var v := Tuning.seed_for_date(key)
+		check("%s derives a usable seed" % key, v > 0 and v <= 0x7FFFFFFF,
+			"got %d" % v)
+
+	# A derived seed must actually generate. This is the assertion that matters:
+	# the others only check arithmetic, this checks the maze exists.
+	var m := Maze.new()
+	var daily := Tuning.seed_for_date("2026-09-02")
+	m.generate(20, 20, daily, 0.1, 0.03, 3)
+	check("a derived seed generates a solvable maze", m.solve_path.size() > 0)
+
+	# And generates the SAME maze twice, which is what makes two players'
+	# scores comparable at all.
+	var again := Maze.new()
+	again.generate(20, 20, daily, 0.1, 0.03, 3)
+	check("the same seed regenerates an identical maze",
+		again.solve_path == m.solve_path)
+
+	# Board names round-trip, and an out-of-range board falls back rather than
+	# crashing -- this string is written into every posted score.
+	check_eq("general board name", Tuning.board_name(Tuning.Board.GENERAL), "general")
+	check_eq("daily board name", Tuning.board_name(Tuning.Board.DAILY), "daily")
+	check_eq("monthly board name", Tuning.board_name(Tuning.Board.MONTHLY), "monthly")
+	check_eq("an unknown board falls back to general", Tuning.board_name(99), "general")
+
+	# The date keys are the shape the boards are keyed by; a drift here would
+	# silently split one day's board into two.
+	check("today_key is YYYY-MM-DD", Tuning.today_key().length() == 10,
+		Tuning.today_key())
+	check("this_month_key is YYYY-MM", Tuning.this_month_key().length() == 7,
+		Tuning.this_month_key())
+	check("the month key prefixes the day key",
+		Tuning.today_key().begins_with(Tuning.this_month_key()))
+
+	# GENERAL stays random: that board is "any seed", so a fixed maze would be
+	# wrong there.
+	check("the general board is not date-derived",
+		Tuning.seed_for_board(Tuning.Board.GENERAL)
+			!= Tuning.seed_for_date(Tuning.today_key()))
+	check_eq("the daily board uses today's seed",
+		Tuning.seed_for_board(Tuning.Board.DAILY),
+		Tuning.seed_for_date(Tuning.today_key()))
+
+
+# The racer's record of where it has been, which the repeat-cell penalty is
+# charged from (CLAUDE.md section 8b).
+func _test_visited_cells() -> void:
+	var u := Upgrades.new(1)
+	var m := _make_corridor(12)
+	var r := Racer.new()
+	r.setup(m, u, 0)
+
+	# The start cell counts as visited from the outset: the racer is demonstrably
+	# there, so coming back to it later is a return like any other.
+	check("the start cell is marked visited", r.visited.has(m.start_cell))
+
+	var seen: Array[Vector2i] = []
+	var repeats: Array[Vector2i] = []
+	var first_repeats: Array[Vector2i] = []
+	r.cell_entered.connect(func(cell: Vector2i, repeat: bool, first: bool) -> void:
+		seen.append(cell)
+		if repeat:
+			repeats.append(cell)
+		if first:
+			first_repeats.append(cell))
+
+	# Drive east four cells of fresh ground.
+	while r.cell.x < 4:
+		r.step(0.02)
+	check("fresh cells are entered", seen.size() >= 4)
+	check_eq("fresh ground charges no repeat", repeats.size(), 0)
+
+	# Reverse and drive back over them.
+	var turn_around := r.cell
+	r.request_reverse()
+	while r.cell.x > 0:
+		r.step(0.02)
+	check("driving back over old ground is a repeat", repeats.size() > 0)
+	check("the repeats are cells already driven",
+		r.visited.has(turn_around) and repeats.has(Vector2i(0, 0)))
+
+	check("the first re-entry of a cell is flagged", first_repeats.size() > 0)
+
+	# A THIRD pass still reads as repeat GROUND -- which is what suppresses the
+	# earning, and so is what actually makes farming unprofitable -- but it does
+	# NOT charge the flat penalty again, which is levied once per cell.
+	var before := repeats.size()
+	var before_first := first_repeats.size()
+	r.request_reverse()
+	while r.cell.x < 3:
+		r.step(0.02)
+	check("a third pass is still repeat ground",
+		repeats.size() > before,
+		"%d then %d" % [before, repeats.size()])
+	check_eq("a third pass charges no further penalty",
+		first_repeats.size(), before_first)
+
+	# Gate and exit cells are tracked too. _on_enter_cell returns early on both,
+	# so tracking placed after those returns would leave the solve path -- which
+	# is exactly the ground a looping player re-covers -- free to farm.
+	var gm := _make_corridor(12, true)
+	gm.gates = [Vector2i(4, 0)] as Array[Vector2i]
+	var gr := Racer.new()
+	gr.setup(gm, u, 0)
+	while gr.cell.x < 5 and not gr.finished:
+		gr.step(0.02)
+	check("a gate cell is recorded as visited", gr.visited.has(Vector2i(4, 0)))
+
+	var er := Racer.new()
+	er.setup(gm, u, 0)
+	while not er.finished:
+		er.step(0.02)
+	check("the exit cell is recorded as visited", er.visited.has(gm.exit_cell))
+
+	# The record is per maze, not per run: a new maze is new ground by
+	# definition, so carrying it forward would charge the player for a
+	# coincidence of grid coordinates between two unrelated mazes.
+	var fresh := _make_corridor(12)
+	r.setup(fresh, u, 1)
+	check_eq("setup clears the visited record", r.visited.size(), 1)
+	check("only the new start cell is marked", r.visited.has(fresh.start_cell))
+
+
 func _test_legendaries() -> void:
 	var u := Upgrades.new(11)
 
@@ -1505,14 +1963,18 @@ func _test_gate_index_is_placement() -> void:
 
 # Pressed into a wall, the rendered position must stay INSIDE the cell.
 #
-# `_press_into_wall` pins progress at 1.0 to mean "hard against it", but that
-# value also drives world_position, where 1.0 literally means one whole cell
+# `_press_into_wall` pins progress to mean "hard against it" rather than to mean
+# a position, and that same value drives world_position(). It used to pin at
+# 1.0, which under the old centre-to-centre phase literally meant one whole cell
 # forward -- so the player rendered inside the wall, or a full cell outside the
 # maze when the wall was a boundary. First person hid it entirely; third person
 # put the marker in the middle of the wall it was stopped at.
 #
-# The clamp is display-only, so this also checks the simulation value is
-# untouched: the rules depend on progress reaching 1.0.
+# Progress is now centred (-0.5..+0.5 about the cell centre) and the pin is the
+# wall FACE, just under +0.5, so the pinned value is already a sane position and
+# the clamp in world_position() is belt-and-braces. What must still hold is the
+# thing this test was always really about: the marker never renders past the
+# wall it is stopped at.
 # Golden Trail: the ROUTE is the rule, the streak is just how it is drawn.
 # Everything asserted here is pure logic and needs no rendered frame.
 func _test_golden_trail() -> void:
@@ -1593,10 +2055,28 @@ func _test_wall_position() -> void:
 	check("racer reached the end wall", not m.is_open(r.cell, r.facing))
 
 	# Press until pinned.
-	for i in 5:
+	#
+	# Entering the blocked cell is no longer the same event as being pinned
+	# against its far wall -- the racer drives ACROSS that cell first, which is
+	# what stops the marker teleporting to the wall face on entry (see
+	# _test_last_cell_before_a_wall). So this waits for the scrape rather than
+	# assuming a couple of frames is enough; five frames of 0.02s covers a tenth
+	# of a cell, and the racer has most of a cell still to cover.
+	var spin := 0
+	while not r.scraping and r.state == Racer.State.RUNNING and spin < 500:
 		r.step(0.02)
+		spin += 1
+	check("racer became pinned against the wall", r.scraping or r.state == Racer.State.PARKED,
+		"after %d frames" % spin)
 
-	check_eq("progress still pins at 1.0 for the rules", r.progress, 1.0)
+	# Pinned at the wall face -- hard against the wall, and still inside the
+	# cell. Asserted against _wall_face_progress()'s own inputs rather than a
+	# transcribed literal, so this stays an assertion about the rule rather than
+	# a check that two numbers were typed the same (section 12).
+	var face: float = (Tuning.CELL_SIZE * 0.5 - Tuning.WALL_THICKNESS * 0.5
+		- Tuning.MARKER_RADIUS) / Tuning.CELL_SIZE
+	check_near("progress pins at the wall face for the rules", r.progress, face)
+	check("the pin stays inside the cell", r.progress < 0.5)
 
 	var pos := r.world_position()
 	var centre := Vector3(r.cell.x * Tuning.CELL_SIZE, pos.y, r.cell.y * Tuning.CELL_SIZE)

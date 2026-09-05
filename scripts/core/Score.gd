@@ -28,6 +28,21 @@ var clean_turns := 0
 var scraped_turns := 0
 var crashes := 0
 
+# Distinct cells re-entered this RUN, counted for the summary. Counted once per
+# cell, so ten laps of a ten-cell loop is 10, not 100 -- the tally has to agree
+# with what was actually charged or the summary contradicts the score.
+var repeat_cells := 0
+
+# Whether the racer is currently on ground it has already driven this maze. Set
+# by Game on each cell boundary and read by the earning calls below, which pay
+# SCORE_EARN_ON_REPEAT (zero) while it holds.
+#
+# Kept as state here rather than passed to each earn call because travel is fed
+# every frame while the cell changes only at a boundary -- a parameter would mean
+# Game answering the same question sixty times a second, and the two awards
+# could drift apart on it.
+var on_repeat_ground := false
+
 # The Score Multiplier upgrade's bonus, as a multiplier on points EARNED.
 # Applied at earn time rather than at banking so it compounds with the time
 # multiplier rather than replacing it (CLAUDE.md section 7). Game keeps this in
@@ -42,18 +57,23 @@ var earn_multiplier := 1.0
 func add_travel(delta: float, speed: float) -> void:
 	if delta <= 0.0:
 		return
-	maze_subtotal += Tuning.SCORE_PER_SECOND * speed * delta * earn_multiplier
+	maze_subtotal += (Tuning.SCORE_PER_SECOND * speed * delta * earn_multiplier
+		* _repeat_earn_scale())
 
 
 # A resolved turn. `scraped` is whether the barrier was draining when it
 # resolved -- the player escaped a wall rather than taking the corner clean.
 func add_turn(speed: float, scraped: bool) -> void:
+	# Still TALLIED on repeat ground, only unpaid: the summary reports what the
+	# player did, and a turn taken is a turn taken. Only the points are withheld.
 	if scraped:
 		scraped_turns += 1
-		maze_subtotal += Tuning.SCORE_TURN_SCRAPED * speed * earn_multiplier
+		maze_subtotal += (Tuning.SCORE_TURN_SCRAPED * speed * earn_multiplier
+			* _repeat_earn_scale())
 	else:
 		clean_turns += 1
-		maze_subtotal += Tuning.SCORE_TURN_CLEAN * speed * earn_multiplier
+		maze_subtotal += (Tuning.SCORE_TURN_CLEAN * speed * earn_multiplier
+			* _repeat_earn_scale())
 
 
 # A crash. Flat, not speed-scaled -- see the constant's note.
@@ -65,6 +85,28 @@ func add_turn(speed: float, scraped: bool) -> void:
 func add_crash() -> void:
 	crashes += 1
 	maze_subtotal -= Tuning.SCORE_CRASH_PENALTY
+
+
+# The racer entered a cell it has already been in this maze.
+#
+# Flat, and deliberately NOT scaled by earn_multiplier: that multiplier is a
+# bonus on points EARNED, so applying it here would make backtracking more
+# expensive the more Score Multiplier the player holds -- an upgrade that
+# punishes you for owning it. Same reasoning as the flat crash penalty.
+#
+# Like a crash, this is allowed to drive the subtotal negative; the single clamp
+# at bank time is what stops a wrecked maze eating earlier ones.
+func add_repeat() -> void:
+	repeat_cells += 1
+	maze_subtotal -= Tuning.SCORE_REPEAT_CELL_PENALTY
+
+
+# What share of an award a cell pays right now. 1.0 on fresh ground, and
+# SCORE_EARN_ON_REPEAT on ground already driven this maze -- the rule that makes
+# a farming loop unprofitable at source rather than out-pricing it with the
+# penalty (see the constant's note).
+func _repeat_earn_scale() -> float:
+	return Tuning.SCORE_EARN_ON_REPEAT if on_repeat_ground else 1.0
 
 
 func advance_time(delta: float) -> void:
@@ -117,6 +159,10 @@ func bank_maze(index: int, name: String, progress: float = 1.0) -> float:
 
 	maze_subtotal = 0.0
 	maze_time = 0.0
+	# A new maze is fresh ground by definition, so the first cell of it must not
+	# inherit the last cell of the previous one. Racer clears `visited` per maze
+	# for the same reason.
+	on_repeat_ground = false
 	return earned
 
 

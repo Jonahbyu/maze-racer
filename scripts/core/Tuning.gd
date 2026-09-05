@@ -97,11 +97,17 @@ const REVERSE_COST_BY_RANK := [0.75, 0.55, 0.4, 0.25]
 # the barrier exists to ask, "can I afford this brush?", had an easy yes at rank
 # 0. At 0.25 a brush is a genuine commitment from the first maze.
 #
-# BARRIER_PER_RANK is deliberately left at 0.25, so a single rank now DOUBLES
-# the pool rather than adding half again. That makes Barrier Capacity a real
-# early pick instead of a rounding error, which is section 11.5's test: the rank
-# changes whether the player brushes walls at all, not just how long they may.
-const BASE_BARRIER := 0.25
+# Halved again, 0.25 -> 0.125. An eighth of a second is roughly eight frames at
+# 60fps: enough to clip a corner and leave, and nowhere near enough to ride a
+# wall. Combined with the flat per-contact charge (SCRAPE_DAMAGE), touching a
+# wall is now unambiguously a cost and holding one is a crash -- the barrier has
+# stopped being a pool the player can spend and become a reflex window.
+#
+# BARRIER_PER_RANK stays at 0.25, so it is now worth TWICE the base: one rank
+# TRIPLES the pool. That deepens the section 11.5 argument rather than breaking
+# it -- the first rank of Barrier Capacity is the difference between no room and
+# real room, which is a decision about how you drive, not a bigger number.
+const BASE_BARRIER := 0.125
 const BARRIER_PER_RANK := 0.25
 
 # Full refill in 3.3s of clean travel at base -- slower than the 0.25 it started
@@ -113,10 +119,29 @@ const BARRIER_PER_RANK := 0.25
 const BASE_BARRIER_REGEN := 0.15
 const BARRIER_REGEN_PER_RANK := 0.15
 
-const MAX_HP := 100
+# Was 100, then 75, now 50. The same argument each time and it had not gone far
+# enough: HP has to be a number the player watches, and a pool that absorbs
+# twenty-five crashes on maze 1 is decorative for the whole first half of a run.
+#
+# At 50 the crash counts are 17 / 10 / 8 / 6 / 5 across the five mazes, so maze 5
+# kills in five crashes. The per-contact charge sits underneath that, which is
+# the real change: 50 wall touches is now a whole run's worth of HP, and the
+# damage curve is not the only thing draining the pool any more.
+#
+# The damage curve is again deliberately NOT rescaled. Cutting the pool rather
+# than raising damage keeps a fixed subtraction biting hardest where it is
+# already largest, and Repair Field's flat HP/sec restores a larger SHARE of a
+# smaller pool -- the line that pays for driving clean gains value exactly as
+# crashes get more expensive.
+const MAX_HP := 50
 
 # Wall damage per crash on maze 1, climbing by WALL_DAMAGE_PER_MAZE each maze:
-# 3, 5, 7, 9, 11. Against 100 HP that is ~33 crashes on maze 1 and ~9 on maze 5.
+# 3, 5, 7, 9, 11. Against 75 HP that is 25 crashes on maze 1 and 6 on maze 5.
+#
+# The curve itself is unchanged; only the pool moved. Damage is deliberately NOT
+# rescaled alongside it, because the point of the cut is to make the late mazes
+# lethal rather than to keep the crash count where it was -- maze 5 falling from
+# 9 crashes to 6 is the change, not a side effect of it.
 #
 # It was a flat 1, which made HP decorative -- 100 crashes to die, in a game
 # whose longest run is a few minutes. Section 5.5 always intended HP to "become
@@ -126,6 +151,27 @@ const MAX_HP := 100
 # (section 8), and it is what gives Wall Armor and HP Regen something to bite.
 const WALL_DAMAGE := 3
 const WALL_DAMAGE_PER_MAZE := 2
+
+# Every wall touch costs this, once, at the moment contact begins -- whether the
+# player escapes clean or rides it into a crash. The barrier no longer buys free
+# contact; it only decides whether a touch stays a 1-point scrape or escalates
+# into the full per-maze crash damage above.
+#
+# This reverses CLAUDE.md sections 5.1 and 11.4, which said a good player brushes
+# walls constantly and never pays for it. That was a deliberate design change,
+# not a tuning tweak: wall contact is now always a cost, and the skill is in how
+# MUCH it costs rather than in getting it free.
+#
+# Charged once per contact rather than per second, because contact DURATION is
+# what the barrier already measures -- billing HP for it too would put two
+# systems on the same timer, and a per-second rate would make HP fractional on a
+# bar that reads as whole points.
+#
+# It is flat and does NOT scale per maze. The escalation lever is the crash
+# damage above; a scrape charge that climbed alongside it would make late-maze
+# wall contact punishing enough that the barrier's question -- can I afford this
+# brush? -- collapses back to a flat no.
+const SCRAPE_DAMAGE := 1
 
 # An expired turn input. Cheap, frequent, and teaching -- it says "you were
 # early" without derailing the run. Not a crash: no HP, no barrier drain.
@@ -226,6 +272,52 @@ const SCORE_TIME_BUDGET := 180.0
 const SCORE_MULT_DIVISOR := 30.0
 const SCORE_OVERTIME_DIVISOR := 120.0
 const SCORE_MULT_FLOOR := 0.20
+
+# Charged ONCE per distinct cell re-entered this maze, however many times the
+# racer crosses it again after that. It measures how much redundant ground a
+# route covered, which is the honest thing to charge for.
+#
+# It used to be charged on EVERY re-entry, at 250, because charging once per
+# cell leaves a farming loop free from its second lap onward -- and a subtotal
+# that grows forever beats a time multiplier that floors at 0.20x. That
+# reasoning was sound about the loop and wrong about the lever: the thing
+# funding a farming lap is the turn award (60 x speed = 360/cell at 6x), so the
+# penalty had to out-price an award ten times its size, and it never actually
+# managed it. Measured across lap counts, a farmer beat an honest run at 250
+# too; the old assertion only passed because it modelled one fixed lap count,
+# past the peak.
+#
+# SCORE_EARN_ON_REPEAT below is what closes it properly -- with no income on
+# ground already driven, a farming lap earns nothing and the time multiplier
+# does the rest. That frees this number to be what it should be: a moderate,
+# legible cost for backtracking rather than a deterrent sized to fight an
+# exploit.
+#
+# 100 is ~1.7 clean turns at 1.0x. At 250 an ordinary run bled far too fast --
+# a couple of dead ends and one wrong loop cost thousands of points for reading
+# the maze imperfectly, which is what the maze is FOR.
+#
+# Flat and NOT scaled by the Score Multiplier upgrade, for the same reason the
+# crash penalty is flat: a penalty that scaled with the player's ability to earn
+# would make backtracking more expensive the more of that line they took.
+const SCORE_REPEAT_CELL_PENALTY := 100.0
+
+# What fraction of the ordinary travel and turn awards a cell pays when it has
+# already been driven this maze. Zero: re-crossed ground earns nothing.
+#
+# This is the actual anti-farming rule (CLAUDE.md 8b). A farming loop is
+# profitable exactly because a turn pays 60 x speed regardless of whether the
+# corner is new, so pacing a braided ring at 6x mints 360/cell forever. Removing
+# the income removes the exploit at its source, and the time multiplier then
+# punishes the wasted seconds on its own -- measured, a farmer loses ground
+# monotonically at every lap count instead of peaking above an honest run.
+#
+# It costs an honest player nothing: an optimal router never re-enters a cell,
+# so it earns precisely what it did before. What it does cost is a genuinely
+# lost player, who now drives their recovery lap for time rather than points --
+# which is the right way round, and is the same statement section 11.2 makes
+# about routing being punished by distance and time.
+const SCORE_EARN_ON_REPEAT := 0.0
 
 # Score Multiplier upgrade: +15% earned points per rank, applied to the maze
 # subtotal BEFORE the time multiplier so it compounds with routing rather than
@@ -801,6 +893,18 @@ const CAM_SIGHT_MIN_DISTANCE := 0.9
 # beats the marker vanishing.
 const CAM_SIGHT_HARD_MIN := 0.35
 
+# The absolute floor on camera-to-marker distance, below CAM_SIGHT_HARD_MIN.
+#
+# Reached only when even the hard minimum leaves the marker blocked, which the
+# geometry does allow just after a turn: the marker is closest to the corner it
+# has rounded, and _sight_blocked() holds CAM_SIGHT_MARGIN of clearance off
+# every wall face on top of the distance.
+#
+# It is not zero because eye and target would then coincide on the floor plane,
+# and look_at() warns about colinear vectors every frame it happens. A sliver
+# keeps the camera's basis well-defined while sitting effectively on the marker.
+const CAM_SIGHT_FLOOR := 0.06
+
 # --- Player marker -----------------------------------------------------------
 
 # A ring with an arrow inside it, sitting on the floor. The ring reads position
@@ -1037,3 +1141,85 @@ const LANE_KICK_PER_SEC := 6.0
 # kick is still visible a cell or two later, fast enough to recover before the
 # next junction at ordinary speed.
 const LANE_RECOVER_PER_SEC := 1.6
+
+
+# --- Seeded runs (docs/plans/leaderboards.md) --------------------------------
+#
+# The daily and monthly boards need every player driving the SAME maze, so the
+# seed is derived from the date itself rather than fetched. Every client
+# computes it identically with no network call, which means a daily run starts
+# instantly and still works offline -- only the board needs Firebase.
+#
+# Publishing seeds from Firestore was rejected: it puts a round trip in front of
+# the PLAY button, and a failed fetch would mean no daily run at all.
+
+# Which board a run counts toward. GENERAL keeps the ordinary wall-clock seed --
+# that board is "any seed", so a random maze is correct there.
+enum Board { GENERAL, DAILY, MONTHLY }
+
+const BOARD_NAMES := ["general", "daily", "monthly"]
+
+# Mixed into every derived seed so the daily maze for a date is not the same
+# number as anything else that might hash the same string.
+const SEED_SALT := 0x4D617A65   # "Maze"
+
+
+# A stable 31-bit seed from any string.
+#
+# FNV-1a rather than String.hash(): the engine's hash is not contractually
+# stable across Godot versions, and a seed that changed on an engine upgrade
+# would silently redraw every past daily maze -- making old scores incomparable
+# with new ones on a board whose whole premise is that the maze is fixed.
+#
+# Masked to 31 bits because the value is handed to RandomNumberGenerator.seed
+# and used in `run_seed + index * 7919`; keeping it positive and well clear of
+# 64-bit overflow keeps that arithmetic honest.
+static func seed_from_string(text: String) -> int:
+	var h := 0x811C9DC5
+	for i in text.length():
+		h = (h ^ text.unicode_at(i)) & 0xFFFFFFFF
+		h = (h * 0x01000193) & 0xFFFFFFFF
+	return (h ^ SEED_SALT) & 0x7FFFFFFF
+
+
+# "2026-09-02" -> the seed every player drives that day.
+static func seed_for_date(date_text: String) -> int:
+	return seed_from_string("daily:" + date_text)
+
+
+# "2026-09" -> the seed every player drives that month.
+static func seed_for_month(month_text: String) -> int:
+	return seed_from_string("monthly:" + month_text)
+
+
+# Today's date as the boards key them, in LOCAL time.
+#
+# Local rather than UTC deliberately: a player's "today" is the date on their own
+# calendar, and a UTC rollover would change the daily maze mid-evening for
+# anyone west of Greenwich.
+static func today_key() -> String:
+	var d := Time.get_date_dict_from_system()
+	return "%04d-%02d-%02d" % [d["year"], d["month"], d["day"]]
+
+
+static func this_month_key() -> String:
+	var d := Time.get_date_dict_from_system()
+	return "%04d-%02d" % [d["year"], d["month"]]
+
+
+# The seed for a board right now. GENERAL is the wall clock, so every run draws
+# a fresh maze; the other two are fixed for their period.
+static func seed_for_board(board: int) -> int:
+	match board:
+		Board.DAILY:
+			return seed_for_date(today_key())
+		Board.MONTHLY:
+			return seed_for_month(this_month_key())
+		_:
+			return int(Time.get_unix_time_from_system()) & 0x7FFFFFFF
+
+
+static func board_name(board: int) -> String:
+	if board < 0 or board >= BOARD_NAMES.size():
+		return BOARD_NAMES[Board.GENERAL]
+	return String(BOARD_NAMES[board])

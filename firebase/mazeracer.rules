@@ -1,0 +1,104 @@
+// Firestore rules for the Maze Racer leaderboards.
+//
+// These are ADDITIVE to the cookbook's existing rules in the same
+// pistachio-kitchen project -- paste this match block inside that file's
+// `match /databases/{database}/documents { ... }`, do not replace it.
+//
+// What these can and cannot do (docs/plans/leaderboards.md):
+//
+// A static site cannot stop a determined cheater. Anyone can open devtools and
+// call postScore with any number. What rules CAN do is reject the impossible,
+// which is what stops the casual case -- and every posted score carries the
+// seed it was driven on, so a suspicious entry can be checked later against the
+// maze it claims. That stored seed is what keeps a future replay-validation
+// upgrade possible; it is deliberately not pretending to be one now.
+
+match /mazeRacer/data/scores/{scoreId} {
+
+  // Anyone may read a board. That is the entire point of a leaderboard, and
+  // the documents hold nothing private -- a display name the player chose and
+  // the numbers from a run.
+  //
+  // The limit bound applies to `list` because Firestore evaluates a list rule
+  // against the query's POTENTIAL result set, so without it one client could
+  // pull the whole collection in a single request.
+  allow get: if true;
+  allow list: if request.query.limit <= 50;
+
+  function scoreIsPlausible(d) {
+    // A perfect autopilot run measures ~630k. The ceiling is deliberately well
+    // above that rather than snug: a genuinely exceptional human run must never
+    // be rejected, and the number's job is to reject 999999999, not to referee
+    // the top of the board.
+    return d.score is number
+      && d.score >= 0
+      && d.score <= 50000000
+      // A five-maze run cannot be instant, and cannot run for half an hour.
+      && d.timeSeconds is number
+      && d.timeSeconds > 5
+      && d.timeSeconds < 1800
+      && d.mazesCleared is number
+      && d.mazesCleared >= 0
+      && d.mazesCleared <= 5
+      && d.seed is number
+      && d.seed > 0
+      && d.board in ['general', 'daily', 'monthly']
+      && d.died is bool
+      && d.name is string
+      && d.name.size() > 0
+      && d.name.size() <= 24
+      && d.createdAt is number;
+  }
+
+  // The uid must be the caller's own: nobody posts as somebody else.
+  //
+  // The document ID is checked too, because that is what enforces one entry per
+  // player per shared maze. The client builds it as uid_board_seed for daily and
+  // monthly, so a player replaying a daily overwrites their own single entry
+  // rather than adding a second -- and cannot flood a board by replaying it.
+  // Without the ID check a client could simply pick a different ID each time.
+  allow create: if request.auth != null
+    && request.resource.data.uid == request.auth.uid
+    && scoreIsPlausible(request.resource.data)
+    && (
+      request.resource.data.board == 'general'
+        || scoreId == request.auth.uid + '_' + request.resource.data.board
+             + '_' + string(request.resource.data.seed)
+    );
+
+  // Update is how a better run replaces a standing daily entry. Only the owner,
+  // only their own document, and the new score must be an IMPROVEMENT -- a
+  // replay that went worse must never lower what is already on the board, and
+  // more importantly an attacker who somehow reached another player's document
+  // still cannot vandalise it downward.
+  allow update: if request.auth != null
+    && resource.data.uid == request.auth.uid
+    && request.resource.data.uid == request.auth.uid
+    && scoreIsPlausible(request.resource.data)
+    && request.resource.data.score >= resource.data.score
+    // The board and seed are the identity of the entry; letting them change
+    // would move a score between boards after the fact.
+    && request.resource.data.board == resource.data.board
+    && request.resource.data.seed == resource.data.seed;
+
+  // Nothing is ever deleted. A leaderboard whose entries can vanish is one
+  // where a player can quietly remove a rival -- and there is no legitimate
+  // reason for a client to delete a score at all.
+  allow delete: if false;
+}
+
+match /mazeRacer/data/players/{uid} {
+  // Names are public: they are drawn on the board next to every score.
+  allow read: if true;
+
+  // Only the player may set their own name, and only within the length the
+  // board can actually draw. Unbounded names would let one entry push every
+  // column off the panel.
+  allow create, update: if request.auth != null
+    && request.auth.uid == uid
+    && request.resource.data.name is string
+    && request.resource.data.name.size() > 0
+    && request.resource.data.name.size() <= 24;
+
+  allow delete: if false;
+}

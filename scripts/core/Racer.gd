@@ -11,7 +11,7 @@ extends RefCounted
 signal turned(direction: int)
 signal reversed()
 signal slowdown()          # an expired turn input
-signal scraped()           # barrier began draining
+signal scraped()           # barrier began draining, and 1 HP was charged
 signal crashed()
 signal unstuck()
 # Carries the gate's index into `maze.gates` -- its POSITION in the maze, not
@@ -23,6 +23,22 @@ signal unstuck()
 # gate the player had never driven through, while the one they just took stayed
 # lit. The minimap was right the whole time because it reads `gates_cleared`,
 # which is a list of cells and cannot drift out of step with anything.
+# A cell boundary was crossed.
+#
+# `repeat` is whether this cell has already been driven through in THIS maze. It
+# is true on EVERY re-crossing, because it governs whether the cell earns
+# anything (CLAUDE.md section 8b) -- ground already covered pays nothing however
+# many times it is covered again.
+#
+# `first_repeat` is true only the FIRST time a given cell is re-entered, which is
+# what the flat repeat penalty is charged on. The two differ deliberately: the
+# penalty measures how much redundant ground a route covered, so it is a property
+# of the cell, while the earning rule is a property of each crossing.
+#
+# Emitted for every cell including gates and the exit -- the rules layer records
+# what happened and the score decides what it is worth, the same separation
+# last_turn_scraped keeps.
+signal cell_entered(cell: Vector2i, repeat: bool, first_repeat: bool)
 signal gate_entered(index: int)
 signal exit_reached()
 signal died()              # HP reached 0 with Tuning.DEATH_ENABLED
@@ -37,7 +53,20 @@ var upgrades: Upgrades
 var state: int = State.RUNNING
 
 # Grid position. `cell` is the cell being travelled through; `progress` is how
-# far across it we are, 0..1, along `facing`.
+# far across it we are, along `facing`.
+#
+# PROGRESS IS CENTRED ON THE CELL CENTRE: it runs -0.5 .. +0.5, where 0.0 is the
+# centre and +/-0.5 are the two drawn grid lines bounding the cell. It used to
+# run 0..1 between cell CENTRES, which put it half a cell out of phase with
+# every line the player can see -- so for the whole upper half of a traversal
+# the marker was drawn in the next cell while every rule still read the old one.
+# Measured: 75.6% of immediate turns resolved against the cell behind the
+# marker, at a flat 0.500-cell error. Centring makes "past the line" and "in the
+# new cell" the same statement, which is what section 11.3 promises.
+#
+# The one exception is a scrape, where progress is pinned to the wall face to
+# mean "hard against it" rather than to mean a position at all -- see
+# world_position() and the section 12 trap.
 var cell: Vector2i
 var facing: int = Maze.E
 var progress: float = 0.0
@@ -107,6 +136,11 @@ var _entry_lockout: int = -1
 
 var distance_travelled := 0.0
 var crash_count := 0
+# Wall contacts made, each of which cost Tuning.SCRAPE_DAMAGE. Counted
+# separately from crashes because they are separate events -- a run with many
+# scrapes and no crashes is a player brushing walls and paying for it, which
+# reads nothing like a run that crashed the same number of times.
+var scrape_count := 0
 var slowdown_count := 0
 
 var gates_taken := 0
@@ -125,6 +159,15 @@ var _gate_cells: Array[Vector2i] = []
 # without knowing the gate order -- which is what the minimap needs, since it
 # draws cells and knows nothing about gate numbering.
 var gates_cleared: Array[Vector2i] = []
+
+# Every cell driven through this maze, as a set. Drives the repeat-cell penalty
+# (CLAUDE.md section 8b) and is the raw material for a "where have I been" trail
+# should one ever be drawn.
+#
+# The value is whether the cell has been RE-entered since it was first driven,
+# so the flat penalty can be charged once per cell rather than once per crossing.
+# The count of re-entries lives on Score with the other tallies.
+var visited := {}
 
 var finished := false
 
@@ -190,6 +233,18 @@ func setup(p_maze: Maze, p_upgrades: Upgrades, p_maze_index: int = 0) -> void:
 	_turned_in_cell = false
 	_entry_lockout = -1
 
+	# Cells driven through this maze, for the repeat-cell penalty. Reset per
+	# maze rather than per run: a new maze is new ground by definition, so
+	# carrying this forward would charge the player for a coincidence of grid
+	# coordinates between two unrelated mazes.
+	#
+	# The start cell is pre-marked, so returning to it is a repeat like any
+	# other -- the racer has demonstrably been there.
+	visited.clear()
+	# false = seen once, not yet re-entered. The start cell is pre-marked, so
+	# returning to it is a repeat like any other.
+	visited[cell] = false
+
 	_gate_cells = maze.gates.duplicate()
 	gates_cleared.clear()
 	gates_taken = 0
@@ -241,7 +296,11 @@ func request_reverse() -> void:
 
 	facing = int(Maze.OPPOSITE[facing])
 	# Reversing mid-cell means the distance already covered is now behind us.
-	progress = 1.0 - progress
+	# Progress is centred on the cell centre (-0.5..+0.5), so the reflection is
+	# about 0.0: a racer a third of the way past the centre ends a third of the
+	# way back toward the line it came in through. It was `1.0 - progress` when
+	# progress ran centre-to-centre.
+	progress = -progress
 	_apply_speed_cost(upgrades.reverse_cost())
 	pending_turn = -1
 	# A 180 is an explicit, expensive, always-legal input -- it is never the
@@ -303,7 +362,20 @@ func step(delta: float) -> void:
 		rate *= Tuning.AUTOSTEER_SPEED_MULTIPLIER
 	var moved := rate * Tuning.BASE_CELL_RATE * delta
 
-	if maze.is_open(cell, facing):
+	# Blocked ahead, but not yet AT the wall: there is still corridor to cover
+	# between here and the face, so travel it.
+	#
+	# Dispatching on `is_open` alone sent a racer that had merely ENTERED a
+	# blocked cell straight to _press_into_wall, which pins it to the wall face
+	# -- teleporting the marker most of a cell in one frame and freezing it
+	# there. Progress is centred now, so a racer entering a cell is at its
+	# LEADING edge with a full cell still to cross, and that missing travel is
+	# the whole of "no movement in the last cell". It was hidden while the cell
+	# advanced at the centre, where only half a cell went missing.
+	# Travel while there is corridor left: either the way ahead is open, or it is
+	# blocked but the racer has not yet reached the wall face.
+	var open_ahead := maze.is_open(cell, facing)
+	if open_ahead or (not scraping and progress < _wall_face_progress()):
 		_travel(moved, delta)
 	elif auto_steer > 0.0:
 		# Invulnerable while the burst runs: the router takes the optimal turn
@@ -399,7 +471,19 @@ func _travel(moved: float, delta: float) -> void:
 	# A single frame at high speed can cross more than one cell boundary, so
 	# resolve boundaries in a loop rather than once.
 	while remaining > 0.0:
-		var to_boundary := 1.0 - progress
+		# The boundary is the drawn grid line, at progress 0.5 -- NOT progress
+		# 1.0, which is the next cell's centre, half a cell further on.
+		#
+		# These used to be the same step, and that was the "turns put you in
+		# early" bug: `cell` advanced at the centre, so for the whole upper half
+		# of every traversal the marker was drawn inside the next cell while
+		# every rule still read the old one. Crossing where the line is drawn
+		# makes "past the line" and "in the new cell" one statement, which is
+		# what section 11.3 promises the line means.
+		#
+		# Past the line, the next one is a full cell away; short of it, half a
+		# cell. Both are just "distance to progress 0.5, modulo one cell".
+		var to_boundary := 0.5 - progress if progress < 0.5 else 1.5 - progress
 
 		if remaining < to_boundary:
 			progress += remaining
@@ -408,8 +492,10 @@ func _travel(moved: float, delta: float) -> void:
 			remaining = 0.0
 			break
 
-		# Reached the next cell boundary.
-		progress = 0.0
+		# Reached the grid line. Progress rephases to just past the new cell's
+		# trailing line -- the marker keeps moving forward, but it is now
+		# measured from the centre of the cell it just entered.
+		progress = progress + to_boundary - 1.0
 		remaining -= to_boundary
 		distance_travelled += to_boundary
 
@@ -440,42 +526,82 @@ func _travel(moved: float, delta: float) -> void:
 		else:
 			_consume_buffer(to_boundary)
 
-		# If the way ahead is now solid, stop here and start scraping. Without
-		# this the loop would keep consuming `remaining` through a wall.
+		# If the way ahead is now solid, the racer still has to CROSS this cell
+		# before it reaches the wall at the far side of it.
+		#
+		# This used to press into the wall the instant the cell was entered,
+		# which teleported the marker from the entry line straight to the far
+		# wall face -- nearly a whole cell in a single frame -- and then held it
+		# there, motionless, while the barrier drained into a crash. In play:
+		# "I get into the last cell before a wall, it freezes, jumps to the wall
+		# and I crash there, with no movement in the last cell."
+		#
+		# It was masked before progress was centred: the cell advanced at the
+		# CENTRE, so a racer entering a blocked cell was already half way across
+		# it and the jump to the wall face was small. Crossing at the line is
+		# correct, and it made the missing half-cell of travel visible.
+		#
+		# So travel the rest of the way normally and let the wall stop the racer
+		# when it is actually reached. The wall face is the far side of this
+		# cell, so that is simply the distance still to cover.
 		if not maze.is_open(cell, facing):
-			_press_into_wall(remaining, 0.0)
+			var to_wall := _wall_face_progress() - progress
+			if remaining < to_wall:
+				progress += remaining
+				_consume_buffer(remaining)
+				distance_travelled += remaining
+				return
+			progress += to_wall
+			distance_travelled += to_wall
+			_consume_buffer(to_wall)
+			_press_into_wall(remaining - to_wall, 0.0)
 			return
 
 
-# Pressed into a wall. The barrier drains; turning out before it empties costs
-# nothing at all, which is the skill expression (CLAUDE.md section 5.1).
+# Pressed into a wall. Contact itself costs a flat Tuning.SCRAPE_DAMAGE, once,
+# at the moment it begins. The barrier then decides whether that stays the whole
+# price or escalates into a crash (CLAUDE.md section 5.1).
+#
+# A contact charge is NOT a crash: no park, no speed reset, no `crashed` signal
+# and none of the crash framing that hangs off it. The player keeps driving,
+# one point down. Only the barrier emptying crashes.
 func _press_into_wall(_moved: float, delta: float) -> void:
 	# Auto-Steer is invulnerable, so wall contact cannot even begin to drain.
 	# Reached only if the router had nowhere better to aim.
 	if auto_steer > 0.0:
 		return
 
-	progress = 1.0
+	# Pinned against the wall ahead. This is the one place progress does NOT
+	# mean a position -- it means "hard against it" -- so it is set to the wall
+	# FACE rather than to some value past the boundary. With progress centred on
+	# the cell centre, the face is just under +0.5 (half a cell out, less the
+	# wall's half-thickness and the marker's radius), which keeps the value in
+	# range and keeps world_position()'s clamp a no-op rather than a rescue.
+	progress = _wall_face_progress()
 
 	if not scraping:
 		scraping = true
+		# Charged HERE, where contact BEGINS, which is what makes it once per
+		# contact rather than per second or per frame: `scraping` stays true for
+		# the whole touch, so this branch cannot run again until the player has
+		# left the wall and come back to it.
+		_take_contact_damage()
 		scraped.emit()
 
 	# A pending turn still resolves while scraping -- that is exactly how a good
 	# player escapes without paying.
 	if pending_turn != -1 and _may_turn_into(pending_turn):
 		# A scrape is the one place progress must be REWRITTEN before pivoting:
-		# it is pinned at 1.0 to mean "hard against the wall", which is not a
-		# real position (see world_position()). Pivoting on that literal 1.0
-		# interpolates a full cell down the newly-opened corridor and teleports
-		# the marker to the front of the next cell.
+		# it is pinned to the wall face to mean "hard against the wall", which
+		# is not a position along the NEW heading at all. Carrying that value
+		# through the pivot sends the marker the same distance down the new
+		# corridor -- measured at 1.95m, worse than the 1.4m reposition below,
+		# because the wall face is that far along the OLD heading and the two
+		# are not the same point (CLAUDE.md section 2).
 		#
-		# It resets to the wall-face distance rather than to 0, because that is
-		# precisely where world_position() has been DRAWING the racer all through
-		# the scrape. Resetting to the cell centre is self-consistent in the
-		# rules but visibly snaps the marker backwards at the moment of escape;
-		# carrying the drawn position through makes the pivot a pure rotation,
-		# which is what section 2 promises a turn always is.
+		# So the pivot starts from the cell centre, which is where the racer
+		# actually is. The turn freeze is what makes that reposition readable
+		# rather than something to hide.
 		progress = 0.0
 		last_turn_scraped = true
 		_turn_into(pending_turn)
@@ -494,6 +620,27 @@ func _press_into_wall(_moved: float, delta: float) -> void:
 		if _try_smash():
 			return
 		_crash()
+
+
+# The flat cost of touching a wall at all. Deliberately narrow: it moves HP and
+# nothing else -- speed, state, the barrier and the lane are all untouched,
+# because this is contact, not a crash.
+#
+# Death is still checked, since a player already at 1 HP has to be able to die to
+# a scrape; otherwise a run could survive indefinitely on wall contact alone and
+# HP would stop meaning anything at exactly the moment it matters most. It reads
+# as its own event rather than as a crash: `died` fires without `crashed`, so the
+# crash framing never appears for a death the player did not crash into.
+func _take_contact_damage() -> void:
+	if dead or Tuning.SCRAPE_DAMAGE <= 0:
+		return
+
+	hp = maxi(0, hp - Tuning.SCRAPE_DAMAGE)
+	scrape_count += 1
+
+	if Tuning.DEATH_ENABLED and hp <= 0:
+		dead = true
+		died.emit()
 
 
 # Wall Smasher. Returns true if the wall gave way (or the boundary turned the
@@ -589,6 +736,17 @@ func _consume_buffer(distance: float) -> void:
 
 
 func _on_enter_cell() -> void:
+	# Recorded BEFORE the exit and gate early-returns below. Those return before
+	# the end of this function, so tracking placed after them would leave gate
+	# cells and the exit free to re-cross -- and gates sit on the solve path,
+	# which is precisely the ground a looping player covers twice.
+	var repeat: bool = visited.has(cell)
+	# Charged once per cell: true only on the first re-crossing, false on every
+	# one after it. `visited` holds that flag rather than a bare marker.
+	var first_repeat: bool = repeat and not visited[cell]
+	visited[cell] = repeat
+	cell_entered.emit(cell, repeat, first_repeat)
+
 	if cell == maze.exit_cell:
 		finished = true
 		exit_reached.emit()
@@ -631,6 +789,12 @@ func _relative_direction(key: int) -> int:
 # without it a crossroads lets a press fold the racer straight back into the
 # corridor it left, which is a 180 the player did not ask for and did not pay
 # for.
+#
+# `cell` is trustworthy here because progress is centred: _travel() advances the
+# cell at the drawn grid line, so the cell named is always the one the player is
+# standing in. When progress ran 0..1 between centres that was false for the
+# upper half of every traversal, and this function was the place it hurt --
+# measured, 75.6% of immediate turns asked about the cell BEHIND the marker.
 func _may_turn_into(direction: int) -> bool:
 	if direction == _entry_lockout:
 		return false
@@ -651,6 +815,25 @@ func _turn_into(direction: int) -> void:
 	# calling, so this default runs for every ordinary turn.
 	if not scraping:
 		last_turn_scraped = false
+
+	# A turn taken on the way IN to a cell must not keep its inbound distance.
+	#
+	# Progress is measured along `facing`, and the pivot changes `facing` --
+	# so a negative progress (still short of this cell's centre, which is where
+	# the racer is for the whole first half of a cell) would be re-interpreted
+	# as that same distance BACKWARDS along the new heading, drawing the marker
+	# out through the side wall. Measured: the marker sat 1.949m off its cell
+	# centre where the corridor half-width is 1.77m, so the camera could never
+	# find a clear line to it and the "marker is never hidden" rule (section 12)
+	# failed on 20-40 of every 2000 autopilot frames.
+	#
+	# Clamped to 0 rather than reflected, because the racer turning at the mouth
+	# of a cell is, for the new corridor, at that corridor's start. Progress
+	# already past the centre is a real distance down the new heading and is
+	# kept, which is what makes a turn a pivot rather than a rewind (section 2).
+	if progress < 0.0:
+		progress = 0.0
+
 	_kick_lane(direction)
 	# Lock out the corridor being left, so the next press cannot fold straight
 	# back into it. `facing` still points the old way here, so the way back is
@@ -724,15 +907,18 @@ func right_direction() -> int:
 
 # World position in metres, interpolated across the current cell.
 #
-# Travel runs 0..1 from this cell's centre to the next cell's centre. But when
-# pressed into a wall, progress is pinned at 1.0 to mean "hard against it" --
-# and interpolating that literally puts the player a FULL CELL forward, standing
-# inside the wall, or outside the maze entirely at a boundary. First person hid
-# this completely (inside a wall looking out just reads as "close to it"); third
-# person shows the marker buried in the wall it is supposedly stopped at.
+# Travel runs -0.5..+0.5 about this cell's centre, so the marker is drawn at the
+# cell centre plus `progress` cells along the facing -- and +/-0.5 lands it
+# exactly on a drawn grid line, which is the whole point of the centred phase.
 #
-# So a blocked facing clamps to the wall FACE instead: half a cell out, less the
-# wall's own half-thickness and a little clearance for the marker's radius.
+# The clamp below is belt-and-braces rather than the rescue it used to be. When
+# progress ran 0..1 a scrape pinned it at 1.0 to mean "hard against the wall",
+# and interpolating that literally put the player a FULL CELL forward, standing
+# inside the wall or outside the maze entirely at a boundary. First person hid
+# it completely (inside a wall looking out just reads as "close to it"); third
+# person showed the marker buried in the wall it was stopped at. _press_into_wall
+# now pins to the wall FACE directly, so the clamp holds the line for anything
+# that drives progress past it by another route.
 # How far across the cell the wall FACE sits, in progress units.
 #
 # The single source of truth for "pinned against the wall ahead": world_position()
@@ -740,6 +926,9 @@ func right_direction() -> int:
 # resets progress to it so the pivot does not jump. Half a cell out, less the
 # wall's own half-thickness and clearance for the marker's radius.
 func _wall_face_progress() -> float:
+	# Progress is measured from the cell CENTRE, so this is already the distance
+	# from centre to face: half a cell out, less the wall's own half-thickness
+	# and clearance for the marker's radius. Just under +0.5.
 	return (Tuning.CELL_SIZE * 0.5 - Tuning.WALL_THICKNESS * 0.5
 		- Tuning.MARKER_RADIUS) / Tuning.CELL_SIZE
 

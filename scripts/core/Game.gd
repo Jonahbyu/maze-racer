@@ -8,6 +8,11 @@ extends Node3D
 
 enum Phase { RACING, UPGRADING, TRANSITION, COMPLETE, PAUSED, DEAD, VISION }
 
+# The player dismissed the end-of-run summary. Shell listens and returns to the
+# menu; a harness that instantiates Game bare simply never connects it, which is
+# why the run does not tear itself down here.
+signal run_dismissed()
+
 # Right edge of the HUD's barrier/integrity column, and the smallest map worth
 # drawing. Both are needed by _place_minimap now that the map is centred rather
 # than tucked in the opposite corner.
@@ -35,6 +40,14 @@ var phase: int = Phase.RACING
 var maze_index := 0
 var run_seed := 0
 
+# Which leaderboard this run counts toward (docs/plans/leaderboards.md). Set by
+# Shell before the scene is added, exactly as trailer_seed is -- _ready derives
+# run_seed from it, so it has to be in place before then.
+#
+# GENERAL keeps the wall-clock seed, so that board still draws a fresh maze
+# every run; DAILY and MONTHLY derive theirs from the date.
+var board: int = Tuning.Board.GENERAL
+
 # Set before the node enters the tree to force a specific seed, overriding the
 # clock. The trailer needs this (docs/specs/trailer.md): it starts a maze during
 # its own _ready, so pinning run_seed afterwards -- the way SceneTest does --
@@ -56,6 +69,7 @@ var _mesh: MazeMesh
 var _hud: HUD
 var _minimap: Minimap
 var _upgrade_screen: UpgradeScreen
+var _run_summary: RunSummary
 var _touch: TouchControls
 
 # The settings panel, built on demand from the pause screen and freed on close.
@@ -86,7 +100,7 @@ var _shake := 0.0
 
 func _ready() -> void:
 	run_seed = trailer_seed if trailer_seed != 0 \
-		else int(Time.get_unix_time_from_system())
+		else Tuning.seed_for_board(board)
 	upgrades = Upgrades.new(run_seed)
 	score = Score.new()
 
@@ -235,6 +249,16 @@ func _build_ui() -> void:
 	_upgrade_screen.name = "UpgradeScreen"
 	_upgrade_screen.upgrade_chosen.connect(_on_upgrade_chosen)
 	ui_root.add_child(_upgrade_screen)
+
+	# Added after the upgrade screen so it draws over it: a run that ends during
+	# an upgrade pick must not leave cards on top of the summary.
+	_run_summary = RunSummary.new()
+	_run_summary.name = "RunSummary"
+	_run_summary.dismissed.connect(_on_summary_dismissed)
+	# The player named themselves after the run had already gone up as "anon".
+	# Best-of keying means this overwrites that entry rather than adding one.
+	_run_summary.repost.connect(func(): _post_run(phase == Phase.DEAD))
+	ui_root.add_child(_run_summary)
 
 	# Only visible while paused -- see _set_paused. A cog on a live corridor
 	# would be a mouse target over the thing the player is steering through.
@@ -392,6 +416,7 @@ func _start_maze(index: int) -> void:
 	racer.turned.connect(_on_turned)
 	racer.reversed.connect(_on_turned.bind(-1))
 	racer.died.connect(_on_died)
+	racer.cell_entered.connect(_on_cell_entered)
 
 	# The track is named on the maze config, so a maze changes its own music the
 	# same way it changes its own palette (docs/specs/music.md). Shared across all
@@ -786,6 +811,17 @@ func _update_camera(delta: float) -> void:
 			randf_range(-0.6, 0.6),
 			randf_range(-1.0, 1.0)
 		) * _shake * 0.35
+		# The shake is applied AFTER the three anti-clip passes, so it can throw
+		# the eye straight back into the geometry they just cleared -- including
+		# behind the wall between the camera and the marker, which section 12
+		# makes a hard rule. Re-run the two passes that own that rule.
+		#
+		# It has to be re-run rather than clamped because the offset is random:
+		# the failure is intermittent by construction, and it showed up as a
+		# sight check that failed with a DIFFERENT count every run (28, 37, 44
+		# of 2000 frames) long after the deterministic causes were fixed.
+		eye = _push_out_of_walls(eye)
+		eye = _clear_sight_to(eye, ground)
 
 	_camera.position = eye
 	_camera.look_at(look_at, Vector3.UP)
@@ -868,7 +904,41 @@ func _clear_sight_to(eye: Vector3, target: Vector3) -> Vector3:
 	# marker. A very tight camera for a frame or two is a far smaller failure
 	# than the marker disappearing -- section 12 makes that a hard rule, and this
 	# is the branch that keeps it true when the geometry allows nothing better.
-	return aim + span.normalized() * Tuning.CAM_SIGHT_HARD_MIN
+	#
+	# CAM_SIGHT_HARD_MIN is not itself guaranteed to clear, and returning it
+	# blind is how this branch used to leave the marker hidden anyway: measured,
+	# 44 of 2000 autopilot frames sat at exactly the hard minimum and were STILL
+	# blocked, every one of them within a few hundredths of a grid line just
+	# after a turn -- the marker is closest to the corner it has just rounded,
+	# and _sight_blocked() holds CAM_SIGHT_MARGIN of clearance off every wall
+	# face on top of that.
+	#
+	# So close the rest of the way rather than stopping at a number. The loop
+	# walks in toward the marker and returns the first distance that genuinely
+	# clears; sitting ON the marker is clear by definition (zero-length segments
+	# report unblocked), so this always terminates with the rule satisfied.
+	var hard := aim + span.normalized() * Tuning.CAM_SIGHT_HARD_MIN
+	if not _sight_blocked(hard, aim):
+		return hard
+
+	# Walk from the hard minimum down to CAM_SIGHT_FLOOR, taking the first
+	# distance that genuinely clears. Interpolating between the two rather than
+	# scaling the hard minimum, so the steps keep shrinking all the way down --
+	# a max() against the floor stalls the walk partway and hands back a
+	# position that is still blocked, which is the bug this loop exists to fix.
+	var dir := span.normalized()
+	for i in range(1, 9):
+		var f := float(i) / 8.0
+		var d: float = lerpf(Tuning.CAM_SIGHT_HARD_MIN, Tuning.CAM_SIGHT_FLOOR, f)
+		var shrunk := aim + dir * d
+		if not _sight_blocked(shrunk, aim):
+			return shrunk
+
+	# Nothing along the axis clears, so sit at the floor: effectively on the
+	# marker, which is what the hard rule asks for when geometry allows nothing
+	# better. Never at zero -- eye and target would coincide on the floor plane
+	# and look_at() would warn about colinear vectors every frame.
+	return aim + dir * Tuning.CAM_SIGHT_FLOOR
 
 
 # Does a solid wall stand between these two points on the floor plane?
@@ -1118,6 +1188,29 @@ func _on_turned(_direction: int) -> void:
 	score.add_turn(racer.speed, racer.last_turn_scraped)
 
 
+# A cell boundary was crossed. Fresh ground is what the player is supposed to be
+# covering; repeat ground both costs and, more importantly, stops paying.
+#
+# Two separate things happen here, and they are charged on different flags
+# (CLAUDE.md section 8b):
+#
+#   `repeat`       -- true on EVERY re-crossing, so it gates whether the cell
+#                     earns travel and turn points at all. This is the rule that
+#                     makes farming unprofitable.
+#   `first_repeat` -- true only the first time a cell is re-entered, so the flat
+#                     penalty is charged once per cell rather than per lap.
+#
+# Charged in RACING only. The trailer drives the real Game through this same
+# surface (docs/specs/trailer.md) and a reel segment that re-crosses its own
+# path must not accumulate a penalty nobody is scoring.
+func _on_cell_entered(_cell: Vector2i, repeat: bool, first_repeat: bool) -> void:
+	if phase != Phase.RACING:
+		return
+	score.on_repeat_ground = repeat
+	if first_repeat:
+		score.add_repeat()
+
+
 func _on_crashed() -> void:
 	score.add_crash()
 	_shake = 1.0
@@ -1194,8 +1287,14 @@ func _on_died() -> void:
 	var progress := float(racer.gates_taken) / float(gate_total)
 	score.bank_maze(maze_index, String(config["name"]), progress)
 
-	_hud.show_message("RUN OVER  -  %s" % _format_score(score.total()),
-		Color(1.0, 0.3, 0.3), true)
+	# The summary carries the outcome, so the HUD message would be a second,
+	# smaller copy of the headline behind a full-screen modal. Cleared instead:
+	# a held crash prompt is still on screen at this point and would otherwise
+	# sit under the summary waiting to reappear.
+	_hud.clear_message()
+	_upgrade_screen.dismiss()
+	_post_run(true)
+	_run_summary.present(score, upgrades, elapsed, maze_index, _covered_hud())
 
 
 func _on_exit_reached() -> void:
@@ -1207,29 +1306,67 @@ func _on_exit_reached() -> void:
 		phase = Phase.TRANSITION
 		_transition_time = 2.0
 		_hud.show_message("MAZE CLEARED  -  %s  x%.2f" % [
-			_format_score(earned), mult
+			RunSummary.format_score(earned), mult
 		], Color(0.35, 1.0, 0.45))
 	else:
 		phase = Phase.COMPLETE
-		_hud.show_message("RUN COMPLETE  -  %s" % _format_score(score.total()),
-			Color(0.35, 1.0, 0.45))
+		_hud.clear_message()
+		_upgrade_screen.dismiss()
+		_post_run(false)
+		_run_summary.present(score, upgrades, elapsed, -1, _covered_hud())
 
 
-# Thousands-separated, because a maze banks six figures and a bare run of digits
-# is unreadable at a glance -- and the score is read under exactly the same time
-# pressure as everything else on the HUD.
-func _format_score(value: float) -> String:
-	var n := int(round(value))
-	var sign_text := "-" if n < 0 else ""
-	var digits := str(absi(n))
-	var out := ""
-	var count := 0
-	for i in range(digits.length() - 1, -1, -1):
-		out = digits[i] + out
-		count += 1
-		if count % 3 == 0 and i > 0:
-			out = "," + out
-	return sign_text + out
+# Send the finished run to the leaderboard.
+#
+# Called from both terminal paths and nowhere else: this is the only point at
+# which a run is genuinely over and its score final. A run abandoned by closing
+# the tab never reaches here, which is correct -- there is no partial submission.
+#
+# Guarded on the autoload's presence, like every other Music/Settings call: a
+# harness instantiates Game.tscn bare with no autoloads at all, and the desktop
+# build has no JavaScriptBridge. Neither may be what stops a run ending.
+#
+# The trailer is excluded on trailer_seed, the same flag that already suppresses
+# the HUD maze banner and the loadout pick -- the reel drives real runs through
+# this controller and must never post a score for one.
+func _post_run(died: bool) -> void:
+	if trailer_seed != 0:
+		return
+	var lb := get_node_or_null("/root/Leaderboard")
+	if lb == null:
+		return
+	# maze_results holds one entry per BANKED maze, and the maze that just ended
+	# is already among them -- both callers bank before posting. A death banks a
+	# partial maze, so cleared counts only the ones actually finished.
+	var cleared := 0
+	for result in score.maze_results:
+		if float(result.get("progress", 1.0)) >= 1.0:
+			cleared += 1
+	lb.post_run(score.total(), elapsed, run_seed, board, cleared, died)
+
+
+# The live readouts the summary covers, hidden while it is up.
+#
+# Every one of them is a frozen number from a run that has ENDED, drawn on top of
+# the screen that reports what those numbers finally came to -- two accounts of
+# the same run, one of them stale. Only a rendered frame shows this; no headless
+# assertion can see one Control drawn over another.
+func _covered_hud() -> Array:
+	var nodes: Array = []
+	if _hud != null:
+		nodes.append(_hud)
+	if _minimap != null:
+		nodes.append(_minimap)
+	if _touch != null:
+		nodes.append(_touch)
+	return nodes
+
+
+# The player dismissed the summary. Game does not tear itself down -- Shell owns
+# the mode swap, exactly as it does when the trailer finishes.
+func _on_summary_dismissed() -> void:
+	_run_summary.dismiss()
+	run_dismissed.emit()
 
 
 # --- Music -------------------------------------------------------------------

@@ -281,7 +281,145 @@ func _go() -> void:
 	check("finishing the reel returns to the menu",
 		int(shell.mode) == Shell.Mode.MENU, "mode %d" % int(shell.mode))
 
+	_check_leaderboard_panel(shell)
+
 	_finish()
+
+
+# The leaderboard panel and the two-column menu
+# (docs/plans/leaderboards.md).
+#
+# Everything here runs with the Leaderboard autoload reporting UNAVAILABLE,
+# because a harness has no browser and no network -- which is exactly the state
+# a desktop player is in. The panel must draw its empty state and the menu must
+# be completely usable, or the desktop build breaks for want of a feature it was
+# never meant to have.
+func _check_leaderboard_panel(shell) -> void:
+	shell.show_menu()
+	var menu = shell._current
+	check("the menu builds a leaderboard panel",
+		menu != null and menu._leaderboard != null)
+	if menu == null or menu._leaderboard == null:
+		return
+
+	var panel = menu._leaderboard
+	check("the panel starts on the general board",
+		int(panel._view) == LeaderboardPanel.View.GENERAL)
+	check("the panel starts sorted by score", String(panel._sort) == "score")
+
+	# All four views must switch without the autoload being reachable. This is
+	# the case that would break silently: the panel asking an absent service for
+	# rows and taking the error path on every click.
+	for view in [LeaderboardPanel.View.DAILY, LeaderboardPanel.View.MONTHLY,
+			LeaderboardPanel.View.HISTORY, LeaderboardPanel.View.GENERAL]:
+		panel._set_view(view)
+		check("switching to view %d works offline" % view,
+			int(panel._view) == view)
+
+	# The sort toggle changes the QUERY, not just the display -- so what is
+	# asserted is the state the next fetch will use.
+	panel._set_view(LeaderboardPanel.View.GENERAL)
+	panel._set_sort("time")
+	check("the sort toggle switches to time", String(panel._sort) == "time")
+	panel._set_sort("score")
+	check("the sort toggle switches back to score", String(panel._sort) == "score")
+
+	# History is always newest-first, so its sort buttons are disabled rather
+	# than present and inert.
+	panel._set_view(LeaderboardPanel.View.HISTORY)
+	var disabled := true
+	for b in panel._sort_buttons:
+		if not b.disabled:
+			disabled = false
+	check("history disables the sort toggle", disabled)
+	panel._set_view(LeaderboardPanel.View.GENERAL)
+
+	# Rows drawn from data, including the shapes a bad payload could take. The
+	# rows come from Firestore, so they are untrusted input as far as this panel
+	# is concerned -- a missing field must not be able to stop the menu drawing.
+	panel._draw_rows([
+		{"name": "Fav", "score": 452947.0, "time": 271.0},
+		{"name": "TheSmallNut", "score": 1000000.0, "time": 300.0},
+		{},
+		"not a dictionary",
+	])
+	check("rows are drawn, malformed entries skipped",
+		panel._rows_box.get_child_count() == 4,
+		"got %d" % panel._rows_box.get_child_count())
+
+	# An empty board draws its header and nothing else, rather than erroring.
+	panel._draw_rows([])
+	check("an empty board still draws a header",
+		panel._rows_box.get_child_count() == 1)
+
+	# --- The two-column split ---
+	#
+	# Driven directly rather than by resizing the window: headless ignores
+	# window_set_size entirely (the dummy DisplayServer), which is the same
+	# reason SceneTest drives UIRoot for the minimap check.
+	menu._layout_columns()
+	check("the layout runs without a viewport resize", true)
+
+	# BOTH branches of the split, asserted by their actual condition rather than
+	# by assuming the wide one.
+	#
+	# This check first read "the panel is anchored to the right edge"
+	# unconditionally and failed once the split started working: the harness
+	# window is narrower than TWO_COLUMN_MIN_WINDOW_WIDTH, so the single-column
+	# branch is the correct one there and the right-edge anchors are never set.
+	# The test was wrong, not the layout -- the same "did we actually vary
+	# anything" trap SceneTest records for the minimap, arriving from the other
+	# side.
+	var win: Window = shell.get_window()
+	var win_width := 0.0 if win == null else float(win.size.x)
+	var expect_two := win_width >= MainMenu.TWO_COLUMN_MIN_WINDOW_WIDTH
+	check("the panel is shown only when there is room for it",
+		panel.visible == expect_two,
+		"window %.0f wide, visible %s" % [win_width, str(panel.visible)])
+	if expect_two:
+		check("a two-column panel is anchored to the right edge",
+			panel.anchor_left == 1.0 and panel.anchor_right == 1.0)
+	else:
+		# The fallback must genuinely return the menu to centre, or a narrow
+		# window would leave the buttons shifted left with nothing beside them.
+		var centred := true
+		for node in menu.get_children():
+			var c = node as Control
+			# Skip full-rect backdrops by GROUP, not by type. This read
+			# "c is ColorRect", which was the same type-standing-in-for-intent
+			# mistake _place_left made: the background art is a TextureRect, so
+			# the test demanded a full-rect backdrop be centred at 0.5 and
+			# failed the moment the menu got real art -- reporting a layout
+			# regression that did not exist.
+			if c == null or c == panel or c == menu._cog:
+				continue
+			if c.is_in_group(MainMenu.GROUP_BACKDROP):
+				continue
+			if c.anchor_left != 0.5:
+				centred = false
+		check("the single-column fallback re-centres the menu", centred)
+
+	# The autoload itself, when present.
+	var lb = shell.get_node_or_null("/root/Leaderboard")
+	if lb != null:
+		check("the leaderboard autoload processes", lb.is_processing())
+		check("no bridge outside a browser", not lb.available)
+		check("posting without a bridge fails safely",
+			not lb.post_run(1000.0, 60.0, 123, Tuning.Board.GENERAL, 1, false))
+		# A board request with no bridge must still answer, or a caller waiting
+		# on the signal hangs forever.
+		var answered := SignalCounter.new()
+		lb.board_loaded.connect(answered.on_board)
+		lb.request_board(Tuning.Board.DAILY, "score")
+		check("an offline board request still emits", answered.count == 1)
+		lb.board_loaded.disconnect(answered.on_board)
+
+
+class SignalCounter extends RefCounted:
+	var count := 0
+
+	func on_board(_b, _s, _rows) -> void:
+		count += 1
 
 
 func _finish() -> void:

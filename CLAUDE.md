@@ -164,6 +164,58 @@ lefts is a 180: a double-tap while rounding a corner span the player back the wa
 came. The lockout clears on entering a new cell and on an explicit 180, which is never the
 accidental input this guards against.
 
+**`progress` is centred on the cell centre, and that phase is the contract.** It runs
+**−0.5 .. +0.5**, where 0.0 is the cell centre and ±0.5 are the two drawn grid lines
+bounding the cell. So "past the line" and "in the new cell" are the same statement, and
+`_travel` advances `cell` at the line — where the player watches it happen — rather than half
+a cell later.
+
+It used to run **0..1 between cell *centres***, which put it half a cell out of phase with
+every line the player can see. For the whole upper half of a traversal the marker was drawn
+inside the next cell while every rule still read the old one, so a press made on crossing a
+line resolved against the openings of the cell just left. Measured on a maze-1 autopilot:
+**75.6% of immediate turns resolved against the cell behind the marker, at a flat 0.500-cell
+error every time.** In play that is exactly *"I'm across the line and it still turned me into
+the previous cell."*
+
+The flat 0.500 is what identifies it as geometry rather than timing. It is not a spread of
+near-misses that a delay could shift — it is one constant half-cell offset, so **an input
+delay cannot fix it**: cancelling half a cell takes 500ms at 1x and 62ms at 8x, and a fixed
+delay under-corrects when slow and over-corrects when fast. Scaling it by speed just
+re-derives the geometric fix badly, while breaking §11.3 (the press does nothing visible for
+N ms) and fighting §4 (the buffer is in *cells, not seconds*, precisely so forgiveness does
+not scale with speed).
+
+Re-measured after the change, over all five mazes: **0 of 353 turns** resolve against the
+wrong cell, and the marker is never drawn outside its own cell. One frame in 15,833 rounds to
+a neighbouring cell, which is a tie exactly on a line.
+
+**The cell in front of a wall is driven through, not skipped.** Blocked-ahead is not the
+same event as *pinned against the wall*: entering that cell puts the racer at its leading
+edge with a full cell still to cover, and only the far side of it is the wall face. Pressing
+into the wall on the entry frame instead teleported the marker most of a cell in a single
+step and then froze it there while the barrier drained — *"I get into the last cell before a
+wall, it freezes, jumps to the wall and I crash there, with no movement in the last cell."*
+Measured: a 3.4m jump in one frame, and 47 frames of travel lost.
+
+Two paths did it and both had to change — `_travel`'s boundary handler, and `step`'s dispatch,
+which sent any racer in a blocked cell straight to `_press_into_wall` however far into the
+cell it had got. **This was masked before `progress` was centred**, because the cell advanced
+at the *centre*, so only half a cell went missing rather than a whole one; centring the phase
+did not cause it, it made it visible. `RulesTest` asserts the travel directly — no single
+frame may move more than a few frames' worth, and the cell must take dozens of frames to
+cross — because "it crashed eventually" is true of both the correct and the broken version.
+
+**A turn on the way IN to a cell starts the new corridor at the centre.** Progress is measured
+along `facing`, and a pivot changes `facing` — so a *negative* progress (still short of the
+centre, which is where the racer is for the first half of every cell) would be re-read as that
+distance **backwards** along the new heading and draw the marker out through the side wall.
+Measured: 1.949m off a cell centre whose corridor half-width is 1.77m, which no camera
+position can see past — it broke the "marker is never hidden" rule (§12) on 20–40 of every
+2000 autopilot frames. Clamped to 0, not reflected: a racer turning at the mouth of a cell is,
+for the new corridor, at that corridor's start. This is the same trade the scrape case records
+below, and it resolves the same way — the two distances are not the same point.
+
 **A turn pivots; it never rewinds.** Resolving a turn used to reset `progress` to 0, which
 snapped the player back to the centre of a cell they had already half-crossed. In play that
 read as *"I reached the new grid line, turned, and it threw me back to an old one and I
@@ -172,15 +224,19 @@ moves you to a different line than the one you just crossed breaks it outright. 
 is at a real point in the corridor; turning is a rotation, so the distance already covered
 still counts toward the next boundary.
 
-The one exception is escaping a scrape, where `progress` is pinned at 1.0 to mean "hard
-against the wall" rather than to mean a position at all (§12, the `progress` trap). Pivoting
-out of a scrape starts from the cell centre because that is where the player actually is.
+The one exception is escaping a scrape, where `progress` is pinned to the **wall face** to
+mean "hard against the wall" rather than to mean a position at all (§12, the `progress`
+trap). Pivoting out of a scrape starts from the cell centre because that is where the player
+actually is. The pin was `1.0` under the old centre-to-centre phase, which was a value a
+whole cell forward; centred, the face is just under `+0.5` and so is already a sane position
+rather than one `world_position()` has to rescue.
 
 **That reset has to happen on both escape paths**, and for a long time it only happened on
 one. A turn pressed *while already scraping* went through `request_turn`'s immediate path,
-which cleared `scraping` but left `progress` at 1.0 — so the pivot interpolated that 1.0
-down the newly-opened corridor and threw the marker **a full cell forward in a single
-frame**, landing it hard against the next boundary. That is the "I turn and I'm suddenly at
+which cleared `scraping` but left `progress` at the wall pin — so the pivot interpolated that
+pin down the newly-opened corridor and threw the marker **a full cell forward in a single
+frame**, landing it hard against the next boundary. (The pin was literally `1.0` at the time,
+under the old centre-to-centre phase, which is what made the jump a whole cell.) That is the "I turn and I'm suddenly at
 the front of the cell" bug, and it fired on the majority of measured turns, because pressing
 a direction while brushing a wall is ordinary play, not an edge case.
 
@@ -325,25 +381,55 @@ what it was designed for: an input aimed at an opening that **is not there**.
 The player has a **barrier**: a small regenerating pool that absorbs wall contact.
 
 - Moving into a wall **drains the barrier continuously**.
-- **Base capacity: 0.25 seconds** of sustained wall contact. It was 0.5, and that was
-  long enough that an unupgraded racer could sit against a wall for most of a cell and
-  still leave clean — so the question the barrier exists to ask, *can I afford this
-  brush?*, had an easy yes at rank 0. Halving it makes a brush a real commitment from
-  maze 1 onward.
+- **Base capacity: 0.125 seconds** of sustained wall contact — halved from 0.25, which
+  was itself halved from 0.5. An eighth of a second is about **eight frames at 60fps**:
+  enough to clip a corner and leave, nowhere near enough to ride a wall. Together with
+  the per-contact HP charge above, wall contact is now a cost you pay and never a pool
+  you spend — the barrier has become a **reflex window** rather than a resource.
 
-  **`BARRIER_PER_RANK` deliberately stays at 0.25**, so a single rank now *doubles* the
-  pool rather than adding half again. That turns Barrier Capacity from a rounding error
-  into a genuine early pick, which is §11.5's test: the rank changes whether the player
-  brushes walls at all, not merely how long they may.
+  **`BARRIER_PER_RANK` stays at 0.25**, so a rank is now worth *twice* the base and a
+  single one **triples** the pool. That sharpens the §11.5 argument rather than breaking
+  it: the first rank of Barrier Capacity is the difference between no room and real room,
+  which is a decision about how you drive rather than a bigger number.
 - **Regenerates** when not in contact — base **0.15/sec**, so a full refill takes ~3.3s of
   clean travel. It was 0.25, and that was too generous: the pool was effectively always full
   by the next corridor, so the interesting question — *can I afford this brush?* — never got
   asked, and consecutive scrapes cost nothing extra. At 0.15 scrapes **compound**, which is
   what makes Barrier Regen a line worth taking rather than a rounding error.
-- **If the player turns out of the wall before the barrier empties, nothing happens.** No
-  damage, no speed loss, no crash. This is the skill expression: a good player brushes
-  walls constantly and never pays for it.
-- **If the barrier empties, the player crashes** (§5.4).
+- **Touching a wall costs 1 HP, once, the moment contact begins** (`SCRAPE_DAMAGE`).
+  Escaping clean and riding it to the last frame cost the same single point.
+- **If the player turns out of the wall before the barrier empties, that 1 HP is the whole
+  price.** No speed loss, no park, no crash — the racer keeps driving, a point down.
+- **If the barrier empties, the player crashes** (§5.4), and the crash damage lands *on top*
+  of the contact charge already paid.
+
+**Contact is not a crash, and the separation is the point.** A crash parks the racer, resets
+speed to the floor, fires `crashed`, and brings the pull-back camera and the held recovery
+prompt with it. Contact does none of that — it moves HP and nothing else. So the barrier no
+longer decides *whether* wall contact costs anything; it decides whether the cost stays one
+point or escalates into the full per-maze crash damage.
+
+**This reverses the original rule that a clean escape was free**, which §11.4 built the skill
+ceiling on. It is a design change, not a tuning tweak, and it is recorded plainly because the
+surrounding text was written against the old promise: anything reading "a good player brushes
+walls constantly and never pays for it" predates this decision.
+
+**Charged once per contact, not per second.** Contact *duration* is precisely what the barrier
+already measures, so billing HP for it too would put two systems on the same timer charging
+for the same thing. Per-second would also make HP fractional on a bar the player reads as
+whole points. Leaving the wall and touching it again is a second contact and charges again —
+`RulesTest` asserts that directly, because "once per contact" is otherwise indistinguishable
+from "once ever" in a test that only ever touches one wall.
+
+**It is flat and does not scale per maze.** The crash damage is the escalation lever (§5.5); a
+contact charge that climbed with it would make late-maze brushing punishing enough that the
+question the barrier exists to ask — *can I afford this brush?* — collapses back to a flat no.
+
+**A scrape can kill.** Death is checked on the contact charge, so a player at 1 HP dies to a
+wall touch. Without that, HP would stop meaning anything at exactly the moment it matters most
+— a run could survive indefinitely on contact alone. It reads as its own event: `died` fires
+without `crashed`, so the crash framing never appears for a death the player did not crash
+into.
 
 The barrier bar is the most important HUD element. It is the difference between "I am
 cutting it fine" and "I am about to lose several seconds."
@@ -417,9 +503,35 @@ meaningfully cheaper than reversing — the decision the 180 exists to create.
 - The barrier begins regenerating immediately on un-stick.
 ### 5.5 HP
 
-- **100 HP**, and **death is ON**: HP reaching 0 ends the run.
+- **50 HP**, and **death is ON**: HP reaching 0 ends the run.
 - **Wall damage scales per maze: 3, 5, 7, 9, 11** (`WALL_DAMAGE` + `WALL_DAMAGE_PER_MAZE`
-  × maze). Against 100 HP that is ~33 crashes on maze 1 and ~9 on maze 5, measured.
+  × maze). Against 50 HP that is 17 crashes on maze 1 and 5 on maze 5:
+
+  | | Maze 1 | Maze 2 | Maze 3 | Maze 4 | Maze 5 |
+  |---|---|---|---|---|---|
+  | Damage per crash | 3 | 5 | 7 | 9 | 11 |
+  | Crashes to die | 17 | 10 | 8 | 6 | **5** |
+
+  **The pool has come down twice — 100 → 75 → 50 — on the same argument each time**, which
+  is the honest record that it had not gone far enough. HP has to be a number the player
+  *watches*, and a pool absorbing twenty-five crashes on maze 1 stayed decorative through
+  the whole first half of a run — the same failure §5.5 records for the *flat* damage rate,
+  surviving into the scaled one at successively smaller sizes.
+
+  **The per-contact charge now sits underneath all of it**, and that is the real change at
+  50: fifty wall touches is a whole run's worth of HP, so the damage curve is no longer the
+  only thing draining the pool (§5.1).
+
+  **The damage curve deliberately did not move with it.** Rescaling damage to hold the crash
+  counts steady would have undone the change; maze 5 falling from 9 crashes to 6 and now to
+  5 *is* the point, not a side effect to be corrected. Cutting the pool rather than raising damage also
+  keeps the early mazes survivable while sharpening the late ones, because a fixed subtraction
+  against a smaller pool bites hardest where the subtraction is already largest.
+
+  **Repair Field gets stronger for free, and that is intended.** It heals a flat 0.6–2.0 HP
+  per second of clean travel, so against a smaller pool each rank restores a larger *share*
+  of it. The line that pays for driving clean between crashes should gain value exactly when
+  crashes get more expensive.
 
 **This reverses the original "no death in v1" call, deliberately, and it is a change of genre
 rather than a tuning tweak.** §8 said the timer was the *only* thing the player fights, and
@@ -954,7 +1066,7 @@ meta-progression (§10).
 | **Buffer Window** | +0.15 cells of turn buffer per rank | The pure quality-of-life line; makes sloppy input viable |
 | **Fast Turnaround** | Reduces 180° cost: −0.75x → −0.55x → −0.4x → −0.25x | Makes aggressive exploration and error recovery viable |
 | **Base Speed** | Raises the speed *floor* above 1.0x | Compounding — less time in the slow band after every crash |
-| **Barrier Capacity** | +0.25s of wall-contact grace per rank | Directly widens the skill-expression window |
+| **Barrier Capacity** | +0.25s of wall-contact grace per rank | Directly widens the skill-expression window. Against a 0.125s base a single rank **triples** the pool, so rank 1 is the biggest step in the tree |
 | **Barrier Regen** | Faster barrier refill | Pairs with capacity; matters most in tight twisty sections |
 | **Gate Compass** | Points toward the next gate | A soft directional hint — weaker than Path Indicator, but always on |
 | **Snap Turn** | Shortens the post-turn freeze: 0.10s → 0.075 → 0.055 → 0.04 | Buys back time, the currency of §8. Never removes the freeze — see below |
@@ -1379,6 +1491,8 @@ Points, banked per maze, multiplied by how much of that maze's time budget was l
 | Clean turn — barrier untouched | `60 × speed` |
 | Scraped turn — barrier drained and escaped | `24 × speed` (40%) |
 | Crash | **−1000** |
+| Re-entering a cell already driven this maze | **−100**, once per cell |
+| Travel or a turn on ground already driven | **nothing** — repeat ground pays 0% |
 | Maze complete | subtotal × time multiplier, banked |
 
 **Everything scales with speed**, which is what makes the §3 ramp pay off in the score rather
@@ -1391,6 +1505,105 @@ skill ceiling and says to protect it in tuning, so scoring it as a failure would
 expert texture into a penalty. At 40% a clean turn is clearly better, while a scrape still
 pays far more than the crash it avoided — brushing stays viable expert play rather than
 becoming a mistake.
+
+### Re-crossed ground earns nothing, and costs 100 once
+
+Two rules working as a pair, and only the first is the anti-exploit one.
+
+**Ground already driven this maze pays no points at all** — no travel income, no turn
+award. **This is the fix for a real exploit.** A player sat near the exit driving back and
+forth in one corridor and banked over a million points, and the time multiplier cannot stop
+them: it is applied at *bank* time and floors at 0.20x, so a player who declines to finish
+the maze never reaches that discipline, and a subtotal that grows forever beats any fixed
+floor.
+
+**The penalty was the wrong lever, and pricing was never going to work.** The rule used to
+be −250 charged on *every* re-entry, on the reasoning that charging once per cell leaves a
+loop "fully marked after one lap and free forever after". That reasoning is correct about
+the loop and wrong about what funds it: the thing paying for a farming lap is the **turn
+award**, at `60 × speed` — 360 a cell at 6x. A penalty has to out-price an award ten times
+its size, and it never actually did. Measured across lap counts, a farmer beat an honest run
+**at 250 too** (330,426 against 296,954 at 20 laps); closing it by penalty alone needed
+**350**, which would have made ordinary backtracking punishing to fix a problem ordinary
+backtracking never caused.
+
+Removing the income kills it at source. A farming lap earns nothing, so the loop stops being
+a pump and becomes pure elapsed time — and the time multiplier then does the work it was
+always meant to do. Measured, a farmer now loses ground **monotonically at every lap count**
+instead of peaking above an honest run.
+
+**It costs an honest player nothing.** An optimal router never re-enters a cell, so it earns
+precisely what it did before — verified, a full `RunTest` autopilot is unchanged at zero
+repeats. What it does cost is a genuinely lost player, who drives their recovery lap for time
+rather than points. That is the right way round, and it is the same statement §11.2 makes
+about bad routing being punished by distance and time.
+
+**A turn on repeat ground is still tallied, only unpaid.** The summary reports what the
+player did, and withholding the points must not also erase the record.
+
+**The penalty is now charged once per distinct cell, at 100.** With the earning rule doing
+the anti-farming work, this number is free to be what it should be: a moderate, legible cost
+for covering redundant ground. At 250-every-time it bled an ordinary run far too fast — a
+couple of dead ends and one wrong loop cost thousands of points for reading the maze
+imperfectly, which is what the maze is *for*. Measured on the wandering driver, the charge
+fell from 35,250 to 6,800.
+
+Once-per-cell is safe *because* the earning rule exists. It measures how much redundant
+ground a route covered, which is the honest thing to charge for; the objection to it — that a
+loop goes free after lap one — no longer bites, since lap two onward now earns nothing rather
+than being merely under-fined.
+
+**Both are flat, and neither scales with the Score Multiplier upgrade.** That line is a bonus
+on points *earned*; applying it to a penalty would make backtracking more expensive the more
+of it the player holds — an upgrade that punishes you for owning it. Same reasoning as the
+flat crash penalty.
+
+**Backtracking out of a dead end pays it too, with no exemption.** An exemption for "honest"
+mistakes would require the game to judge which mistakes are honest, and a farming loop would
+dress itself as one.
+
+The racer tracks visited cells **per maze, not per run** — a new maze is new ground by
+definition — and the record is written *before* `_on_enter_cell`'s early returns for gates
+and the exit. Those cells sit on the solve path, which is precisely the ground a looping
+player re-covers, so tracking them after the returns would have left the most farmable
+cells in the maze free.
+
+**The two flags are separate on purpose.** `cell_entered` carries `repeat` — true on *every*
+re-crossing, gating the earning — and `first_repeat`, true only the first time, charging the
+penalty. Collapsing them into one would force the two rules onto the same cadence, and they
+genuinely want different ones: earning is a property of each crossing, the penalty a property
+of the cell.
+
+> **A single sample of a curve says nothing about its maximum.** The old assertion modelled
+> **one** fixed lap count (60) and passed while the exploit was live, because a farmer's score
+> peaks early and then decays as the multiplier bites — 60 laps sat past the peak. The check
+> now sweeps lap counts from 1 to 400 and takes the worst. This is the §12 "did we get lucky"
+> trap wearing different clothes: the fixture was not random, it was just one point.
+
+**Measured against real play, not only against a model.** `RepeatProbe.gd` drives three
+styles over the same maze 1:
+
+| Style | Distinct cells | Cells charged | Penalty | Subtotal |
+|---|---|---|---|---|
+| Optimal router | 145 | **0** | 0 | +10,681 (finishes) |
+| Wanderer (random turns) | 135 | 68 | −6,800 | −16,793 |
+| Farmer (paces one corridor) | 9 | **9** | −900 | −823 |
+
+**The optimal router pays nothing at all** — a distance-field driver never re-crosses ground,
+so both rules are completely invisible to good play, and a full `RunTest` autopilot confirms
+it at zero repeats across all five mazes. The farmer covers **nine cells** and banks
+**zero**: its penalty is now trivial (−900), and what actually stops it is that ten thousand
+laps of those nine cells would earn nothing. That is the same behaviour that scored over a
+million points before this existed.
+
+Note the wanderer's charge against the old rule: **−6,800 where it used to be −35,250**. That
+5x drop is the point of the retune — an imperfectly-read maze should cost time and distance,
+not tens of thousands of points.
+
+`RulesTest` asserts the every-re-entry rule directly, and models a farming run that **must
+score below an honest one**. That assertion is what the existing monotonicity check could
+not give: every run it models *finishes its maze*, so all of them are disciplined by the
+multiplier, and the exploit lives entirely in refusing to be.
 
 **Crashes cost a flat 1000**, about 1.7% of a typical maze subtotal, ~14% across eight
 crashes. Deliberately flat rather than speed-scaled: a crash already resets speed to the
@@ -1472,6 +1685,74 @@ would reward wandering for exactly the reasons above.
 The time multiplier still applies, which means dying *slowly* scores worse than dying at the
 same point *quickly* — consistent with every other part of the system.
 
+## 8c. The End-of-Run Summary
+
+A full-screen breakdown at the end of every run, on **both** terminal paths — a cleared run
+and a death. Dying is when a player most wants to know what went wrong, so sending the
+breakdown only to winners would withhold it from the run that most needs explaining.
+
+It replaces a one-line HUD message that said nothing but the total.
+
+**It shows:** the final score; a per-maze table of subtotal, time, multiplier and banked
+score; run totals for time, clean turns, scraped turns, crashes and repeated cells — each
+penalty with the points it cost; and the finishing build, every line with its rank.
+
+**A full modal, unlike the gate screen.** §7 deliberately leaves the corridor visible behind
+an upgrade pick because the player is going straight back to it. A finished run is not going
+back, and this is the one screen in the game meant to be read slowly rather than glanced at
+under time pressure — so the world behind it is a distraction rather than context.
+
+**It recomputes nothing.** Every figure is read from `Score.maze_results`, the `Score`
+tallies and `Upgrades.ranks`. A summary that derived its own totals could disagree with the
+HUD the player was watching a second earlier, and the player would have no way to tell which
+was lying.
+
+**Repeated cells are shown with their cost, not just their count.** The penalty is new and
+invisible while driving — a player who loses 12,000 points to backtracking needs to be told
+that is what happened, or the score reads as arbitrary. This is why the penalty and the
+screen shipped together: a rule the player cannot see the effect of is a mystery, not a rule.
+
+**A partially-banked maze is marked with its percentage.** A death banks on gates taken
+(§8b), so an unmarked row would look like the maze merely scored badly rather than having
+been cut short.
+
+**Dismissing it reports to `Shell` rather than tearing the run down.** `Game` emits
+`run_dismissed` and `Shell` swaps back to the menu — the same shape as the trailer's
+`finished` signal, and for the same reason: owning the mode swap is `Shell`'s whole job, and
+a harness that loads `Game.tscn` bare simply never connects it.
+
+### Three things only a rendered frame caught
+
+`SceneTest` asserts the screen opens, banks correctly and reports back. None of that can see
+one Control drawn over another, so `SummaryShot.gd` exists for the same reason `TouchShot`
+does — and it found all three of these:
+
+- **The live HUD drew straight through it.** Speed, gates, the timer and the barrier bars
+  sat on top of the modal. Every one is a frozen number from a run that has *ended*, drawn
+  over the screen reporting what those numbers finally came to — two accounts of the same
+  run, one of them stale. The summary now hides what it covers and restores it on dismiss.
+- **The panel height was a hard-coded band, and it overran.** 660px fitted the death screen's
+  three maze rows and nine-line build *by luck*; a cleared run with five rows and a sixteen-
+  line build pushed the last row off the screen edge and *"press SPACE or ESC to continue"*
+  off entirely — so the best run in the game ended on a screen with no visible way out. This
+  is the §12 hard-coded-layout trap exactly, and the fix is the same: a `CenterContainer`
+  sizes the panel to its contents instead of a band guessed in advance.
+- **A green multiplier beside a maze that banked zero.** The dead maze showed subtotal
+  −13,060, a bright green x5.53 and a score of 0 — the row congratulating the player on the
+  worst maze of the run. The multiplier was correct on its own terms (the maze *was* quick);
+  it simply says nothing when there is nothing left to multiply. A maze that banked nothing
+  now reads dim: neither good nor a penalty, just spent.
+
+> The tool's own two shots came out **identical** at first. `_capture` ran in the same frame
+> that built the new screen, and `process_frame` fires before the UI is drawn — so the second
+> shot caught the first screen. Build on one frame, capture on the next. This is the same
+> trap `GateSpentShot` records for camera aiming, arriving through the UI instead.
+
+**The crash prompt has to be cleared, not faded.** It is a *held* message (§5.4), so a fatal
+crash leaves it on screen; `clear_held_message` releases it into the ordinary 1.6s fade,
+which would show through the modal for a third of a second. `HUD.clear_message` removes it
+outright.
+
 ### Implementation notes
 
 **`Score` is pure logic, like `Racer`** — node-free, renderer-free, headlessly testable
@@ -1539,6 +1820,97 @@ rendering and blur.
 
 Full spec in `docs/specs/trailer.md`. The design decisions worth keeping here:
 
+**The menu is painted art, not a live maze.** A background image and a logo, both in
+`art/`, over which the title screen draws its columns. The "no 3D behind the menu"
+rule still holds and for the unchanged reason — the trailer is the moving shop window,
+and rendering a maze behind the menu would pay for it twice — but a still image is not
+a live maze. It costs one texture and no simulation, so it buys the first impression
+without taking that trade.
+
+**The art has to be the game.** The background is a one-point-perspective neon corridor:
+cyan on the left, magenta on the right, a lit vanishing point, a reflective grid floor.
+That is a painted version of what the player is about to drive down, which is the only
+reason it is worth the legibility cost below. Generic sci-fi scenery would not have been.
+
+**One scrim over the art, and the columns keep their own.** The image is brightest at the
+vanishing point — dead centre, directly behind the button stack — so white button text
+needs the whole image dimmed before any UI lands on it. The per-column scrims stay on top
+of that. They were written when the art "was not written yet and must not be able to make
+either column unreadable", and the art existing is an argument for keeping them: it is
+bright in exactly the place both columns bracket.
+
+**Textures are loaded by path at run time, never `preload`ed.** `preload` resolves at
+*parse* time, so a missing file is a hard parse error that takes `MainMenu` down with it —
+and `ShellTest` and `MenuShot` both instantiate that class. Art that has not been dropped
+in yet would fail harnesses that have nothing to do with art. Guarded through
+`ResourceLoader.exists` first, so an expected absence does not put a red line in
+`logs/errors.log` either; that log is the primary feedback channel and stops being worth
+reading if it carries lines that are fine.
+
+**The text title is the fallback, and is live code.** With no logo file present the menu
+draws `MAZE RACER` as it always did. That is what every harness sees and what ships if the
+file ever goes missing — a menu with no title at all reads as a broken build.
+
+**A full-rect backdrop is identified by a group, not by its type.** `_place_left` moves
+every column child to the left anchor when the menu splits in two, and skipped the
+background by testing `is ColorRect` — a type standing in for an intent. A `TextureRect`
+is not a `ColorRect`, so the background art was dragged into the left column and cropped
+to it. `GROUP_BACKDROP` states the property directly: this node spans the screen. Anything
+added later says so for itself instead of needing the filter widened again.
+
+**`ShellTest` carried the same bug, and only real art could expose it.** Its
+single-column-fallback check walked the menu's children skipping `is ColorRect`, so once
+the backdrop became a `TextureRect` the test demanded a full-rect node be centred at 0.5
+and failed — reporting a layout regression that did not exist. It now skips by
+`GROUP_BACKDROP` too. Worth recording because the assertion and the code had drifted apart
+in *identical* ways: a type test used as an intent test is wrong in both places, and
+fixing only the code leaves the harness lying.
+
+**The logo ships from a source with a real alpha channel, and every attempt to key one
+from a flattened image was worse.** `art/logo.png` is trimmed and centred from a 2172px
+RGBA original — nothing is keyed, smoothed or reconstructed. Measured against the keyed
+attempts it replaced: **alpha-edge roughness 0.020, against 0.173 keyed from a checkerboard
+screenshot and 0.124 after rebuilding the halo synthetically.**
+
+**Why the keyed versions failed, recorded so nobody retries it.** Two flattened sources
+were tried — a wordmark on a transparency checkerboard, and one on flat white:
+
+- **On the checkerboard**, unpremultiplying dragged mid-grey into the partial-alpha band,
+  so the "glow" came out **dark grey (93, 91, 103) around a core of (184, 197, 233)**. A
+  halo darker than what it surrounds is not light; on black it read as grey wadding packed
+  around each letter, bridging the gaps so MAZE became one blob rather than four glyphs.
+- **On flat white**, the letter fills measured **252–255** — three levels off the plate —
+  because that rendering put nearly all its colour in a thin outline. Every key came out
+  either hollow or streaked, and the marks across the letters were the outline's
+  anti-aliasing, which was all the tonal information the file had.
+
+Both are the same lesson: **a flattened image has thrown away the alpha it is being asked
+to reproduce, and no threshold recovers information that is not there.** The fix is a
+better source, not a better key.
+
+**A logo is centred on its SOLID artwork, not on its glow.** The menu centres the logo's
+box, so whatever sits at the box's centre lines up with the button stack. The glow is
+asymmetric — the right dash spills further than the left — so cropping to total extent left
+the wordmark 10px off the buttons' centre line, which reads as sloppiness rather than as
+anything explicable. The asset is padded so the solid letters are centred; measured at 0px
+offset against the PLAY button.
+
+**`LOGO_SIZE` tracks the asset's aspect ratio.** `KEEP_ASPECT_CENTERED` fits the art inside
+the box, so a box shaped differently from the image leaves the logo undersized on one axis
+with dead space on the other. The box is a bound, not a claim about the image — but it has
+to be roughly the right shape, and it must be re-checked whenever the asset is replaced.
+
+**Panels were opened up once there was something behind them to see.** The leaderboard
+scrim (0.88) and the button faces (0.96) were chosen when the menu was a flat near-black
+fill, where opacity cost nothing. Against the art they read as slabs pasted over a
+photograph — the leaderboard in particular became a black rectangle with a hard vertical
+seam down the screen, so the panel stopped looking like part of the menu and started
+looking like a hole cut in it. At 0.62 and 0.72 the corridor carries through both and the
+text stays legible, because `COL_SCRIM` has already dimmed the whole image before either
+lands. **The rule is that the art is dimmed once, globally, and the panels then only need
+enough fill to separate text from it** — every panel dimming it again independently is
+what produced the slabs.
+
 **The trailer is seeded from a checked-in constant, never the clock.** It is the first
 thing a new player sees, so a reel that generated a fresh maze each time would sometimes
 open on a blank corridor and sometimes drive into a dead end on camera. This is the same
@@ -1569,6 +1941,81 @@ surface with the same distance-field autopilot `RunTest` uses, and nothing in `R
 it exists.
 
 ---
+
+## 9b-2. Leaderboards and Seeded Runs
+
+Three boards — **general** (any seed), **daily** and **monthly** (a maze everyone
+shares) — served from the same `pistachio-kitchen` Firebase project the cookbook uses.
+Full plan in `docs/plans/leaderboards.md`. The decisions worth keeping here:
+
+**The seed is derived from the date, never fetched.** `Tuning.seed_for_date()` hashes
+`YYYY-MM-DD`; every client computes the same number with no network call, so a daily run
+starts instantly and works offline — only the *board* needs Firebase. Publishing seeds from
+Firestore was rejected because it puts a round trip in front of the PLAY button, and a failed
+fetch would mean no daily run at all.
+
+**FNV-1a, not `String.hash()`.** The engine's hash is not contractually stable across Godot
+versions, and a seed that changed on an engine upgrade would silently redraw every past daily
+maze — making old scores incomparable with new ones on a board whose whole premise is that
+the maze is fixed.
+
+**Anonymous auth, not the cookbook's email/password.** Nobody makes an account before their
+first two-minute run, and a score that needs a signup to count is a score that gets thrown
+away. The name is asked for at the **end-of-run summary**, which is the one moment the player
+has a reason to care what their score is filed under. The cost — clearing browser storage
+loses the identity, with no recovery — is real and accepted.
+
+**Cheating: rules reject the impossible, and nothing pretends to do more.** A static site
+cannot stop someone editing the page. Firestore rules bound the score, the time, the maze
+count and the board; the document ID is pinned to `uid_board_seed` on the shared boards, so a
+player holds **one entry per shared maze** and cannot flood a board by replaying it. Updates
+must be an *improvement*, so a worse replay never lowers a standing entry and an attacker who
+reached someone else's row still cannot vandalise it downward. Every score stores the **seed
+it was driven on**, which is what keeps a future replay-validation upgrade possible; it is
+deliberately not pretending to be one now.
+
+**Transport is `JavaScriptBridge` into `shell.html`**, the shape the audio unlock established
+(§12) — Godot has no Firebase SDK, and the REST API would mean hand-rolling token refresh.
+The JS side **cannot call back into Godot**, so every async result is parked in a slot and
+polled. Desktop has no bridge at all: the boards are simply empty there, and the game is
+otherwise identical.
+
+**Nothing in the simulation may read `Leaderboard`.** Same separation landmarks, music and
+settings have — the autoload is absent in every harness, and a dead network must never be
+what stops a run starting. The trailer is excluded from posting on `trailer_seed`, the flag
+that already suppresses the HUD banner and the loadout pick.
+
+### The menu is two columns
+
+Left: title and buttons. Right: the board. Behind: a background art piece, which is why the
+art carries **one scrim over the whole image** rather than each column boxing itself off —
+the art is bright at the vanishing point, directly behind the button stack.
+
+**The split is decided on WINDOW width, not viewport width, and that is not a detail.**
+`project.godot` sets `stretch/mode="canvas_items"`, so the viewport stays at 1600×900 whatever
+the window does — `get_viewport_rect().size.x` is *always* 1600, and a test against it can
+never fail. The phone shot came back showing a scaled-down desktop layout rather than the
+fallback, which reads exactly like the fallback being broken when it was in fact never
+reachable.
+
+**Aspect ratio was tried first and is simply the wrong signal.** A handset in landscape
+(844×390 = 2.16) is *wider* than a desktop 16:9 (1.78), so no threshold on aspect separates
+them at all. Physical width does: 844 against 1600.
+
+**Backdrop nodes are exempted by GROUP, not by class.** `_place_left` shifts every child into
+the left column, so anything spanning the screen must be excluded or the art slides off with
+the buttons. The original test was `c is ColorRect`, which stopped being sufficient the moment
+the background became a `TextureRect` too — a group says what those nodes *are* rather than
+what class they happen to be.
+
+Two collisions only a rendered frame caught: the **settings cog was drawn underneath the
+board's fourth tab**, having always lived in the top-right corner the panel now owns; and the
+panel was inset top and bottom, so a scrim that stopped short of both edges read as a floating
+card that had failed to size itself.
+
+`MenuShot.gd` is the instrument, and it shoots **three widths** — wide, narrow and phone —
+because the split is width-dependent and a single size proves nothing about the branch it does
+not take.
 
 ## 9c. Music
 
@@ -1815,6 +2262,9 @@ Refer back to these when a decision is unclear.
    on screen before it is demanded. The game is hard, never unfair.
 4. **The barrier is the skill ceiling.** Brushing walls without crashing is the expert-play
    texture. Protect it in tuning — it is what separates a good player from a cautious one.
+   **Amended:** contact is no longer free — every wall touch costs a flat 1 HP (§5.1). The
+   ceiling is now about how *cheaply* a good player brushes, not about brushing for nothing;
+   what the barrier still buys is the difference between one point and a full crash.
 5. **Upgrades should change decisions, not just numbers.** Path Indicator changes how you
    read junctions; Fast Turnaround changes whether you commit or reverse. Prefer upgrades
    that shift strategy over upgrades that shift stats.
@@ -2092,12 +2542,12 @@ Six harnesses, each answering a different question:
 
 | Harness | Question it answers |
 |---|---|
-| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, and the record of gates already taken. 293 assertions. |
-| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, and the gate marker names surviving a mesh rebuild. 109 assertions. |
+| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, and the date-derived daily and monthly seeds. 358 assertions. |
+| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, and the end-of-run summary on both the death and completion paths. 124 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, and the pads scale to a phone screen. 43 assertions. |
-| `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 21 assertions. |
-| `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 103 assertions. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline. 58 assertions. |
+| `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 22 assertions. |
+| `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 105 assertions. |
 
 `TrailerShot.gd` is the picture half of `TrailerTest` — it renders the reel and
 saves a frame per segment plus each gate moment, which is the only way to check
@@ -2126,6 +2576,13 @@ three or more, both over the whole grid and **along the canonical solve path** �
 is what the player actually drives through, since a maze can carry plenty of zigzags in its
 backwaters and still feel clean on the route. It is how `zigzag_keep` gets tuned.
 
+`RepeatProbe.gd` is not a test — it reports repeat-cell counts for an optimal, a wandering
+and a farming driver on the same maze, which is how the −250 penalty is checked against play
+rather than against a model. Its own farming driver reversed on a **frame** interval at
+first, which at the 1x start speed never left the opening cell and reported zero repeats —
+reading exactly like the penalty failing to fire when nothing had in fact been farmed. It
+paces by cells covered instead.
+
 `DeadEndProbe.gd` is not a test either — it reports dead-end density and one-cell-stub
 frequency per maze, which is how the two knobs in §6 get tuned without guessing.
 
@@ -2139,6 +2596,18 @@ shows the fade actually arriving.
 the pads in play, **at phone dimensions** (844x390), since every mobile size is derived
 from the short screen edge and a desktop-sized shot shows none of it. Pad layout is precisely what no headless harness can check, and it
 caught all three HUD collisions above.
+
+`MenuShot.gd` is the picture half of the two-column menu: the same screen at three widths,
+since the column split is width-dependent and one size cannot show the branch it does not
+take. It feeds the panel rows directly rather than reaching Firebase — an instrument that
+needed the network would fail whenever Jonah is offline — and its longest fake name sits at
+the 24-character limit the rules enforce, which is the case that would push the score column
+off the panel.
+
+`SummaryShot.gd` is the picture half of the end-of-run summary (§8c): one frame per terminal
+path, death and completion. The completion shot deliberately builds the **tallest** case — all
+five maze rows and a sixteen-line build including a legendary — because the short death screen
+fits any layout and proves nothing about the one that overruns.
 
 `Screenshot.gd` is not a test — it runs the real game with rendering and saves frames to
 `logs/`, which is how the visuals get checked without anyone opening the editor.
@@ -2213,6 +2682,38 @@ a rule needs the renderer, the rule is in the wrong place.
   `game.racer` once and loops is inspecting an orphan from maze 2 onward. This produced a
   test failure that looked exactly like an indicator bug and cost two wrong hypotheses —
   re-read both from `game` every frame.
+- **A node reference captured before `_process` is stale AFTER it** — the same trap as the
+  one below, but *within a single loop iteration*. SceneTest's sight check read
+  `game.racer` at the top of the frame, called `game._process()`, then compared the new
+  camera against that racer's marker. When the call finished a maze it built a new `Racer`
+  on a new grid, so the check measured a **333m sight line spanning two different mazes**
+  and reported it as the marker being hidden. It looked exactly like a camera bug, and the
+  camera was correct throughout — two wrong fixes went into the camera before the stale
+  reference was measured (`stale=true`, old cell (59,59) against new cell (0,0)).
+  **It fired on ~1 run in 5, on exactly one frame**, because it needs the maze to change on
+  the very frame sampled. Anything read before a `_process` must be re-read after it, or
+  compared only against values captured at the same instant.
+- **A test that waits on a `progress` value is a test that encodes the phase.** Recentring
+  `progress` on the cell centre turned `while r3.progress < 0.7:` into an unbounded loop,
+  because 0.7 is no longer reachable — and an unguarded wait on an impossible value is a
+  **hang, not a failing assertion**. The harness produced no output at all, which reads like
+  a parse error or a broken launcher and is neither. Every wait loop in a harness needs a
+  guard and a `check` that the guard did not fire; that turns "this can never happen" into a
+  named failure instead of silence.
+- **A test can pass on inherited state for years and only fail once an unrelated fix removes
+  it.** SceneTest's "driving into a wall crashes" never drove into a wall: `_run()` calls
+  `_on_exit_reached()` further up, which leaves `racer.finished` true, and `step()` returns
+  on its first line when finished — so the racer sat motionless for the whole 400-frame
+  budget. It passed because earlier checks happened to leave it already `PARKED` from a crash
+  they caused. The check asserted the previous test's side effect, under the name of the
+  crash path. Its own comment already warned about exactly this and still listed only the
+  input fields; `finished`, `dead` and the phase were the ones that mattered.
+- **A "last resort" that returns a number without checking it is not a last resort.** The
+  camera's sight-clearing pass fell back to `CAM_SIGHT_HARD_MIN` and returned it blind, so
+  when even that distance was blocked the marker stayed hidden — the exact rule the pass
+  exists to guarantee. It now walks down to `CAM_SIGHT_FLOOR` and returns the first distance
+  that genuinely clears. **A branch that promises an invariant has to verify it**, or it is
+  just a hopeful default.
 - **`progress` means two different things, and only one of them is a position.** Travel
   runs 0..1 between cell centres, but `_press_into_wall` pins it at 1.0 to mean "hard
   against the wall" — and interpolating *that* literally put the player a full cell

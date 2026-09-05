@@ -214,6 +214,7 @@ func _run() -> void:
 	_check_landmark_meshes(game)
 	_check_minimap_placement(game)
 	_check_gate_names_survive_a_rebuild()
+	_check_run_summary()
 
 	_finish()
 
@@ -425,7 +426,18 @@ func _check_camera_never_clips(game) -> void:
 		#
 		# Checked in this loop rather than its own, because a second 2000-frame
 		# autopilot doubles the harness runtime to assert over the same play.
-		var marker := racer.world_position()
+		# Re-read the racer from `game`: _process() may have finished a maze and
+		# built a NEW Racer on a NEW grid during the call above, and `racer` was
+		# captured before it. Comparing this frame's camera against the previous
+		# maze's marker measured a 333m sight line across two different grids and
+		# reported it as the marker being hidden -- a camera bug that did not
+		# exist. That is the stale-node trap in CLAUDE.md section 12, and this
+		# loop's own comment further up already warns about it for `maze`.
+		#
+		# It fired on ~1 run in 5, on exactly one frame, because it needs the
+		# maze to change on the very frame the check samples.
+		var current: Racer = game.racer
+		var marker := current.world_position()
 		marker.y = p.y
 		if game._sight_blocked(p, marker):
 			blind += 1
@@ -731,6 +743,21 @@ func _check_crash_camera(game) -> void:
 	if blocked == -1:
 		return
 
+	# Put the game back in RACING first, or none of the setup below matters.
+	#
+	# _run() calls _on_exit_reached() before reaching here, which leaves the
+	# phase in TRANSITION -- and _process() only steps the racer while RACING.
+	# So the racer sat motionless for the whole 400-frame budget and the
+	# transition then fired _start_maze(), which builds a BRAND NEW racer and
+	# orphaned the one this check had carefully positioned (the stale-node trap
+	# in CLAUDE.md section 12).
+	#
+	# It passed anyway, by luck: earlier checks happened to leave the racer
+	# already scraping a wall, so it crashed on frame 0 without needing to move.
+	# The check was asserting inherited state rather than the crash path it is
+	# named for -- the same failure its own comment below warns about.
+	game.phase = 0   # Game.Phase.RACING -- Game.gd has no class_name
+
 	racer.cell = target
 	racer.facing = blocked
 	racer.progress = 0.0
@@ -747,6 +774,33 @@ func _check_crash_camera(game) -> void:
 	racer.pending_buffer = 0.0
 	racer.scraping = false
 	racer.state = Racer.State.RUNNING
+	# Establish the barrier and speed too. Both are inherited otherwise, and the
+	# budget below has to be enough to cross half a cell AND drain the barrier --
+	# a racer arriving here at the speed floor with a full upgraded barrier is a
+	# very different test from one arriving at 6x with it empty.
+	racer.speed = 1.0
+	racer.barrier = racer.upgrades.barrier_capacity()
+	racer.freeze = 0.0
+	# And clear `finished`, which is the one that actually broke this check.
+	#
+	# step() returns on its very first line when the racer is finished or dead,
+	# so the racer sat motionless for the entire 400-frame budget: progress
+	# never moved, the barrier never drained, and nothing ever crashed. _run()
+	# calls _on_exit_reached() further up, which is what sets it.
+	#
+	# The check passed regardless until the racer stopped arriving here already
+	# pinned against a wall -- when it did, it was PARKED on frame 0 from a
+	# crash the earlier checks caused, and this one never exercised the crash
+	# path it is named for at all.
+	racer.finished = false
+	racer.dead = false
+	# The per-cell turn flags are inherited state too, and for the same reason:
+	# the autopilot in the check just above leaves whatever it last did armed.
+	# A stale entry lockout changes which openings this racer may take, which is
+	# exactly the kind of "passes depending on what ran before it" the comment
+	# above is about -- it simply listed the input fields and missed these.
+	racer._turned_in_cell = false
+	racer._entry_lockout = -1
 	# This check is about the CRASH path, and by now the harness has taken every
 	# upgrade line -- including Wall Smasher, which correctly breaks through a
 	# wall instead of crashing into it. Hold it on cooldown so the racer is
@@ -1056,7 +1110,7 @@ func _check_landmark_meshes(game) -> void:
 # one place section 12's height cap is deliberately suspended.
 func _check_flying_vision(game) -> void:
 	game.upgrades.take(Upgrades.Line.FLYING_VISION)
-	game.phase = 0
+	game.phase = 0   # Game.Phase.RACING -- Game.gd has no class_name
 	game.racer.state = Racer.State.RUNNING
 	game.racer.legendary_cooldown = 0.0
 	game._vision_time = 0.0
@@ -1135,6 +1189,105 @@ func _check_flying_vision(game) -> void:
 # No frames are processed between builds, which is the whole point: that is what
 # Game._start_maze does, and ticking the tree in between would let the deferred
 # frees land and pass against the broken code.
+# The end-of-run summary opens on BOTH terminal paths and lists what happened.
+#
+# On its own Game rather than the shared one: this drives to a terminal state,
+# and a harness that reuses one scene inherits the previous test's state
+# (section 12). Two of them, because death and completion are separate code
+# paths and a summary wired into only one would look correct from the other.
+func _check_run_summary() -> void:
+	# --- Death ---
+	var dead_game = load("res://scenes/Game.tscn").instantiate()
+	root.add_child(dead_game)
+	if dead_game._upgrade_screen._lines.size() > 0:
+		dead_game._on_upgrade_chosen(dead_game._upgrade_screen._lines[0])
+
+	for i in 60:
+		dead_game._process(0.016)
+
+	# Bank something first, so the table has a row to draw rather than being
+	# asserted empty -- an empty table would pass a broken row builder.
+	dead_game.score.add_travel(4.0, 3.0)
+	dead_game.score.advance_time(40.0)
+	dead_game.racer.gates_taken = 3
+	dead_game._on_died()
+
+	check("death opens the summary", dead_game._run_summary.visible)
+	check("death sets the dead phase", dead_game.phase == 5)
+	check("the summary has children when shown",
+		dead_game._run_summary.get_child_count() > 0)
+	check("a death banks the maze in progress",
+		dead_game.score.maze_results.size() == 1)
+	# Partial: the maze was banked on gates taken, not as a full clear.
+	if dead_game.score.maze_results.size() == 1:
+		check("a death banks partial progress",
+			float(dead_game.score.maze_results[0]["progress"]) < 1.0)
+
+	# It survives frames while up -- the modal is drawn over a still-processing
+	# Game, so a null in the summary would surface here rather than in front of
+	# a player.
+	for i in 30:
+		dead_game._process(0.016)
+	check("the summary survives frames", dead_game._run_summary.visible)
+
+	# Dismissing it reports back rather than tearing the run down: Shell owns
+	# the mode swap.
+	var rec := SummaryRecorder.new()
+	dead_game.run_dismissed.connect(rec.on_signal)
+	dead_game._on_summary_dismissed()
+	check("dismissing the summary hides it", not dead_game._run_summary.visible)
+	check("dismissing reports back to the shell", rec.count == 1)
+
+	# Removed and freed outright rather than queue_free'd: this harness finishes
+	# and tears the tree down before a deferred free would land, which leaks the
+	# whole 60x60 world and buries the result line in shutdown warnings.
+	root.remove_child(dead_game)
+	dead_game.free()
+
+	# --- Completion ---
+	var won_game = load("res://scenes/Game.tscn").instantiate()
+	root.add_child(won_game)
+	if won_game._upgrade_screen._lines.size() > 0:
+		won_game._on_upgrade_chosen(won_game._upgrade_screen._lines[0])
+	for i in 30:
+		won_game._process(0.016)
+
+	# Jump to the last maze so exit_reached ends the RUN rather than advancing.
+	won_game.maze_index = Tuning.MAZES.size() - 1
+	won_game.score.add_travel(4.0, 3.0)
+	won_game._on_exit_reached()
+
+	check("completing the last maze opens the summary",
+		won_game._run_summary.visible)
+	check("completion sets the complete phase", won_game.phase == 3)
+	check("a completed maze banks at full progress",
+		won_game.score.maze_results.size() > 0
+			and float(won_game.score.maze_results[-1]["progress"]) == 1.0)
+
+	root.remove_child(won_game)
+	won_game.free()
+
+	# The formatters are static and pure, so they are asserted directly rather
+	# than by scraping labels out of the built panel.
+	check("scores are thousands-separated",
+		RunSummary.format_score(1234567.0) == "1,234,567",
+		RunSummary.format_score(1234567.0))
+	check("a negative score keeps its sign",
+		RunSummary.format_score(-2500.0) == "-2,500",
+		RunSummary.format_score(-2500.0))
+	check("short scores are unpunctuated",
+		RunSummary.format_score(940.0) == "940")
+	check("times are minutes and seconds",
+		RunSummary.format_time(125.0) == "2:05", RunSummary.format_time(125.0))
+
+
+class SummaryRecorder extends RefCounted:
+	var count := 0
+
+	func on_signal() -> void:
+		count += 1
+
+
 func _check_gate_names_survive_a_rebuild() -> void:
 	var mesh := MazeMesh.new()
 	get_root().add_child(mesh)

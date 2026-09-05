@@ -339,6 +339,19 @@ func show_message(text: String, colour: Color = Color.WHITE, hold: bool = false)
 	_message_time = 1.6
 
 
+# Remove the message outright, with no fade.
+#
+# Distinct from clear_held_message, which releases a held message INTO the
+# ordinary fade -- right when a crash prompt is dismissed by the player, and
+# wrong under the end-of-run summary, where a fading line would show through the
+# modal for a third of a second before vanishing.
+func clear_message() -> void:
+	_held = false
+	_message_time = 0.0
+	_message.text = ""
+	_message.modulate.a = 0.0
+
+
 func clear_held_message() -> void:
 	if _held:
 		_held = false

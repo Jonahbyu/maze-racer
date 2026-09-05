@@ -67,7 +67,13 @@ func _build_menu() -> Node:
 # a game instantiated bare by a harness would behave differently from one
 # reached through the menu.
 func _build_game() -> Node:
-	return load("res://scenes/Game.tscn").instantiate()
+	var game: Node = load("res://scenes/Game.tscn").instantiate()
+	# Back to the menu when the player dismisses the end-of-run summary, the
+	# same shape as the trailer's finished signal. Game does not free itself:
+	# owning the mode swap is this node's whole job, and a harness that loads
+	# Game.tscn bare simply never connects this.
+	game.run_dismissed.connect(show_menu)
+	return game
 
 
 func _build_trailer() -> Node:
