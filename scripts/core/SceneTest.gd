@@ -207,6 +207,7 @@ func _run() -> void:
 	_check_flying_vision(game)
 	_check_wall_winding()
 	_check_path_indicator(game)
+	_check_trail_floor(game)
 	_check_dead_end_decoration(game)
 	_check_camera_never_clips(game)
 	_check_crash_camera(game)
@@ -358,6 +359,65 @@ func _strip_is_in_a_gap(maze: Maze, cell: Vector2i, strip: Node3D) -> bool:
 	var span: Vector3 = strip.transform.basis.x.normalized()
 	var along := Vector3(float(v.x), 0.0, float(v.y)).normalized()
 	return absf(span.dot(along)) < 0.01
+
+
+# The trail floor's wiring.
+#
+# RulesTest owns whether the RECORD is right; this owns whether anything is
+# connected to it. The failure it catches is a floor whose shader never receives
+# its texture -- which renders as an ordinary floor, looks entirely correct, and
+# is indistinguishable by eye from a player who simply has not driven anywhere.
+func _check_trail_floor(game) -> void:
+	var mesh: MazeMesh = game._mesh
+	check("the floor has a trail image", mesh.trail_image != null)
+	check("the floor has a trail texture", mesh.trail_texture != null)
+	if mesh.trail_image == null:
+		return
+
+	# Sized to the GRID, not to a constant. A texture sized off a literal would
+	# be right for maze 1 and wrong for every maze after it -- the same failure
+	# a test that restates a tuning number has (CLAUDE.md section 12).
+	check("the trail image is grid-width",
+		mesh.trail_image.get_width() == game.maze.width,
+		"got %d, expected %d" % [mesh.trail_image.get_width(), game.maze.width])
+	check("the trail image is grid-height",
+		mesh.trail_image.get_height() == game.maze.height,
+		"got %d, expected %d" % [mesh.trail_image.get_height(), game.maze.height])
+
+	# With the line untaken, driving must leave the floor untouched. The record
+	# fills up regardless, so this is what proves the upgrade gates the DRAWING
+	# rather than the recording.
+	game.upgrades.ranks[Upgrades.Line.TRAIL_MEMORY] = 0
+	var cell_before: Vector2i = game.racer.cell
+	var before: float = mesh.trail_image.get_pixel(cell_before.x, cell_before.y).r
+	for i in 30:
+		game._process(1.0 / 60.0)
+	# Re-read the mesh and racer AFTER the loop: _process can finish a maze and
+	# build a new Racer on a new grid with a new trail image, and a handle taken
+	# before it is then an orphan (CLAUDE.md section 12, the stale-reference
+	# trap -- it fired on ~1 run in 5 on exactly one frame).
+	var mesh2: MazeMesh = game._mesh
+	var after := before
+	if mesh2 == mesh and mesh2.trail_image != null:
+		after = mesh2.trail_image.get_pixel(cell_before.x, cell_before.y).r
+	check("an untaken line paints nothing", absf(after - before) < 0.01,
+		"got %f, expected %f" % [after, before])
+
+	# Take the line and ground already driven lights up, WITHOUT the racer
+	# having to cover it again -- the record was kept all along.
+	game.upgrades.ranks[Upgrades.Line.TRAIL_MEMORY] = 1
+	game._process(1.0 / 60.0)
+
+	var mesh3: MazeMesh = game._mesh
+	var cell: Vector2i = game.racer.cell
+	var lit: float = mesh3.trail_image.get_pixel(cell.x, cell.y).r
+	check("holding the line lights driven ground", lit > TrailFloor.NEUTRAL + 0.01,
+		"got %f" % lit)
+
+	# Leave the line where the rest of the harness expects it. A check that
+	# hands the next one an unexpected build is the inherited-state trap section
+	# 12 records -- SceneTest runs its checks in sequence against one Game.
+	game.upgrades.ranks[Upgrades.Line.TRAIL_MEMORY] = 0
 
 
 # The third-person camera must never end up inside a wall or outside the maze.
