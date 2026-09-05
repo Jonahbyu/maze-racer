@@ -1076,6 +1076,7 @@ meta-progression (§10).
 | **Golden Trail** | On a timer, a gold streak runs the whole route to the **next uncollected gate**, at 2x player speed, lingering 2s | Periodic, not continuous. Rank sets the interval; reach is a fixed duration times your speed |
 | **Platinum Trail** | The same in silver, running the shortest route to the **exit** — but only after **5 gates** are banked | The "finish fast" line to Golden's "collect your upgrades". The two never draw at once |
 | **Wall Armor** | Reduces crash HP damage by 1 per rank | Now load-bearing: death is on and wall damage scales per maze (§5.5). Subtracts *after* the per-maze scaling, so a rank is the same flat point everywhere |
+| **Trail Memory** | Ground you have driven is tinted on the floor and the minimap — lit on the first pass, darker with every re-crossing. Remembered for 1:00 / 1:30 / 2:00 / 2:30 / 3:00 / the rest of the maze | Six ranks. Answers "have I been here", never "which way" — the §6 line, and the only *paid* line sitting on it |
 | **Cornering** | Cuts the per-turn cost: 0.03x → 0.024 → 0.018 → 0.012 | Moves the §5.3 equilibrium directly, so it changes *routing*, not a stat — a Cornering build affords turn-heavy routes that would bleed an unupgraded racer dry. Never reaches zero |
 | **Expiry Grace** | Shrinks the expired-input penalty: 0.5x → 0.38 → 0.26 → 0.15 | Pairs with Buffer Window into a real "press early, press often" build. Never zero — an expired press must always mean something |
 | **Repair Field** | Restores 0.6 / 1.2 / 2.0 HP per second of **clean** travel | The answer to scaling wall damage. Pays for the same thing the speed ramp does (§3) and cannot be farmed: no regen while parked or scraping |
@@ -1093,6 +1094,139 @@ out.** The hand-written strings had drifted badly — they still advertised "1.5
 game had not charged for a long time. A description that restates a tuning value is the same
 transcription trap §12 flags for tests, and it is worse here because the player reads it and
 makes a decision on it.
+
+### Trail Memory paints where you have been
+
+**Ground the player has driven is tinted, on the maze floor and on the minimap.** A cell
+driven once lifts *above* the palette floor; every re-crossing takes it down, past the base
+floor into shadow. Fresh ground is dark, ground you know glows, ground you have flogged is
+burnt out.
+
+**It answers "have I been here", never "which way"** — the same line landmarks (§6), spent
+gate markers (§7) and the rear-view mirror (§12) sit on. Everything it shows is ground the
+player has already covered, so it adds **memory**, not routing, and cannot cannibalise Path
+Indicator, Gate Compass or Golden Trail. It is the only *paid* line on that side of the
+divide, which makes it the strongest statement of the position rather than a departure.
+
+**The lit-then-darkening shape is not the same as "darker every visit"**, and the difference
+is forced by the palettes. Every maze's floor sits under 0.08 — a strictly monotonic dimming
+has nowhere to go, so the first few visits would be indistinguishable from each other and
+from untrodden ground. Lifting on the first visit gives the scale somewhere to start, and it
+puts the brightest reading on the most useful fact: *this is ground you have seen once*.
+
+**The ranks are a memory DURATION, which is the one place this deliberately departs from
+§4.** The buffer is measured in cells precisely so forgiveness does not grow with speed. This
+is not forgiveness, it is memory — and "the last minute of driving" is the thing a player
+actually wants to hold. It does mean the trail covers more ground at 8x, which is correct: at
+8x you have genuinely driven more ground in that minute. Sized against the 180s maze budget
+(§8b), rank 1 at 60s is a third of a maze — enough to recognise a loop you just closed, not
+enough to map the maze.
+
+**A lapsing cell fades over 3s rather than snapping off.** Cells reach their deadlines
+individually, so a hard cutoff would blink them out one at a time, which reads as a rendering
+fault rather than as memory. With a fade the tail visibly retreats, and ranking up is
+*watching the tail stretch* rather than something only verifiable by counting.
+
+**The count expires with the cell**, so a lapsed cell reads as never driven — which is what
+makes the top rank a difference in what is **known** rather than only in what is drawn.
+
+**The record is kept whether or not the line is held.** The upgrade gates the *drawing*. A
+player who takes it at gate 4 lights up ground they have demonstrably already covered, where
+gating the recording would hand them a blank trail through a maze they have half-driven — the
+opposite of memory.
+
+**It is a separate record from `Racer.visited`**, which looks like it covers the same ground
+and does not. That dictionary holds a bool — "has this cell been re-entered" — and exists to
+charge the §8b repeat-ground penalty once per cell. Widening it to carry counts and timestamps
+would put a display feature inside a load-bearing scoring rule.
+
+**The clock is the racer's own accumulated driving time, not a wall clock**, so the trail
+stops ageing while the game is paused or a card screen is open. A memory that lapsed during an
+upgrade pick would punish the player for reading their cards. It advances *before* the parked
+early-return, because a parked racer is still sitting in the world watching their trail.
+
+#### The floor is a shader over a per-cell texture
+
+The floor is one `PlaneMesh`, and per-cell shading needs machinery it did not have. It reads
+an `ImageTexture` holding **one texel per cell**, so lighting a cell is a single pixel write —
+O(1) at any maze size, with no extra draw call.
+
+**The two obvious alternatives are traps this project has already paid for.** Rebuilding a
+trail mesh is the `GoldenTrail` failure in §12 exactly — that ribbon cost 23ms a frame and
+looked like a hang, and a maxed trail at maze 5 covers thousands of cells. A pooled set of
+quads near the player (the `PathIndicator` pattern) works for three strips at one junction,
+caps how much trail can exist, and pops as the pool re-assigns.
+
+**The texture stores a signed value packed around 0.5** — above lifts, below darkens — which
+is what keeps it single-channel and 8-bit. `FORMAT_R8` was suspected of not round-tripping
+through `Image.set_pixel`; it was measured against a `FORMAT_RGBA8` control and the two are
+byte-identical, so the deviation is plain 8-bit quantisation and R8 stands. **Diagnose that
+class of fault by direct read-back, never by looking at the floor** — a floor rendering
+correctly at neutral is exactly what a failed write looks like.
+
+**The upload is once per frame, not once per cell.** `ImageTexture.update` re-sends the whole
+image; doing that per changed cell would be hundreds of uploads a frame on a busy trail.
+
+**The shader is written in code and kept WebGL2-safe**, since the web build runs
+`gl_compatibility` while desktop runs Forward+ (§12). The cell coordinate is derived in the
+**vertex** stage: Godot 4's fragment `VERTEX` is *view* space, so deriving a world position
+there is easy to get subtly wrong, and the floor is a flat axis-aligned plane the rasteriser
+interpolates exactly. Sampled `filter_nearest` — a cell is a hard square of memory, and linear
+filtering would bleed the tint half a cell past the walls it stops at.
+
+**The floor plane's half-cell offset and the shader's `origin_offset` cancel exactly.** The
+`PlaneMesh` is centred, so it sits half a cell short of half the full extent; the shader adds
+that same half cell back before dividing by `CELL_SIZE`. Verified at cells 0, 1, 30 and 59 —
+`floor(cell_uv)` equals the cell index at both edges and the centre of each. Change one
+without the other and the tint lands half a cell from the cells it represents.
+
+> **A shader that fails to compile renders a plausible floor, and a clean run appends nothing
+> to `logs/errors.log`** — so absence of errors is weak evidence. Confirm compilation
+> *positively* by enumerating the material's uniforms; Godot populates that list only on a
+> successful parse. And note `launch.ps1 -Quit N` boots `Main.tscn`, the **Shell/menu**, where
+> `_build_floor` never runs — it cannot verify floor work at all.
+
+**Only a rendered frame caught the tuning, and every headless assertion was green while it was
+wrong.** The first frames measured driven ground at **3.2x the untrodden floor** (237 against
+74), which read as a white slab dropped into the corridor rather than as the same floor lit —
+worst on Ember and The Vault, where a cold cyan patch sat inside a warm palette and overrode
+the per-maze identity §8 exists to establish. **The grid lines inverted**: dark seams on light
+ground instead of bright marks on dark, which breaks the timing contract (§11.3) exactly where
+the player reads it, and the near-white player marker was nearly lost against the floor it
+sits on (§12's hard rule).
+
+**The fault was the lift, not the darkening** — the natural suspect and the wrong one. The
+positive branch multiplied albedo by `1 + signed*2.4` *on top of* the `TRAIL_COL_MIX` hue
+push, so rank-1 ground was paying twice. At 0.8 lit ground sits at 1.80x. Separately the
+darkening end was too shallow to see at all (visits 4 and 5 reached 14% and 25%), so the tint
+table now runs to 0.0 and the negative branch to 0.9: the curve descends monotonically from
+1.80x through **1.03x at visit 3** — the crossover between lit and burnt — down to 0.62x.
+
+**The normalisation is derived from `TRAIL_TINT_BY_VISITS` rather than transcribed.** It maps
+the lit rank onto the texture's +1.0 ceiling, and it began life as a hand-written `2.4` — a
+copy of `TRAIL_TINT_BY_VISITS[1] - 1.0` that would have gone silently wrong the moment the
+table was retuned. The same transcription trap §12 records for tests, in tuning clothes.
+
+**`TRAIL_COL_MIX` stays well under 1.0 and is the lever to reach for first** if a future
+palette makes the trail compete: the grid lines are the timing contract and must stay the
+dominant marking on the floor.
+
+**On the minimap the trail draws beneath every other cell state.** The exit, live gates and
+spent gates all override it — those answer "where am I going" and "what have I opened", worth
+more at a glance than "have I been here", and a gate whose square went grey with re-crossings
+would be a gate the player could no longer find. **The map's trail colours are brighter than
+the floor's**, deliberately, exactly as `COL_GATE_SPENT` is: a map cell is a handful of pixels
+on an already-dark disc where the floor is a large surface under fog and a headlight. Matching
+the hue is what makes them read as the same thing. The map needed no retuning when the floor
+did.
+
+`RulesTest` asserts the record and asserts the **separation** directly, driving two racers on
+one seed with the line maxed and untaken and requiring they never diverge — the failure hardest
+to notice, since the trail hangs off the `Racer` and is *reachable* from every movement rule
+even though none may read it (the same trap landmarks have, §6). `SceneTest` asserts the floor
+is wired to the record, since a shader that never receives its texture renders a perfectly
+plausible plain floor. `TrailMemoryShot.gd` is the picture half — **not** `TrailShot.gd`,
+which is the Golden/Platinum instrument.
 
 ### Path Indicator is a strip on the floor, across the gap
 
@@ -2888,8 +3022,8 @@ Six harnesses, each answering a different question:
 
 | Harness | Question it answers |
 |---|---|
-| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely. 421 assertions. |
-| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths. 170 assertions. |
+| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer. 455 assertions. |
+| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording. 176 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
 | `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, and the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed. 69 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 22 assertions. |
@@ -2992,6 +3126,15 @@ timer, and that is the whole point of the tool — a box that never updated woul
 Shooting either side of a crossing is the only frame pair that shows the highlight
 actually move. It caught both the count label reaching into the mirror and the cardinal
 letter being too faint to read.
+
+`TrailMemoryShot.gd` is the picture half of Trail Memory (§7): two frames per maze, one down
+a stretch driven once and one over ground crossed four times. It **drives a loop** rather than
+shooting on a timer, for the reason `PaletteShot` seeks a junction — an optimal router never
+re-crosses anything, so a timed shot shows a uniform trail and cannot tell the darkening rule
+from a trail that has no darkening rule at all. It paces by **cells covered, never frames**,
+the lesson `RepeatProbe` records. Not to be confused with `TrailShot.gd`, which is the
+Golden/Platinum instrument. It caught the over-bright first tuning that every headless
+assertion passed.
 
 `RearViewShot.gd` is the picture half of the rear-view mirror (§12): two frames per maze,
 one a cell or two **past a turn** and one at a junction. It seeks the corner rather than

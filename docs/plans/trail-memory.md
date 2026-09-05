@@ -950,15 +950,27 @@ func _build_floor() -> void:
 
 A shader that fails to compile writes to the error log and renders the floor as a flat fallback — which looks like a palette bug rather than a shader one, so check the log rather than the picture.
 
-Run:
+**`-Quit 8` will NOT do this.** That boots `Main.tscn`, which is the Shell/menu —
+`_build_floor()` never runs, so the shader is never compiled. Use a tool that loads
+`Game.tscn` directly, and run it **with** rendering (the dummy DisplayServer cannot
+compile shaders):
+
 ```
-powershell -ExecutionPolicy Bypass -File tools\launch.ps1 -Quit 8
+powershell -ExecutionPolicy Bypass -File tools\launch.ps1 -Script res://scripts/core/Screenshot.gd
 ```
-Then:
-```bash
-cat logs/errors.log
+
+**A clean run appends nothing to `logs/errors.log`, so absence of errors is weak
+evidence.** Confirm compilation *positively* by enumerating the material's uniforms —
+Godot populates that list only on a successful parse, so a count of 0 is a failed
+shader wearing a plausible-looking floor:
+
+```gdscript
+var mat: ShaderMaterial = game._mesh._floor_material
+print(mat.shader.get_shader_uniform_list().size())  # must be 9
 ```
-Expected: no shader compilation errors. If the log names a line in the shader, fix it there — the most likely cause is a `gl_compatibility` restriction, since that renderer is stricter than Forward+.
+
+If the log names a line in the shader, fix it there — the most likely cause is a
+`gl_compatibility` restriction, since that renderer is stricter than Forward+.
 
 - [ ] **Step 4: Commit**
 
