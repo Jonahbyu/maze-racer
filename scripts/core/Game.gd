@@ -86,6 +86,11 @@ var _transition_time := 0.0
 
 # --- Legendaries (CLAUDE.md section 7) ---------------------------------------
 
+# Which turn key is held, -1 / 0 / +1. Overclock is direction-first and Deep
+# Breath extends the freeze only while a key is down, so both need held state
+# rather than the press events the rest of the input layer runs on.
+var _held_direction := 0
+
 # When the last reverse input arrived, for double-tap detection.
 var _last_reverse_time := -999.0
 
@@ -515,7 +520,7 @@ func _start_maze(index: int) -> void:
 	_music_for_maze(index)
 
 	var palette_index := int(config.get("palette", 0))
-	_mesh.build(maze, palette_index)
+	_mesh.build(maze, palette_index, upgrades.gate_height_scale())
 	# After build(), which is what creates the maze's trail image and texture --
 	# they are sized to the grid, so a handle taken before the build is a handle
 	# to the previous maze's texture.
@@ -701,7 +706,19 @@ func _update_quadrant_box() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not event.is_pressed() or event.is_echo():
+	if event.is_echo():
+		return
+
+	# Releases matter now: Overclock and Deep Breath both need to know a turn key
+	# is still DOWN, not merely that it was pressed once. Handled before the
+	# is_pressed() gate below, which every other branch still wants.
+	if not event.is_pressed():
+		if event.is_action("turn_left") and _held_direction == -1:
+			_set_held_direction(0)
+		elif event.is_action("turn_right") and _held_direction == 1:
+			_set_held_direction(0)
+		elif event.is_action("turn_around"):
+			_set_overclocking(false)
 		return
 
 	# Every branch here just forwards to the shared handler below, which owns
@@ -711,10 +728,19 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 
 	if event.is_action("turn_left"):
+		_set_held_direction(-1)
 		_on_turn_input(-1)
 	elif event.is_action("turn_right"):
+		_set_held_direction(1)
 		_on_turn_input(1)
 	elif event.is_action("turn_around"):
+		# Overclock is DIRECTION-FIRST: the direction must already be held when
+		# DOWN lands. A DOWN arriving alone is always a 180, which is what keeps a
+		# fourth meaning of the key from stealing the other three -- the reversal
+		# stays the default and the overclock is the deliberate gesture
+		# (CLAUDE.md section 7).
+		if _try_overclock():
+			return
 		_on_reverse_input()
 
 
@@ -762,6 +788,44 @@ func _on_reverse_input() -> void:
 			return
 
 	racer.request_reverse()
+
+
+# Held-key state, mirrored onto the racer. Kept in one place so the pads and the
+# keyboard cannot diverge on it, the same reason the four input methods above
+# exist rather than inline branches (CLAUDE.md section 9d).
+func _set_held_direction(direction: int) -> void:
+	_held_direction = direction
+	if racer != null:
+		racer.held_direction = direction
+	# Releasing the direction ends any overclock: the gesture is both keys, so it
+	# cannot outlive either half.
+	if direction == 0:
+		_set_overclocking(false)
+
+
+func _set_overclocking(on: bool) -> void:
+	if racer == null:
+		return
+	racer.overclocking = on
+
+
+# Overclock fires only when a direction is ALREADY held. Returns true if it
+# started, in which case the press must not also reverse.
+func _try_overclock() -> bool:
+	if phase != Phase.RACING or racer == null:
+		return false
+	if not upgrades.has_overclock() or _held_direction == 0:
+		return false
+	# Never while parked: DOWN on a parked racer means un-stick, and a recovery
+	# press must never be spent on something else (CLAUDE.md section 7).
+	if racer.state != Racer.State.RUNNING or racer.dead:
+		return false
+	if racer.hp <= Tuning.OVERCLOCK_MIN_HP:
+		return false
+
+	_set_overclocking(true)
+	_hud.show_message("OVERCLOCK", Color(1.0, 0.55, 0.35))
+	return true
 
 
 # The double-tap abilities. Wall Smasher is not here -- it fires on contact, not
@@ -1416,6 +1480,17 @@ func _on_upgrade_chosen(line: int) -> void:
 		_hud.show_message("%s  RANK %d" % [
 			upgrades.line_name(line).to_upper(), upgrades.rank(line)
 		], Color(0.2, 1.0, 0.5))
+
+		# Gate Size changes the markers already standing, so they are rescaled in
+		# place. Rebuilding the whole mesh instead would re-run the name collision
+		# section 12 records -- and would lose which gates are already cleared.
+		if line == Upgrades.Line.GATE_SIZE and _mesh != null:
+			_mesh.rescale_gates(upgrades.gate_height_scale())
+
+		# Second Wind's bank is sized by rank, so a rank taken mid-maze tops it up
+		# rather than leaving the player to wait for the next gate to feel it.
+		if line == Upgrades.Line.SECOND_WIND and racer != null:
+			racer.second_wind = upgrades.second_wind_charges()
 
 	_minimap.blurred = false
 	phase = Phase.RACING

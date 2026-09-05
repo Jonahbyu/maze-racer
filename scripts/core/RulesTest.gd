@@ -2259,6 +2259,7 @@ func _test_gates_cleared() -> void:
 	check_eq("a new maze starts with nothing cleared", r.gates_cleared.size(), 0)
 
 	_test_gate_index_is_placement()
+	_test_added_lines()
 
 
 # `gate_entered` must carry the gate's PLACEMENT in `maze.gates`, never a count
@@ -2982,3 +2983,283 @@ func _test_marker_heights() -> void:
 		"%.2f x WALL_HEIGHT" % Tuning.EXIT_MARKER_HEIGHT)
 
 
+# --- The six added lines (CLAUDE.md section 7) -------------------------------
+
+func _test_added_lines() -> void:
+	_test_momentum()
+	_test_second_wind()
+	_test_deep_breath()
+	_test_overclock()
+	_test_gate_footprint()
+	_test_extra_card()
+
+
+# Momentum raises the ramp, and CONTACT takes it away.
+#
+# The contact half is the whole design (section 7), and it is the half a test
+# has to state, because a line that merely made the ramp faster would pass any
+# assertion about speed climbing.
+func _test_momentum() -> void:
+	var u0 := Upgrades.new(1)
+	var u4 := Upgrades.new(1)
+	for i in 4:
+		u4.take(Upgrades.Line.MOMENTUM)
+
+	check_eq("momentum rank 4 is the cap", u4.rank(Upgrades.Line.MOMENTUM), 4)
+	check("momentum raises the ramp scale",
+		u4.momentum_ramp_scale() > u0.momentum_ramp_scale(),
+		"%.2f vs %.2f" % [u4.momentum_ramp_scale(), u0.momentum_ramp_scale()])
+	check_near("an untaken line does not scale the ramp", u0.momentum_ramp_scale(), 1.0)
+
+	# Driven side by side down the same corridor: the Momentum racer must end
+	# faster, since the ramp is the only thing separating them.
+	var m := _make_corridor(60)
+	var plain := _make_racer(m, u0)
+	var fast := _make_racer(m, u4)
+	for i in 300:
+		plain.step(1.0 / 60.0)
+		fast.step(1.0 / 60.0)
+	check("momentum outruns a bare build", fast.speed > plain.speed,
+		"%.2fx vs %.2fx" % [fast.speed, plain.speed])
+
+	# The bonus builds on clean travel...
+	check("the bonus builds while clean", fast.momentum_bonus > 0.9,
+		"%.2f" % fast.momentum_bonus)
+
+	# ...and CONTACT resets it. Not a crash: the point of the line is that a
+	# brush costs acceleration, which is what prices the section 11.4 ceiling.
+	# Driven until contact actually happens rather than for a fixed budget: at
+	# the 1x start speed a cell takes a full second, so a frame count guessed in
+	# advance measures whether the corridor was short enough, not the rule.
+	var walled := _make_corridor(6)
+	var r := _make_racer(walled, u4)
+	for i in 3000:
+		r.step(1.0 / 60.0)
+		if r.scrape_count > 0:
+			break
+	check("wall contact resets the bonus", r.momentum_bonus < 0.5,
+		"bonus %.2f scraping=%s" % [r.momentum_bonus, str(r.scraping)])
+	check("contact happened at all", r.scrape_count > 0)
+
+
+# Second Wind spends a banked charge instead of crashing.
+func _test_second_wind() -> void:
+	var u := Upgrades.new(1)
+	u.take(Upgrades.Line.SECOND_WIND)
+	check_eq("one rank banks one charge", u.second_wind_charges(), 1)
+
+	# A dead-end corridor: the racer drives into the far wall and would crash.
+	var m := _make_corridor(4)
+	var r := _make_racer(m, u)
+	check_eq("the bank starts full", r.second_wind, 1)
+
+	var hp_before := r.hp
+	for i in 600:
+		r.step(1.0 / 60.0)
+		if r.second_wind == 0:
+			break
+
+	check_eq("the charge was spent", r.second_wind, 0)
+	check_eq("the save avoided the crash", r.crash_count, 0)
+	# It does NOT refund the per-contact HP: section 5.1 bills that the moment
+	# contact begins, and a save that covered it too would make the whole wall
+	# touch free and delete the question the barrier exists to ask.
+	check("the contact charge was still paid", r.hp < hp_before,
+		"hp %d -> %d" % [hp_before, r.hp])
+
+	# With no charges the same drive crashes, which is what says the save was
+	# doing the work rather than the corridor being survivable.
+	var bare := _make_racer(_make_corridor(4), Upgrades.new(1))
+	for i in 600:
+		bare.step(1.0 / 60.0)
+		if bare.crash_count > 0:
+			break
+	check("without the line it crashes", bare.crash_count > 0)
+
+
+# Deep Breath extends the freeze while a direction is held, and must not let
+# the player farm speed by holding it (section 7).
+func _test_deep_breath() -> void:
+	var u := Upgrades.new(1)
+	for i in 3:
+		u.take(Upgrades.Line.DEEP_BREATH)
+	check("the line grants an extension", u.deep_breath_extension() > 0.0)
+	check_near("an untaken line grants none", Upgrades.new(1).deep_breath_extension(), 0.0)
+
+	var m := _make_maze(20, 20)
+
+	# Held: the freeze lasts longer.
+	var held := _make_racer(m, u)
+	held.held_direction = 1
+	held.freeze = u.turn_freeze()
+	var held_frames := 0
+	while held.freeze > 0.0 and held_frames < 600:
+		held.step(1.0 / 60.0)
+		held_frames += 1
+
+	var loose := _make_racer(m, u)
+	loose.held_direction = 0
+	loose.freeze = u.turn_freeze()
+	var loose_frames := 0
+	while loose.freeze > 0.0 and loose_frames < 600:
+		loose.step(1.0 / 60.0)
+		loose_frames += 1
+
+	check("holding a direction extends the freeze", held_frames > loose_frames,
+		"%d frames vs %d" % [held_frames, loose_frames])
+
+	# The extension must be the FULL allowance, not merely non-zero. "It lasted
+	# longer" is satisfied by a single extra frame, and the first implementation
+	# capped the grant by `delta` -- so it bought a 1/60s sliver per frame and the
+	# freeze barely lengthened at all, while every assertion about it still passed.
+	var held_seconds := float(held_frames) / 60.0
+	var loose_seconds := float(loose_frames) / 60.0
+	check_near("the extension is the whole allowance",
+		held_seconds - loose_seconds, u.deep_breath_extension(), 0.02)
+
+	# And the ramp is UNDONE for the extension, so the hold cannot be farmed.
+	# Without this, holding at every corner gains speed for free and a
+	# turn-heavy maze becomes a pump -- the extension would pay more than it
+	# costs. Compared per FRAME, since the held racer ran for more of them.
+	var held_gain := held.speed - Tuning.SPEED_FLOOR
+	var loose_gain := loose.speed - Tuning.SPEED_FLOOR
+	check("the extension does not pay speed", held_gain <= loose_gain + 0.001,
+		"held +%.4f over %d frames vs loose +%.4f over %d" % [
+			held_gain, held_frames, loose_gain, loose_frames])
+
+
+# Overclock burns HP for pace, and can never kill.
+func _test_overclock() -> void:
+	var u := Upgrades.new(1)
+	u.take(Upgrades.Line.OVERCLOCK)
+	check("the line burns HP", u.overclock_hp_per_sec() > 0.0)
+	check_near("an untaken line burns none", Upgrades.new(1).overclock_hp_per_sec(), 0.0)
+
+	var m := _make_corridor(400)
+	var r := _make_racer(m, u)
+	r.overclocking = true
+	var hp_before := r.hp
+	for i in 180:
+		r.step(1.0 / 60.0)
+	check("overclocking costs HP", r.hp < hp_before, "hp %d -> %d" % [hp_before, r.hp])
+
+	# It cannot kill: the burn stops at OVERCLOCK_MIN_HP. Dying to your own
+	# accelerator with no wall involved reads as a bug rather than as a cost.
+	var r2 := _make_racer(_make_corridor(4000), u)
+	r2.overclocking = true
+	r2.hp = 3
+	for i in 3000:
+		r2.step(1.0 / 60.0)
+		if r2.dead:
+			break
+	check("overclock never kills", not r2.dead, "hp %d" % r2.hp)
+	check("it floors at the minimum", r2.hp >= Tuning.OVERCLOCK_MIN_HP, "hp %d" % r2.hp)
+
+	# It adds to the travel RATE, not to `speed` -- so releasing it restores the
+	# previous pace rather than having to be unwound, and it never feeds back
+	# into the ramp, the turn costs or the floor, all of which read `speed`.
+	var plain := _make_racer(_make_corridor(400), u)
+	var burning := _make_racer(_make_corridor(400), u)
+	burning.overclocking = true
+	for i in 120:
+		plain.step(1.0 / 60.0)
+		burning.step(1.0 / 60.0)
+	check("overclock does not inflate `speed` itself",
+		absf(burning.speed - plain.speed) < 0.01,
+		"%.3f vs %.3f" % [burning.speed, plain.speed])
+	check("but it covers more ground",
+		burning.distance_travelled > plain.distance_travelled,
+		"%.1f vs %.1f" % [burning.distance_travelled, plain.distance_travelled])
+
+
+# Gate Size widens the collection footprint to a cardinal PLUS.
+func _test_gate_footprint() -> void:
+	var u0 := Upgrades.new(1)
+	var u2 := Upgrades.new(1)
+	for i in 2:
+		u2.take(Upgrades.Line.GATE_SIZE)
+
+	check_eq("unupgraded reach is the gate's own cell", u0.gate_reach(), 0)
+	check("rank 2 reaches further", u2.gate_reach() > 0)
+	check("rank 1 raises the marker", u2.gate_height_scale() > u0.gate_height_scale())
+
+	# A plus, never a box: the diagonal must NOT collect. A radius would fire
+	# through wall corners, collecting a gate through solid geometry -- which
+	# would make the gate the one object in the game that ignores the walls.
+	var m := _make_corridor(12)
+	var r := _make_racer(m, u2)
+	var gate := Vector2i(5, 0)
+	check("orthogonal neighbour is inside the footprint",
+		r._within_gate_footprint(Vector2i(6, 0), gate, 1))
+	check("the gate's own cell is inside",
+		r._within_gate_footprint(gate, gate, 1))
+	check("a DIAGONAL is outside the footprint",
+		not r._within_gate_footprint(Vector2i(6, 1), gate, 1))
+	check("beyond the reach is outside",
+		not r._within_gate_footprint(Vector2i(8, 0), gate, 1))
+	check("at reach 0 only the gate's own cell counts",
+		not r._within_gate_footprint(Vector2i(6, 0), gate, 0))
+
+	# Driven: a wide gate is collected from a neighbouring cell, and the cell
+	# recorded as cleared is the GATE's own -- never the one it was taken from,
+	# since the minimap and the spent marker both draw the gate itself.
+	var m2 := _make_corridor(12)
+	m2.gates = [gate] as Array[Vector2i]
+	var wide := _make_racer(m2, u2)
+	for i in 900:
+		wide.step(1.0 / 60.0)
+		if wide.gates_taken > 0:
+			break
+	check_eq("the wide gate was collected", wide.gates_taken, 1)
+	check("the GATE's cell is recorded, not the collecting cell",
+		wide.gates_cleared.has(gate),
+		str(wide.gates_cleared))
+
+	# Second Wind refills on a gate, which is what ties the resource to the
+	# pacing beat that already exists rather than to a new timer.
+	var uw := Upgrades.new(1)
+	uw.take(Upgrades.Line.SECOND_WIND)
+	var m3 := _make_corridor(12)
+	m3.gates = [gate] as Array[Vector2i]
+	var rw := _make_racer(m3, uw)
+	rw.second_wind = 0
+	for i in 900:
+		rw.step(1.0 / 60.0)
+		if rw.gates_taken > 0:
+			break
+	check_eq("a gate refills the Second Wind bank", rw.second_wind, 1)
+
+
+# Extra Card raises the number of cards a pick offers.
+func _test_extra_card() -> void:
+	var u := Upgrades.new(1)
+	check_eq("a bare build offers the base count",
+		u.cards_per_pick(), Tuning.CARDS_PER_GATE)
+	check_eq("roll_cards honours it", u.roll_cards().size(), Tuning.CARDS_PER_GATE)
+
+	u.take(Upgrades.Line.EXTRA_CARD)
+	check("rank 1 offers more", u.cards_per_pick() > Tuning.CARDS_PER_GATE,
+		"%d" % u.cards_per_pick())
+	check_eq("roll_cards follows the rank", u.roll_cards().size(), u.cards_per_pick())
+
+	u.take(Upgrades.Line.EXTRA_CARD)
+	check_eq("rank 2 offers more again", u.roll_cards().size(), u.cards_per_pick())
+	check("the count is capped", u.cards_per_pick() <= 5, "%d" % u.cards_per_pick())
+
+	# Never a duplicate line on one screen, at any count: the guarantee rule was
+	# widened for the higher counts and could have double-drawn a fresh line.
+	for trial in 40:
+		var t := Upgrades.new(trial + 1)
+		t.take(Upgrades.Line.EXTRA_CARD)
+		t.take(Upgrades.Line.EXTRA_CARD)
+		var offered := t.roll_cards()
+		var seen := {}
+		var dupes := 0
+		for line in offered:
+			if seen.has(line):
+				dupes += 1
+			seen[line] = true
+		if dupes > 0:
+			check_eq("no duplicate card on one screen", dupes, 0)
+			return
+	check("no duplicate card on one screen, over 40 rolls", true)

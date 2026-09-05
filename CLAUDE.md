@@ -1082,6 +1082,12 @@ meta-progression (§10).
 | **Repair Field** | Restores 0.6 / 1.2 / 2.0 HP per second of **clean** travel | The answer to scaling wall damage. Pays for the same thing the speed ramp does (§3) and cannot be farmed: no regen while parked or scraping |
 | **Quadrant** | A corner box dividing the maze 2×2 / 3×3 / 4×4, lighting the region you are in | Position, never route. Quadrant 1 holds the start, the highest holds the exit — so it says how far through you are without saying which way to turn |
 | **Compass** | A cardinal readout of the direction you face: N / E / S / W | Absolute, where Gate Compass is relative. Tells the truth — the exit is south-east, not north |
+| **Momentum** | +12% to the speed ramp rate per rank, **lost on any wall contact** and rebuilt over ~4s of clean travel | The first line on the ramp itself (§3). Prices the §11.4 skill ceiling in the game's own currency — and it moves the §5.3 equilibrium, so re-measure rather than re-derive |
+| **Second Wind** | Bank one crash save per rank, refilled by clearing a gate. Spent automatically when the barrier empties | The only non-attritional damage line: it saves the run from the crash that ends it, rather than making crashes cheaper. Does not refund the per-contact HP |
+| **Deep Breath** | Hold a direction through the turn freeze to *extend* it by up to 0.15 / 0.3 / 0.45s | The true opposite of Snap Turn. The ramp pauses during the extension, so what you spend is the clock — a deliberate exception to §2 |
+| **Overclock** | Hold a direction, then `↓`: burn 2.5 / 1.8 / 1.2 HP per second for +2x speed | The first line that *spends* a resource for pace. Direction-first so it can never steal the 180; floors at 1 HP so it cannot kill you |
+| **Gate Size** | Rank 1 raises the gate marker; ranks 2–3 widen its collection **footprint** to a 5-cell plus and beyond | Puts a decision in gate collection for the first time — a wide gate straddles a wall, so a parallel corridor can bank the pick |
+| **Extra Card** | 4 upgrade cards at every pick, then 5 | An investment: the cost is the pick itself, so it is only correct early. Cards narrow to fit rather than the row overflowing |
 
 **Four lines were deepened** to grow the tree against the pick count above: Buffer Window and
 Base Speed to 7 ranks, Barrier Capacity and Barrier Regen to 6. These were chosen because
@@ -1421,6 +1427,191 @@ be strong; taking either alone leaves a real gap.
 rather than shooting on a timer — the silver line appearing at all is the fixture, since
 Golden shows in every other frame of a run — and it reports `OVERLAP` on every shot,
 which must always be false.
+
+### Six lines added on the axes the tree had missed
+
+Sorted by the question each answers, the tree had four lines on *which way ahead*, four on
+*have I been here*, two on input forgiveness, four on the speed economy, four on the damage
+economy, one on score and three abilities. Two gaps stood out.
+
+**Nothing touched the speed ramp itself.** §3 is the game's central mechanic, and every
+"speed" line before this touched *costs and floors* — Cornering, Snap Turn, Fast Turnaround,
+Base Speed. The ramp rate, the number the whole difficulty curve hangs off, had no line on it.
+
+**Nothing was conditional.** Every line was a flat always-on number, so no card changed *when*
+you drive a certain way — only what a thing costs. An upgrade that only pays off if you drive
+differently is §11.5 at its strongest, and the tree had none outside the legendaries.
+
+| Line | Ranks | Effect |
+|---|---|---|
+| **Momentum** | 4 | +12% speed ramp rate per rank, **lost on any wall contact** and rebuilt over ~4s of clean travel |
+| **Second Wind** | 3 | Bank a crash save per rank, refilled by clearing a gate. Spent automatically when the barrier empties |
+| **Deep Breath** | 3 | Hold a direction through the turn freeze to *extend* it, up to +0.15/0.3/0.45s. The ramp pauses during the extension |
+| **Overclock** | 3 | Hold a direction, then press `↓`: burn HP for +2x speed. Ranks cut the burn 2.5 → 1.8 → 1.2 HP/sec |
+| **Gate Size** | 3 | Rank 1 raises the gate marker; ranks 2–3 widen its **footprint** to a 5-cell plus, then further |
+| **Extra Card** | 2 | 4 cards at every pick, then 5 |
+
+Eighteen ranks, taking the tree from 81 to 99 against 45 picks — so the §7 promise that a
+perfect run cannot max everything holds with more room than before, not less.
+
+#### Momentum puts a line on the ramp, and prices it in wall contact
+
+`SPEED_RAMP_PER_SEC` is 0.10. Each rank adds 12%, so rank 4 is 0.148/s — 5x arrives in ~27s
+rather than 40s.
+
+**The reset condition is the whole design, and it is CONTACT, not a crash.** Every other
+damage-adjacent line in the tree is attritional: soak more, heal faster, crash for less. This
+one makes the §11.4 skill ceiling pay in the currency §3 says the game is actually about. A
+brush already costs 1 HP and the barrier; now it costs your *acceleration* too, so the expert
+who drives genuinely untouched pulls away from the one who merely survives — which is exactly
+the separation §11.4 asks tuning to protect.
+
+**It rebuilds rather than being lost for the maze.** A single scrape killing the bonus for
+good would make the line a lottery on the first mistake, and §5.1's whole question — *can I
+afford this brush?* — needs an answer other than "never". The bonus climbs back over ~4s of
+clean travel, roughly the barrier's own refill time, so the two costs of a scrape run on the
+same clock.
+
+**This moves the §5.3 equilibrium, and it is the ramp side of that formula.** The settling
+point is `RAMP_PER_SEC / (turn_ratio × TURN_COST)` and is linear in the ramp, so the line
+lifts it directly. **Measured with `MomentumProbe`, on an optimal router with the ranks
+forced:**
+
+| Build | Maze 1 | Maze 5 |
+|---|---|---|
+| Momentum 0 (baseline) | 4.95x | 4.69x |
+| Momentum 1 | 5.27x | 5.08x |
+| Momentum 2 | 5.56x | 5.44x |
+| Momentum 3 | 5.85x | 5.80x |
+| **Momentum 4** | **6.12x** | **6.15x** |
+| Momentum 4 + Cornering 3 | 6.44x | **7.12x** |
+| Cornering 3 alone | 5.26x | — |
+
+**The prediction from the formula was 7.2x for Momentum alone, and it was wrong** — the line
+by itself reaches 6.15x, and only the *pair* with Cornering gets near 7.2x. That is exactly
+why §5.3 says re-derive rather than re-guess: the formula gives the shape, not the number.
+The cap stays comfortably out of reach at 7.12x, so it remains the safety rail §3 wants
+rather than a target.
+
+**Read the settling point off maze 5, not maze 1.** Maze 1 finishes in ~41s, which is before
+the ramp has settled, so its figures are what a build *reaches there* rather than the
+equilibrium itself. The two agree to within 0.05x at rank 4, which is what says the number is
+a settling point and not an artefact of run length.
+
+> **`MomentumProbe` must steer once per CELL, never once per frame.** Its first version
+> re-requested a turn every frame, which spams the buffer: the racer crashed 13 times and
+> died after 122 cells, and the probe duly reported an equilibrium of **1.00x** for every
+> build in the table — a flat, plausible-looking column that was measuring a dying racer
+> rather than a settling one. The tell was `turns/s` at 0.11 against the 0.62 a 5x racer
+> actually makes. This is `RepeatProbe`'s frame-versus-cell lesson (§12) arriving in a
+> different instrument.
+
+#### Second Wind is the insurance the tree had none of
+
+One charge per rank, refilled by clearing a gate — so the resource is tied to the pacing beat
+that already exists rather than to a new timer. When the barrier empties, a charge is consumed
+instead of crashing: no park, no speed reset, no crash damage, and the barrier refills.
+
+**It does not refund the contact charge.** §5.1 bills 1 HP the moment contact *begins*, well
+before the barrier drains, so a save that covered that too would make the whole wall touch
+free and delete the question the barrier exists to ask. You pay the point; you skip the crash.
+
+**Wall Smasher wins when both are live.** They fire at the same instant — barrier empty, wall
+ahead — and the legendary is both the rarer thing and the better outcome, since it opens a
+real hole in the maze (§7) rather than merely preventing a stop. Second Wind's charge is
+preserved in that case, which is what keeps the two from silently competing for one save.
+
+**Every other damage line is attritional, and this one is not.** Barrier Capacity, Barrier
+Regen, Wall Armor and Repair Field all change how much a crash costs or how fast you recover
+from it; none saves the run from the single crash that ends it at 5 HP on maze 5. Now that
+death is on (§5.5), that was the largest gap in the tree.
+
+#### Deep Breath is the true opposite of Snap Turn
+
+Hold a direction key through the turn freeze and the freeze *extends*, up to +0.15/0.3/0.45s.
+No speed cost. You are paying time to buy reading room.
+
+**The ramp must pause during the extension, and that is a deliberate exception to §2.** The
+freeze normally runs the ramp precisely so cornering cannot duck the game's central mechanic.
+Here that would invert it: hold the key at every corner, gain 0.045x a turn, and a turn-heavy
+maze becomes a speed pump — the extension would pay *more* than it costs. With the ramp held,
+what the player actually spends is the run timer and the maze budget, which is real cost in
+the §8b currency and is the same thing Snap Turn buys back.
+
+**Two lines on one mechanic, pulling opposite ways, is the point.** Snap Turn says *I read
+fast, give me the clock back*; Deep Breath says *let me stop and look*. They are never
+sensibly taken together, and a card that is worthless to your build is a stronger statement
+about that build than one more +0.15.
+
+**It respects the three-key contract (§2)** because it is a *held* existing key, not a fourth
+binding — the same reasoning that made the legendary gesture a double-tap.
+
+#### Overclock spends HP for pace, and the gesture is direction-first
+
+Hold a direction, then press `↓`: speed climbs +2x above its current value while both are
+held, burning 2.5 / 1.8 / 1.2 HP per second by rank.
+
+**Direction-first is what keeps it off the 180.** `↓` is already the reversal and the un-stick
+(§2), plus the legendary double-tap, so a fourth meaning has to be placed where it cannot
+steal the other three. The direction must *already be held* when `↓` lands; a `↓` arriving
+alone is always a reversal. That makes the 180 the default and the overclock the deliberate
+gesture, and it costs the common case nothing.
+
+**It cannot kill you.** The burn floors at 1 HP and cuts out. Dying to your own accelerator
+with no wall involved reads as a bug rather than as a cost, and every other death in the game
+comes from contact (§5.5).
+
+**Blocked while parked**, for the reason the legendary gesture is: `↓` on a parked racer means
+un-stick, and a recovery press must never be spent on something else.
+
+**It is the first line that lets the player SPEND a resource for pace.** Everything else in
+the damage economy accumulates protection. This turns the HP pool into a currency and makes
+Repair Field an engine rather than a safety net — the "burn and heal" build is a way to drive
+that the tree could not previously express.
+
+#### Gate Size finally puts a decision in gate collection
+
+Rank 1 raises the marker. Ranks 2 and 3 widen the **footprint**: the gate is collected from a
+5-cell plus, then wider still.
+
+**The wide gate can straddle a wall, and that is the feature.** Collection is a cell-membership
+test, so a footprint reaching into the corridor *next door* means a parallel route banks the
+pick. §7 notes that gates sit on the solve path and collecting them "is engagement with the
+solve" — but the collection itself has no decision in it at all: you are on the cell or you are
+not. A footprint spanning corridors makes routing *near* a gate worth something, where there
+was previously nothing to decide.
+
+**Membership, never a distance check.** A radius would fire diagonally through wall corners,
+collecting a gate through solid geometry — the maze's walls are the basis of every other rule,
+and a gate that ignored them would be the one object in the game that does.
+
+**A footprint cell the player can never reach is not painted on the minimap.** The plus can
+land in a sealed pocket, which is harmless in the world (nothing drives there) and misleading
+on the map, where it would read as a gate that cannot be got to.
+
+**It gives the lane sub-grid its first bit of meaning.** §12 makes lanes display-only on
+purpose, and they stay that way — but a gate spanning cells laterally means the lane you are in
+can decide whether you clip its edge, so the sub-grid becomes visible in an outcome for the
+first time without any rule reading it.
+
+#### Extra Card is an investment, and the cost is the pick itself
+
+4 cards at rank 1, 5 at rank 2.
+
+**Spending a card to make every later card better is a shape nothing else in the tree has.**
+It is only correct early, and it is self-balancing for exactly that reason: taking it at gate 7
+of maze 5 is a wasted pick, and the player can work that out. No rule is needed to stop them.
+
+**The "guarantee a new line" rule has to scale with the count.** §7 guarantees one fresh line
+among three while fewer than three are started; against five cards that guarantee is nearly
+free and stops meaning anything. It scales as one per three cards offered, so the promise stays
+the same *proportion* of the screen it always was.
+
+**The cards narrow rather than the row overflowing.** §12 records that the row width is derived
+from `CARD_SIZE` — five 320px cards plus separation is ~1750px against a 1600px viewport, so
+the width is now derived from the count instead. All cards stay equal to each other; they just
+get slimmer. A second row was rejected: a card screen is read fast under a stopped clock, and
+1–5 spread across two rows is a slower read than five in a line.
 
 ### Legendaries
 
@@ -3077,7 +3268,7 @@ Six harnesses, each answering a different question:
 
 | Harness | Question it answers |
 |---|---|
-| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer. 455 assertions. |
+| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count. 498 assertions. |
 | `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording. 176 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
 | `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, and the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed. 69 assertions. |
@@ -3143,6 +3334,32 @@ off the panel.
 path, death and completion. The completion shot deliberately builds the **tallest** case — all
 five maze rows and a sixteen-line build including a legendary — because the short death screen
 fits any layout and proves nothing about the one that overruns.
+
+`MomentumProbe.gd` is not a test — it reports the equilibrium speed a forced build actually
+settles at, which is how the Momentum line's effect on the §5.3 pair was measured rather than
+predicted. It exists because `RunTest` cannot answer the question: its autopilot takes whatever
+cards it is offered, and a full run took Momentum only to rank 1 of 4, so its final speed says
+nothing about the line's ceiling. It measures maze 1 **and** maze 5, because maze 1 finishes in
+~41s — before the ramp settles — so its figures are what a build reaches there rather than the
+settling point.
+
+> **It must steer once per CELL, never once per frame.** The first version re-requested a turn
+> every frame, which spams the buffer: the racer crashed 13 times and died after 122 cells, and
+> the probe reported a flat **1.00x** for every build in the table. A plausible-looking column
+> of identical numbers, measuring a dying racer rather than a settling one. The tell was
+> `turns/s` at 0.11 against the 0.62 a 5x racer actually makes. This is `RepeatProbe`'s
+> frame-versus-cell lesson arriving in a second instrument.
+
+`AddedLinesShot.gd` is the picture half of the two added lines that change the screen: the card
+row at 3, 4 and 5 cards, and the gate marker at Gate Size rank 0 against rank 3. The card row is
+§12's hard-coded-layout trap — five 320px cards overrun a 1600px viewport — and no headless
+assertion can see a row overflowing or text clipped from a narrowed card.
+
+> It **seeks a gate straight ahead**, 2–5 cells out, for the reason `GateShot` does. Its first
+> version accepted any gate within 4 cells on either axis and shot one sitting level with the
+> marker, which shows the marker's colour and nothing whatever about its height. It also
+> dismisses any upgrade pick immediately: the first run let a card screen open over the gate and
+> produced a frame of the card row where the marker should have been.
 
 `Screenshot.gd` is not a test — it runs the real game with rendering and saves frames to
 `logs/`, which is how the visuals get checked without anyone opening the editor.

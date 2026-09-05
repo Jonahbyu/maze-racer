@@ -17,6 +17,15 @@ const COL_DIM := Color(0.6, 0.68, 0.8)
 const CARD_SIZE := Vector2(320, 250)
 const CARD_SEPARATION := 26.0
 
+# The widest the card row may be. Extra Card raises the count to 4 and then 5,
+# and five CARD_SIZE.x cards plus separation is ~1750px against a 1600px
+# viewport -- so the cards NARROW to fit rather than the row overflowing. All
+# cards stay equal to each other; they just get slimmer (CLAUDE.md section 7).
+#
+# A second row was rejected: a card screen is read fast under a stopped clock,
+# and 1-5 spread over two rows is a slower read than five in a line.
+const ROW_MAX_WIDTH := 1400.0
+
 var _cards: Array[Button] = []
 var _lines: Array[int] = []
 
@@ -85,7 +94,11 @@ func _present(title_text: String, upgrades: Upgrades) -> void:
 	add_child(title)
 
 	var hint := Label.new()
-	hint.text = "press 1, 2 or 3"
+	# Derived from the count: Extra Card makes this 4 or 5, and a hint that
+	# still said "1, 2 or 3" would be telling the player two of their cards are
+	# not selectable.
+	var n := _lines.size()
+	hint.text = "press 1" if n == 1 else "press 1-%d" % n
 	hint.add_theme_font_size_override("font_size", 16)
 	hint.add_theme_color_override("font_color", COL_DIM)
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -105,7 +118,8 @@ func _present(title_text: String, upgrades: Upgrades) -> void:
 	# hard-coded -- a hard-coded 1020px band centred three 320px cards only by
 	# coincidence, and drifted the moment the count or the card size changed.
 	var count := _lines.size()
-	var row_width := count * CARD_SIZE.x + maxf(count - 1, 0) * CARD_SEPARATION
+	var card_width := _card_width(count)
+	var row_width := count * card_width + maxf(count - 1, 0) * CARD_SEPARATION
 
 	var row := HBoxContainer.new()
 	row.anchor_left = 0.5
@@ -122,7 +136,7 @@ func _present(title_text: String, upgrades: Upgrades) -> void:
 	add_child(row)
 
 	for i in count:
-		var card := _make_card(upgrades, _lines[i], i)
+		var card := _make_card(upgrades, _lines[i], i, card_width)
 		_cards.append(card)
 		row.add_child(card)
 
@@ -131,9 +145,21 @@ func _present(title_text: String, upgrades: Upgrades) -> void:
 		_cards[0].grab_focus()
 
 
-func _make_card(upgrades: Upgrades, line: int, index: int) -> Button:
+# The width one card gets, given how many are on screen. Derived so the row can
+# never overflow the viewport -- section 12's hard-coded-band trap.
+func _card_width(count: int) -> float:
+	if count <= 0:
+		return CARD_SIZE.x
+	var natural := count * CARD_SIZE.x + maxf(count - 1, 0) * CARD_SEPARATION
+	if natural <= ROW_MAX_WIDTH:
+		return CARD_SIZE.x
+	return (ROW_MAX_WIDTH - maxf(count - 1, 0) * CARD_SEPARATION) / float(count)
+
+
+func _make_card(upgrades: Upgrades, line: int, index: int, card_width: float = -1.0) -> Button:
 	var button := Button.new()
-	button.custom_minimum_size = CARD_SIZE
+	button.custom_minimum_size = Vector2(
+		CARD_SIZE.x if card_width < 0.0 else card_width, CARD_SIZE.y)
 	button.focus_mode = Control.FOCUS_ALL
 
 	var current := upgrades.rank(line)
@@ -194,6 +220,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_1, KEY_KP_1: index = 0
 		KEY_2, KEY_KP_2: index = 1
 		KEY_3, KEY_KP_3: index = 2
+		# Extra Card raises the count to 4 and then 5. Without these the extra
+		# cards would be mouse-only, which on a screen the player reads under a
+		# stopped clock is the same as not being offered.
+		KEY_4, KEY_KP_4: index = 3
+		KEY_5, KEY_KP_5: index = 4
 
 	if index >= 0 and index < _lines.size():
 		get_viewport().set_input_as_handled()

@@ -44,6 +44,7 @@ signal exit_reached()
 signal died()              # HP reached 0 with Tuning.DEATH_ENABLED
 signal wall_smashed(cell: Vector2i, direction: int)
 signal legendary_ready()   # a legendary cooldown finished
+signal second_wind_spent(remaining: int)  # a banked crash save absorbed a crash
 
 enum State { RUNNING, PARKED }
 
@@ -217,6 +218,43 @@ var legendary_cooldown := 0.0
 # wall contact.
 var auto_steer := 0.0
 
+# --- The six added lines (CLAUDE.md section 7) -------------------------------
+
+# Momentum's bonus, 0..1, scaling between a normal ramp and the line's full
+# rate. Reset by wall CONTACT rather than by a crash -- that is what makes the
+# line price the section 11.4 skill ceiling -- and rebuilt over
+# MOMENTUM_REBUILD_SECONDS of clean travel so one scrape is not the end of it.
+var momentum_bonus := 0.0
+
+# Second Wind's banked crash saves. Refilled by clearing a gate, which ties the
+# resource to the pacing beat that already exists rather than to a new timer.
+var second_wind := 0
+
+# Deep Breath: how much extension the held direction has already bought on the
+# freeze currently running. Capped by the rank's allowance, so holding the key
+# across several corners cannot bank it.
+var _breath_spent := 0.0
+
+# How much Deep Breath extension is still to be spent, in seconds, and therefore
+# how much ramp is still owed back. A DEBT rather than a flag: the extension is
+# bought in one frame and consumed over the ~27 that follow at a 1/60s step, so
+# what has to be undone is those frames' ramp, not the buying frame's.
+var _breath_owed := 0.0
+
+# True while the racer is overclocking. Set by Game from the held gesture; the
+# racer never reads input itself.
+# Which turn key is currently HELD, -1 / 0 / +1. Set by Game from the input
+# layer; the racer never reads input itself. Deep Breath and Overclock both need
+# to know a key is still down rather than merely that it was pressed.
+var held_direction := 0
+
+var overclocking := false
+
+# Overclock's HP burn accumulates as a float and is spent in whole points, the
+# same way Repair Field's regen is -- the rates are well under one HP a frame,
+# so truncating each frame would burn precisely nothing.
+var _overclock_fraction := 0.0
+
 
 func setup(p_maze: Maze, p_upgrades: Upgrades, p_maze_index: int = 0) -> void:
 	maze = p_maze
@@ -272,6 +310,16 @@ func setup(p_maze: Maze, p_upgrades: Upgrades, p_maze_index: int = 0) -> void:
 	_gate_cells = maze.gates.duplicate()
 	gates_cleared.clear()
 	gates_taken = 0
+
+	# A full bank at the start of each maze. Second Wind is refilled by clearing a
+	# gate, and a maze the player walks into with an empty bank would spend its
+	# first eight gates merely restoring what the last maze ended with.
+	second_wind = upgrades.second_wind_charges()
+	momentum_bonus = 0.0
+	_breath_spent = 0.0
+	_breath_owed = 0.0
+	overclocking = false
+	_overclock_fraction = 0.0
 
 
 # --- Input -------------------------------------------------------------------
@@ -335,6 +383,8 @@ func request_reverse() -> void:
 	_turned_in_cell = false
 	_entry_lockout = -1
 	freeze = upgrades.reverse_freeze()
+	_breath_spent = 0.0
+	_breath_owed = 0.0
 	reversed.emit()
 
 
@@ -360,6 +410,7 @@ func step(delta: float) -> void:
 		return
 
 	_advance_speed(delta)
+	_burn_overclock(delta)
 	_recover_lane(delta)
 	_regen_hp(delta)
 	_tick_legendary(delta)
@@ -379,9 +430,44 @@ func step(delta: float) -> void:
 	# was discarded whole, which turns a stutter into a much longer stop on a
 	# slow machine than on a fast one. Frame-rate independence is the point.
 	if freeze > 0.0:
+		# Deep Breath. A held direction EXTENDS the freeze, buying reading room --
+		# the exact opposite of Snap Turn, which buys the clock back.
+		#
+		# Granted in FULL the moment the ordinary freeze is about to lapse, not a
+		# frame's worth at a time. `delta` is one frame (~0.0167s) against an
+		# allowance of up to 0.45s, so capping the grant by `delta` bought the
+		# extension a sliver per frame and the freeze never actually lengthened.
+		if held_direction != 0 and freeze <= delta:
+			var allowance := upgrades.deep_breath_extension()
+			var extra := allowance - _breath_spent
+			if extra > 0.0:
+				_breath_spent += extra
+				freeze += extra
+				# Booked as a DEBT: the extension is consumed over the frames that
+				# follow, and it is THOSE frames whose ramp has to be undone.
+				# _advance_speed runs at the top of every one of them, so rewinding
+				# only the buying frame left the rest ramping -- measured as +0.058x
+				# gained across an extension that must gain nothing.
+				_breath_owed += extra
+
 		var spent := minf(freeze, delta)
 		freeze -= spent
 		delta -= spent
+
+		# The ramp is UNDONE for the extension, a deliberate exception to section
+		# 2's rule that the freeze runs the ramp. Left running, holding the key at
+		# every corner would gain speed for free and a turn-heavy maze would become
+		# a pump -- the extension would pay MORE than it costs. What the player
+		# spends instead is the clock, the section 8b currency Snap Turn buys back.
+		#
+		# Charged against the part of `spent` that came out of the EXTENSION rather
+		# than out of the ordinary freeze, since the frame crossing from one to the
+		# other contains both.
+		if _breath_owed > 0.0 and spent > 0.0:
+			var from_extension := minf(_breath_owed, spent)
+			_breath_owed -= from_extension
+			_rewind_ramp(from_extension)
+
 		if delta <= 0.0:
 			return
 
@@ -390,6 +476,12 @@ func step(delta: float) -> void:
 	var rate := speed
 	if auto_steer > 0.0:
 		rate *= Tuning.AUTOSTEER_SPEED_MULTIPLIER
+	# Overclock adds to the RATE rather than to `speed` itself, so the bonus
+	# vanishes the moment the gesture is released instead of having to be unwound
+	# -- and so it never feeds back into the ramp, the turn costs or the floor,
+	# every one of which reads `speed`.
+	if overclocking and upgrades.has_overclock():
+		rate += Tuning.OVERCLOCK_SPEED_BONUS
 	var moved := rate * Tuning.BASE_CELL_RATE * delta
 
 	# Blocked ahead, but not yet AT the wall: there is still corridor to cover
@@ -483,10 +575,58 @@ func _advance_speed(delta: float) -> void:
 	var floor_speed := upgrades.speed_floor()
 	var rate := Tuning.SPEED_RAMP_PER_SEC
 
+	# Momentum. The bonus rebuilds on CLEAN travel, so it is advanced here rather
+	# than in _travel: this runs on every unparked frame, including the ones spent
+	# grinding along a wall -- and a scrape must not be quietly rebuilding the
+	# thing it just reset. Contact holds it at zero by resetting every frame it
+	# lasts (see _press_into_wall).
+	if upgrades.has_momentum():
+		momentum_bonus = minf(1.0, momentum_bonus + delta / Tuning.MOMENTUM_REBUILD_SECONDS)
+		# lerp between a normal ramp and the line's full rate, so the bonus arrives
+		# gradually rather than snapping on the frame it completes.
+		rate *= lerpf(1.0, upgrades.momentum_ramp_scale(), momentum_bonus)
+
 	if speed < floor_speed:
 		rate *= Tuning.RECOVERY_RAMP_MULTIPLIER
 
 	speed = minf(speed + rate * delta, Tuning.SPEED_CAP)
+
+
+# Undo `seconds` worth of this frame's speed ramp.
+#
+# Deep Breath's extension must not accrue speed (see step()), and the cleanest
+# way to express that is to subtract exactly what _advance_speed just added for
+# that slice -- rather than duplicating the ramp's own rate calculation here and
+# leaving two places to keep in step.
+func _rewind_ramp(seconds: float) -> void:
+	var rate := Tuning.SPEED_RAMP_PER_SEC
+	if upgrades.has_momentum():
+		rate *= lerpf(1.0, upgrades.momentum_ramp_scale(), momentum_bonus)
+	if speed < upgrades.speed_floor():
+		rate *= Tuning.RECOVERY_RAMP_MULTIPLIER
+	speed = maxf(upgrades.speed_floor(), speed - rate * seconds)
+
+
+# Overclock: HP for pace, while the gesture is held.
+#
+# The first line in the tree that SPENDS a resource for speed rather than
+# accumulating protection (CLAUDE.md section 7). It cannot kill: the burn stops
+# at OVERCLOCK_MIN_HP, because dying to your own accelerator with no wall
+# involved reads as a bug rather than as a cost.
+func _burn_overclock(delta: float) -> void:
+	if not overclocking or not upgrades.has_overclock():
+		return
+	if hp <= Tuning.OVERCLOCK_MIN_HP:
+		# Out of fuel. Cleared rather than merely skipped, so the speed bonus in
+		# step() stops with the burn instead of running free.
+		overclocking = false
+		return
+
+	_overclock_fraction += upgrades.overclock_hp_per_sec() * delta
+	if _overclock_fraction >= 1.0:
+		var whole := int(_overclock_fraction)
+		_overclock_fraction -= float(whole)
+		hp = maxi(Tuning.OVERCLOCK_MIN_HP, hp - whole)
 
 
 func _travel(moved: float, delta: float) -> void:
@@ -609,6 +749,12 @@ func _press_into_wall(_moved: float, delta: float) -> void:
 	# range and keeps world_position()'s clamp a no-op rather than a rescue.
 	progress = _wall_face_progress()
 
+	# Momentum is lost to CONTACT, not to a crash -- the whole point of the line
+	# (CLAUDE.md section 7). Reset on every frame of contact rather than only on
+	# the first, because _advance_speed rebuilds it on every unparked frame and a
+	# scrape must not be quietly regrowing the thing it just cost.
+	momentum_bonus = 0.0
+
 	if not scraping:
 		scraping = true
 		# Charged HERE, where contact BEGINS, which is what makes it once per
@@ -648,6 +794,13 @@ func _press_into_wall(_moved: float, delta: float) -> void:
 		# still felt the scrape, and the ability turns the ending into a
 		# breakthrough (CLAUDE.md section 7).
 		if _try_smash():
+			return
+		# Wall Smasher is tried FIRST and wins when both are live: the two fire at
+		# the same instant, and the legendary is both rarer and the better outcome,
+		# since it opens a real hole in the maze rather than merely preventing a
+		# stop. Second Wind's charge is preserved in that case, which is what keeps
+		# the two from silently competing for one save (CLAUDE.md section 7).
+		if _try_second_wind():
 			return
 		_crash()
 
@@ -700,6 +853,36 @@ func _try_smash() -> bool:
 	return true
 
 
+# Second Wind. Spends a banked charge instead of crashing. Returns true if one
+# was spent.
+#
+# It does NOT refund the per-contact HP charge: section 5.1 bills that the moment
+# contact begins, well before the barrier drains, so a save that covered it too
+# would make the whole wall touch free and delete the question the barrier exists
+# to ask. You pay the point; you skip the crash.
+func _try_second_wind() -> bool:
+	if second_wind <= 0:
+		return false
+
+	second_wind -= 1
+	# Back into open corridor with speed intact. The barrier refills for the same
+	# reason Wall Smasher's does: leaving it empty would drop the player straight
+	# into a second crash, and the save would buy a fraction of a second.
+	barrier = upgrades.barrier_capacity()
+	scraping = false
+	second_wind_spent.emit(second_wind)
+
+	# Turn out of the wall if the pending input allows it, and otherwise reverse:
+	# the racer is still nose-on to a wall, and a save that left it there would
+	# simply re-enter this path on the next frame.
+	if pending_turn != -1 and _may_turn_into(pending_turn):
+		progress = 0.0
+		_turn_into(pending_turn)
+	else:
+		request_reverse()
+	return true
+
+
 func _crash() -> void:
 	barrier = 0.0
 	scraping = false
@@ -717,6 +900,12 @@ func _crash() -> void:
 	# PARKED already holds position, and a freeze left running would silently
 	# eat the first frames after un-stick.
 	freeze = 0.0
+	_breath_spent = 0.0
+	_breath_owed = 0.0
+	# The gesture cannot survive the crash: DOWN on a parked racer means un-stick
+	# (section 2), so the player is about to press it for a different reason.
+	overclocking = false
+	_overclock_fraction = 0.0
 
 	crashed.emit()
 
@@ -788,17 +977,48 @@ func _on_enter_cell() -> void:
 		exit_reached.emit()
 		return
 
+	# Gate Size widens the collection FOOTPRINT, so the test is membership in a
+	# plus around the gate rather than equality with its cell. At reach 0 -- the
+	# unupgraded case -- gate_footprint() returns the gate's own cell alone and
+	# this is exactly the equality test it replaced.
+	var reach := upgrades.gate_reach()
 	for i in _gate_cells.size():
-		if _gate_cells[i] == cell:
-			# Resolved against `maze.gates` rather than against `i`: this list
-			# is a working copy that shrinks as gates are taken, so its indices
-			# slide the moment one is removed.
-			var placement := maze.gates.find(cell)
-			_gate_cells.remove_at(i)
-			gates_cleared.append(cell)
-			gates_taken += 1
-			gate_entered.emit(placement)
-			return
+		var gate_cell: Vector2i = _gate_cells[i]
+		if not _within_gate_footprint(cell, gate_cell, reach):
+			continue
+		# Resolved against `maze.gates` rather than against `i`: this list
+		# is a working copy that shrinks as gates are taken, so its indices
+		# slide the moment one is removed.
+		var placement := maze.gates.find(gate_cell)
+		_gate_cells.remove_at(i)
+		# The GATE's own cell is what is recorded as cleared, never the cell the
+		# player happened to collect it from: the minimap and the spent marker both
+		# draw the gate, and painting a neighbour would move it on the map.
+		gates_cleared.append(gate_cell)
+		gates_taken += 1
+		# Second Wind refills on a gate, which ties the resource to the pacing beat
+		# that already exists rather than to a new timer (CLAUDE.md section 7).
+		second_wind = upgrades.second_wind_charges()
+		gate_entered.emit(placement)
+		return
+
+
+# Is `at` inside the gate's collection footprint?
+#
+# A cardinal PLUS, never a box and never a radius. A radius would fire
+# diagonally through wall corners, collecting a gate through solid geometry --
+# which would make the gate the one object in the game that ignores the maze's
+# walls (CLAUDE.md section 7). The plus reaches along the two axes only, which
+# is how a corridor runs.
+func _within_gate_footprint(at: Vector2i, gate_cell: Vector2i, reach: int) -> bool:
+	if at == gate_cell:
+		return true
+	if reach <= 0:
+		return false
+	var d := at - gate_cell
+	if d.x != 0 and d.y != 0:
+		return false
+	return absi(d.x) <= reach and absi(d.y) <= reach
 
 
 func _apply_speed_cost(cost: float) -> void:
@@ -881,6 +1101,10 @@ func _turn_into(direction: int) -> void:
 	pending_buffer = 0.0
 	_apply_speed_cost(upgrades.turn_cost())
 	freeze = upgrades.turn_freeze()
+	# A fresh allowance per corner: holding the key across several turns must
+	# not bank the extension.
+	_breath_spent = 0.0
+	_breath_owed = 0.0
 	turned.emit(facing)
 
 

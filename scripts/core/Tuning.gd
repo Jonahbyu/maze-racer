@@ -355,6 +355,81 @@ const QUADRANT_DIVISIONS_BY_RANK := [0, 2, 3, 4]
 
 const CARDS_PER_GATE := 3
 
+# --- The six added lines (CLAUDE.md section 7) -------------------------------
+
+# Momentum. A multiplier on SPEED_RAMP_PER_SEC, indexed by rank.
+#
+# +12% a rank, so rank 4 runs the ramp at 0.148/s against a base 0.10 -- 5x in
+# ~27s rather than 40s. This is the FIRST line on the ramp itself: every other
+# speed line in the tree touches costs and floors (Cornering, Snap Turn, Fast
+# Turnaround, Base Speed), so the number the whole difficulty curve hangs off
+# had nothing on it.
+#
+# It moves the section 5.3 equilibrium, which is linear in the ramp rate:
+# equilibrium = RAMP / (turn_ratio * TURN_COST). Rank 4 lifts a measured 5.13x
+# toward ~7.2x, and a maxed Momentum + Cornering build brings the 10x cap within
+# reach for the first time. Accepted deliberately -- but the standing rule from
+# section 5.3 applies: RE-MEASURE on RunTest rather than trusting the formula.
+const MOMENTUM_RAMP_BY_RANK := [1.0, 1.12, 1.24, 1.36, 1.48]
+
+# How long the Momentum bonus takes to rebuild after wall contact resets it.
+#
+# The bonus is LOST ON CONTACT, not on a crash -- that is what makes the line
+# price the section 11.4 skill ceiling in the currency section 3 says the game
+# is about. It rebuilds rather than being gone for the maze, because a single
+# scrape ending the line for good would make it a lottery on the first mistake
+# and would answer section 5.1's "can I afford this brush?" with a flat never.
+#
+# ~4s is roughly the barrier's own refill time at base regen, so the two costs
+# of a scrape run down the same clock.
+const MOMENTUM_REBUILD_SECONDS := 4.0
+
+# Second Wind. Banked crash saves, one per rank, refilled by clearing a gate.
+const SECOND_WIND_PER_RANK := 1
+
+# Deep Breath. How much a held direction may EXTEND the turn freeze, by rank.
+#
+# The true opposite of Snap Turn: that line buys the clock back, this one spends
+# it to buy reading room. Never sensibly taken together, which is the point --
+# a card worthless to your build says more about that build than another +0.15.
+const DEEP_BREATH_BY_RANK := [0.0, 0.15, 0.30, 0.45]
+
+# Overclock. HP burned per second while the gesture is held, by rank.
+#
+# The first line that SPENDS a resource for pace rather than accumulating
+# protection, which turns the HP pool into a currency and makes Repair Field an
+# engine instead of a safety net.
+const OVERCLOCK_HP_PER_SEC_BY_RANK := [0.0, 2.5, 1.8, 1.2]
+
+# The speed added while overclocking, above the racer's current value.
+const OVERCLOCK_SPEED_BONUS := 2.0
+
+# Overclock never kills: the burn stops here. Dying to your own accelerator with
+# no wall involved reads as a bug rather than as a cost, and every other death
+# in the game comes from contact (section 5.5).
+const OVERCLOCK_MIN_HP := 1
+
+# Gate Size. The collection footprint's reach in cells, by rank.
+#
+# Rank 1 buys height only (see GATE_SIZE_HEIGHT_BY_RANK) and leaves the
+# footprint at the gate's own cell. Rank 2 reaches one cell in each cardinal
+# direction -- a 5-cell plus -- and rank 3 reaches two.
+#
+# MEMBERSHIP, never a distance check: a radius would fire diagonally through
+# wall corners and collect a gate through solid geometry, which would make the
+# gate the one object in the game that ignores the maze's walls.
+const GATE_SIZE_REACH_BY_RANK := [0, 0, 1, 2]
+
+# The gate marker's height multiplier by rank, on top of GATE_MARKER_HEIGHT.
+const GATE_SIZE_HEIGHT_BY_RANK := [1.0, 1.35, 1.5, 1.65]
+
+# Extra Card. Cards offered at a pick, by rank -- an investment line whose cost
+# is the pick itself, so it is only correct early and needs no rule to say so.
+#
+# The row DERIVES its card width from this count (section 12's hard-coded-band
+# trap): five 320px cards plus separation is ~1750px against a 1600px viewport.
+const CARDS_BY_EXTRA_RANK := [CARDS_PER_GATE, 4, 5]
+
 # --- Score (CLAUDE.md section 8b) --------------------------------------------
 #
 # Every award scales with speed, which is what makes the section 3 ramp pay off

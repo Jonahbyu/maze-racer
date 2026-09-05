@@ -27,6 +27,12 @@ enum Line {
 	QUADRANT,
 	COMPASS,
 	TRAIL_MEMORY,
+	MOMENTUM,
+	SECOND_WIND,
+	DEEP_BREATH,
+	OVERCLOCK,
+	GATE_SIZE,
+	EXTRA_CARD,
 	# Legendaries. Rare, active, one per run -- see is_legendary() and the
 	# rarity rule in roll_cards().
 	WALL_SMASHER,
@@ -223,6 +229,47 @@ const DEFINITIONS := {
 		# rank -- see the comment there.
 		"desc": [],
 	},
+	Line.MOMENTUM: {
+		"name": "Momentum",
+		"max_rank": 4,
+		# Derived from MOMENTUM_RAMP_BY_RANK in next_rank_description(), for the
+		# reason Fast Turnaround's are: a card that restates a tuning number goes
+		# stale silently and the player picks on what it says.
+		"desc": [],
+	},
+	Line.SECOND_WIND: {
+		"name": "Second Wind",
+		"max_rank": 3,
+		"desc": [
+			"Bank one crash. The barrier emptying spends it instead of stopping you. A gate refills it.",
+			"Bank a second crash.",
+			"Bank a third crash.",
+		],
+	},
+	Line.DEEP_BREATH: {
+		"name": "Deep Breath",
+		"max_rank": 3,
+		"desc": [],
+	},
+	Line.OVERCLOCK: {
+		"name": "Overclock",
+		"max_rank": 3,
+		"desc": [],
+	},
+	Line.GATE_SIZE: {
+		"name": "Gate Size",
+		"max_rank": 3,
+		"desc": [
+			"Gates stand taller. See them coming from further off.",
+			"Gates spread to the four cells around them. Collect one from the next corridor over.",
+			"Gates spread wider still.",
+		],
+	},
+	Line.EXTRA_CARD: {
+		"name": "Extra Card",
+		"max_rank": 2,
+		"desc": [],
+	},
 	Line.WALL_SMASHER: {
 		"name": "Wall Smasher",
 		"max_rank": 3,
@@ -338,6 +385,45 @@ func next_rank_description(line: int) -> String:
 		if r == 0:
 			return "Ground you have driven lights up, dimming as you re-cross it. Remembered for %s." % text
 		return "Remembered for %s." % text
+
+	# Momentum, Deep Breath, Overclock and Extra Card all derive their card text
+	# from their tuning tables, for the reason Fast Turnaround does: a description
+	# that restates a tuning value drifts silently, and the player makes a
+	# decision on it (CLAUDE.md section 7).
+	if line == Line.MOMENTUM:
+		var mt: Array = Tuning.MOMENTUM_RAMP_BY_RANK
+		if r + 1 >= mt.size():
+			return ""
+		var pct := int(round((float(mt[r + 1]) - 1.0) * 100.0))
+		if r == 0:
+			return "Speed climbs %d%% faster. Touch a wall and you lose it." % pct
+		return "Speed climbs %d%% faster in total." % pct
+
+	if line == Line.DEEP_BREATH:
+		var dt: Array = Tuning.DEEP_BREATH_BY_RANK
+		if r + 1 >= dt.size():
+			return ""
+		if r == 0:
+			return "Hold a turn key through a corner to hold still %.2fs longer and read ahead." % float(dt[r + 1])
+		return "Hold up to %.2fs longer." % float(dt[r + 1])
+
+	if line == Line.OVERCLOCK:
+		var ot: Array = Tuning.OVERCLOCK_HP_PER_SEC_BY_RANK
+		if r + 1 >= ot.size():
+			return ""
+		if r == 0:
+			return "Hold a turn key, then DOWN: +%.1fx speed for %.1f HP a second." % [
+				Tuning.OVERCLOCK_SPEED_BONUS, float(ot[r + 1])
+			]
+		return "The burn drops to %.1f HP a second." % float(ot[r + 1])
+
+	if line == Line.EXTRA_CARD:
+		var ct: Array = Tuning.CARDS_BY_EXTRA_RANK
+		if r + 1 >= ct.size():
+			return ""
+		return "Every pick from now on offers %d cards instead of %d." % [
+			int(ct[r + 1]), int(ct[r])
+		]
 
 	var descs: Array = DEFINITIONS[line]["desc"]
 	if r >= descs.size():
@@ -517,6 +603,62 @@ func has_compass() -> bool:
 	return rank(Line.GATE_COMPASS) > 0
 
 
+# --- The six added lines (CLAUDE.md section 7) -------------------------------
+
+# Momentum: the multiplier on the speed ramp at full bonus. The racer scales
+# between 1.0 and this as the bonus rebuilds after wall contact, so this is the
+# CEILING rather than the rate actually applied on any given frame.
+func momentum_ramp_scale() -> float:
+	var r := mini(rank(Line.MOMENTUM), Tuning.MOMENTUM_RAMP_BY_RANK.size() - 1)
+	return float(Tuning.MOMENTUM_RAMP_BY_RANK[r])
+
+
+func has_momentum() -> bool:
+	return rank(Line.MOMENTUM) > 0
+
+
+# Second Wind: how many crash saves a full bank holds.
+func second_wind_charges() -> int:
+	return rank(Line.SECOND_WIND) * Tuning.SECOND_WIND_PER_RANK
+
+
+# Deep Breath: the most a held direction may add to the turn freeze.
+func deep_breath_extension() -> float:
+	var r := mini(rank(Line.DEEP_BREATH), Tuning.DEEP_BREATH_BY_RANK.size() - 1)
+	return float(Tuning.DEEP_BREATH_BY_RANK[r])
+
+
+# Overclock: HP burned per second while the gesture is held. Zero without the
+# line, which is what makes has_overclock() and this agree by construction.
+func overclock_hp_per_sec() -> float:
+	var r := mini(rank(Line.OVERCLOCK), Tuning.OVERCLOCK_HP_PER_SEC_BY_RANK.size() - 1)
+	return float(Tuning.OVERCLOCK_HP_PER_SEC_BY_RANK[r])
+
+
+func has_overclock() -> bool:
+	return rank(Line.OVERCLOCK) > 0
+
+
+# Gate Size: how far the collection footprint reaches, in cells. 0 means the
+# gate's own cell only, which is the unupgraded behaviour.
+func gate_reach() -> int:
+	var r := mini(rank(Line.GATE_SIZE), Tuning.GATE_SIZE_REACH_BY_RANK.size() - 1)
+	return int(Tuning.GATE_SIZE_REACH_BY_RANK[r])
+
+
+# The gate marker's height multiplier, on top of Tuning.GATE_MARKER_HEIGHT.
+func gate_height_scale() -> float:
+	var r := mini(rank(Line.GATE_SIZE), Tuning.GATE_SIZE_HEIGHT_BY_RANK.size() - 1)
+	return float(Tuning.GATE_SIZE_HEIGHT_BY_RANK[r])
+
+
+# Extra Card: how many cards a pick offers. Read by roll_cards() and by the
+# screen that lays them out, so the count has exactly one source.
+func cards_per_pick() -> int:
+	var r := mini(rank(Line.EXTRA_CARD), Tuning.CARDS_BY_EXTRA_RANK.size() - 1)
+	return int(Tuning.CARDS_BY_EXTRA_RANK[r])
+
+
 # --- Quadrant and Compass ----------------------------------------------------
 # Position and orientation. Both sit on the "have I been here" side of the line
 # landmarks, spent gates and the rear-view mirror hold (CLAUDE.md section 7) --
@@ -585,7 +727,12 @@ func platinum_interval() -> float:
 # fewer than three lines started, guarantee a NEW line among the three -- early
 # picks should feel like they open options, not deepen one stat
 # (CLAUDE.md section 7).
-func roll_cards(count: int = Tuning.CARDS_PER_GATE) -> Array[int]:
+func roll_cards(count: int = -1) -> Array[int]:
+	# Extra Card decides the count, so it has one source rather than being
+	# restated at each call site. A caller may still override it.
+	if count < 0:
+		count = cards_per_pick()
+
 	# One legendary per run, enforced at the OFFER rather than at the take: once
 	# any legendary is held, no legendary is ever offered again. Refusing a
 	# second at pick time instead would waste the pick and read as a bug
@@ -604,6 +751,11 @@ func roll_cards(count: int = Tuning.CARDS_PER_GATE) -> Array[int]:
 
 	var offered: Array[int] = []
 
+	# The fresh-line guarantee scales with the count. Against three cards it
+	# guaranteed one; against five, one is nearly free and the promise stops
+	# meaning anything, so it holds the same PROPORTION of the screen it
+	# always did -- one per three cards offered (CLAUDE.md section 7).
+	var guarantees := maxi(1, count / 3)
 	if started_line_count() < 3:
 		var fresh: Array[int] = []
 		for line in available:
@@ -613,10 +765,11 @@ func roll_cards(count: int = Tuning.CARDS_PER_GATE) -> Array[int]:
 			# opener rather than a rare find.
 			if rank(line) == 0 and not is_legendary(line):
 				fresh.append(line)
-		if not fresh.is_empty():
+		while not fresh.is_empty() and offered.size() < guarantees:
 			var pick: int = fresh[_rng.randi_range(0, fresh.size() - 1)]
 			offered.append(pick)
 			available.erase(pick)
+			fresh.erase(pick)
 
 	while offered.size() < count and not available.is_empty():
 		var pick: int = _weighted_pick(available)

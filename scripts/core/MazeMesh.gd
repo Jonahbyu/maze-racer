@@ -102,8 +102,27 @@ var _floor_material: ShaderMaterial
 var _wall_edges: Array = []
 
 
-func build(maze: Maze, palette_index: int = 0) -> void:
+# `gate_height_scale` is the Gate Size line's rank multiplier, passed in rather
+# than read from an Upgrades here: the mesh draws a maze and knows nothing about
+# the player's build, and giving it one would make the renderer depend on the
+# rules layer for a number it only ever multiplies by.
+
+
+# The Gate Size height multiplier for the current build. 1.0 when the line is
+# untaken, which is exactly the height gates had before it existed.
+var _gate_height_scale := 1.0
+
+# Which gate INDICES have been cleared. Tracked explicitly rather than inferred
+# from a marker's material: rescale_gates has to rebuild a marker's mesh and
+# needs to know whether to keep the spent marker's raised base, and reading that
+# back off an albedo colour would make a display detail load-bearing.
+var _gates_spent := {}
+
+
+func build(maze: Maze, palette_index: int = 0, gate_height_scale: float = 1.0) -> void:
 	_maze = maze
+	_gate_height_scale = maxf(0.1, gate_height_scale)
+	_gates_spent.clear()
 	_palette = Tuning.PALETTES[clampi(palette_index, 0, Tuning.PALETTES.size() - 1)]
 	_wall_edges.clear()
 
@@ -514,7 +533,8 @@ func _add_floor_strip(st: SurfaceTool, from: Vector3, to: Vector3) -> void:
 func _build_gates() -> void:
 	for i in _maze.gates.size():
 		var gate: Vector2i = _maze.gates[i]
-		var marker := _make_marker(gate, Tuning.NEON_GATE, Tuning.GATE_MARKER_HEIGHT)
+		var marker := _make_marker(gate, Tuning.NEON_GATE,
+			Tuning.GATE_MARKER_HEIGHT * _gate_height_scale)
 		# Named AFTER add_child, never before. Godot assigns a generated name on
 		# entry to the tree, so a name set beforehand is overwritten -- the trap
 		# CLAUDE.md section 12 already records for the Music autoload, arriving
@@ -636,6 +656,34 @@ func _add_marker_slab(st: SurfaceTool, size: Vector3, base: float = 0.0) -> void
 # The mesh is left alone and only the material changes, so the marker keeps its
 # silhouette -- a spent gate is still a gate, dimmed, rather than a different
 # kind of object.
+# Re-height every gate marker in place, for a Gate Size rank taken mid-maze.
+#
+# The markers are REBUILT rather than the whole mesh, and that is the point: a
+# full build() detaches and re-adds every gate, which is the name-collision trap
+# section 12 records -- the outgoing markers still hold "Gate0", "Gate1" while
+# the new ones are added, so Godot renames the new nodes and clear_gate can
+# never find them again. Rescaling touches only the mesh on nodes that keep
+# their names, so a gate cleared before the rank was taken stays cleared.
+func rescale_gates(gate_height_scale: float) -> void:
+	_gate_height_scale = maxf(0.1, gate_height_scale)
+	if _maze == null:
+		return
+
+	for i in _maze.gates.size():
+		var node := get_node_or_null("Gate%d" % i)
+		if node == null:
+			continue
+		var instance := node as MeshInstance3D
+		if instance == null:
+			continue
+		# A spent marker starts above the camera (GATE_SPENT_BASE) and a live one
+		# at the floor, so the base has to be preserved across the rescale or a
+		# cleared gate would drop back to eye level and wash the screen its colour.
+		var base: float = Tuning.GATE_SPENT_BASE if _gates_spent.has(i) else 0.0
+		instance.mesh = _marker_mesh(
+			Tuning.GATE_MARKER_HEIGHT * _gate_height_scale, base)
+
+
 func clear_gate(index: int) -> void:
 	# A negative index means the caller could not resolve the cell to a gate at
 	# all. Nothing to recolour, and "Gate-1" would silently find no node anyway
@@ -659,6 +707,7 @@ func clear_gate(index: int) -> void:
 	mat.emission = Tuning.NEON_GATE_SPENT
 	mat.emission_energy_multiplier = 2.0 * Tuning.GATE_SPENT_ENERGY
 	instance.material_override = mat
+	_gates_spent[index] = true
 
 	# And it is lifted clear of the camera. The marker is transparent and drawn
 	# double-sided, so a marker still running to the floor puts the eye INSIDE
@@ -666,7 +715,10 @@ func clear_gate(index: int) -> void:
 	# its colour. A live gate does that too, but only in the instant of passing
 	# through, and it is the thing being aimed at. A cleared one is just in the
 	# way, and it stays in the way for the rest of the maze.
-	instance.mesh = _marker_mesh(Tuning.GATE_MARKER_HEIGHT, Tuning.GATE_SPENT_BASE)
+	# Same height as the live marker, so clearing a gate changes its COLOUR and
+	# nothing else -- a spent gate that shrank would read as a different object.
+	instance.mesh = _marker_mesh(
+		Tuning.GATE_MARKER_HEIGHT * _gate_height_scale, Tuning.GATE_SPENT_BASE)
 
 
 # --- Landmarks (docs/specs/landmarks.md) -------------------------------------
