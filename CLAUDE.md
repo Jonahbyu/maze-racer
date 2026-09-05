@@ -910,8 +910,11 @@ lines (Cornering, Expiry Grace, Repair Field) and higher `max_rank` on the four 
 could carry it — which fixes the shortfall *and* adds real choices rather than just deeper
 stats.
 
-The ledger now runs **45 picks against 48 ranks**: 40 gates plus the five loadout picks
-below, against a tree that can absorb slightly more than a perfect run collects. Measured on
+The ledger now runs **45 picks against 75 ranks**: 40 gates plus the five loadout picks
+below, against a tree that comfortably outgrows what a perfect run collects. It has kept
+growing since — Platinum Trail, Quadrant and Compass all landed after the count above was
+first written — so **read the total off `Upgrades.DEFINITIONS` rather than trusting this
+number**, which is a measurement and not a rule. Measured on
 a full `RunTest` autopilot, the finishing build has genuine gaps in it — Path Indicator 3 and
 Minimap 2 on one seed, Buffer Window 6 and Expiry Grace 1 on another — so the last pick is
 still a decision. `RunTest` prints a `note:` line if that inverts again; it no longer does.
@@ -1070,11 +1073,14 @@ meta-progression (§10).
 | **Barrier Regen** | Faster barrier refill | Pairs with capacity; matters most in tight twisty sections |
 | **Gate Compass** | Points toward the next gate | A soft directional hint — weaker than Path Indicator, but always on |
 | **Snap Turn** | Shortens the post-turn freeze: 0.10s → 0.075 → 0.055 → 0.04 | Buys back time, the currency of §8. Never removes the freeze — see below |
-| **Golden Trail** | On a timer, a golden streak shoots from the player along the optimal route, travelling at 2x player speed and lingering 2s | Periodic, not continuous — it answers "where does this go" a few times a minute rather than at every junction |
+| **Golden Trail** | On a timer, a gold streak runs the whole route to the **next uncollected gate**, at 2x player speed, lingering 2s | Periodic, not continuous. Rank sets the interval; reach is a fixed duration times your speed |
+| **Platinum Trail** | The same in silver, running the shortest route to the **exit** — but only after **5 gates** are banked | The "finish fast" line to Golden's "collect your upgrades". The two never draw at once |
 | **Wall Armor** | Reduces crash HP damage by 1 per rank | Now load-bearing: death is on and wall damage scales per maze (§5.5). Subtracts *after* the per-maze scaling, so a rank is the same flat point everywhere |
 | **Cornering** | Cuts the per-turn cost: 0.03x → 0.024 → 0.018 → 0.012 | Moves the §5.3 equilibrium directly, so it changes *routing*, not a stat — a Cornering build affords turn-heavy routes that would bleed an unupgraded racer dry. Never reaches zero |
 | **Expiry Grace** | Shrinks the expired-input penalty: 0.5x → 0.38 → 0.26 → 0.15 | Pairs with Buffer Window into a real "press early, press often" build. Never zero — an expired press must always mean something |
 | **Repair Field** | Restores 0.6 / 1.2 / 2.0 HP per second of **clean** travel | The answer to scaling wall damage. Pays for the same thing the speed ramp does (§3) and cannot be farmed: no regen while parked or scraping |
+| **Quadrant** | A corner box dividing the maze 2×2 / 3×3 / 4×4, lighting the region you are in | Position, never route. Quadrant 1 holds the start, the highest holds the exit — so it says how far through you are without saying which way to turn |
+| **Compass** | A cardinal readout of the direction you face: N / E / S / W | Absolute, where Gate Compass is relative. Tells the truth — the exit is south-east, not north |
 
 **Four lines were deepened** to grow the tree against the pick count above: Buffer Window and
 Base Speed to 7 ranks, Barrier Capacity and Barrier Regen to 6. These were chosen because
@@ -1161,38 +1167,126 @@ lies on the boundary of a genuinely open neighbour *and* that its span is perpen
 the direction it marks. This is the inverse of the check it replaced — the wall panels had to
 be flush against a wall face; a strip marks an opening, so a wall under it is now the failure.
 
-> **A long gold ribbon down a corridor is the Golden Trail, not a broken strip.** At a
+> **A long ribbon down a corridor is a trail, not a broken strip.** At a
 > junction the two look alike, and a mis-oriented strip would sit at exactly the right
 > position — so it was diagnosed as a rotation bug and "fixed" twice against geometry that
-> measured correct the whole time. `PathStripShot.gd` keeps Golden Trail out of its frames on
-> purpose, so anything lying lengthwise in those shots is a real bug.
+> measured correct the whole time. `PathStripShot.gd` keeps **both** trail lines out of its
+> frames on purpose, so anything lying lengthwise in those shots is a real bug. Platinum is
+> excluded on its own merits and not merely by association: it is the same ribbon in silver,
+> and silver against a lit floor strip is if anything the easier of the two to misread.
 
-### Golden Trail
+### The two trails: Golden and Platinum
 
-A golden streak fires from the player on a timer, runs forward along the
-distance-field-descending route, and fades. It is **periodic, not continuous** --
-that is the whole design.
+A streak fires from the player on a timer, runs the whole route ahead of them, and
+fades. It is **periodic, not continuous** — that is the whole design.
 
-| Rank | Interval | Length |
+There are **two lines**, the same mechanism aimed at two different questions:
+
+| | Golden | Platinum |
 |---|---|---|
-| 1 | 12s | 10 cells |
-| 2 | 8s | 15 cells |
-| 3 | 5s | 20 cells |
+| Routes to | the nearest **gate not yet taken** | the **exit** |
+| Colour | warm gold | cool silver-white |
+| Interval by rank | 12s / 8s / 5s | 15s / 10s / 6s |
+| Available | always | only after **5 gates** are banked |
+
+**Rank sets the interval, not a length.** The trail runs the *entire* route to its
+target, and how far the player actually sees is set by **their own speed**: the head
+advances at 2x the racer's cell rate for at most `TRAIL_MAX_DRAW` (2.5s), so a 1x
+racer is shown ~5 cells and an 8x racer ~40. That is deliberately the opposite of the
+fixed cell count it replaced, which handed the fast player — who has the least time to
+read a junction — exactly as much lookahead as the slow one. **Reach is a duration
+scaled by speed, which is the one thing that makes lookahead worth more when the game
+is harder.**
+
+The old `TRAIL_CELLS_BY_RANK` was deleted rather than kept at a large value. A cap
+that never binds is a number a later reader has to prove inert before they can ignore
+it — the same trap §8 records for the dead-end density target.
+
+**A gate is not on the distance-field gradient, which is why `route_to` exists.**
+`route_from` descends the field, and the field knows exactly one destination. Walking
+toward a gate frequently means walking *away* from the exit, so no amount of reading
+`distance_field` answers it; Golden needs a plain BFS to an arbitrary cell. It is
+bounded for the same reason `_reaches_exit_avoiding` is, but generously: unlike a
+branch classification, this must never return a *wrong* answer when it runs long. A
+target beyond the cap yields **no route at all**, which reads as the trail waiting a
+cycle rather than as it pointing somewhere untrue.
+
+**Golden takes the nearest uncollected gate by route length, not by placement order.**
+Gate order is a property of the canonical solve path, and a braided maze (§8) routinely
+puts a later gate closer than an earlier one. Sending the streak to gate 2 while gate 5
+is round the corner would be advice the player is right to ignore, which is worse than
+no advice. Once every gate is taken Golden falls back to the exit, so the line does not
+go dead for the rest of the maze.
+
+#### Platinum waits for five gates, and the two never draw at once
+
+**Platinum says nothing until `PLATINUM_MIN_GATES` (5 of 8) are banked.** The two lines
+own different halves of a maze: up to that point the live question is *where are my
+upgrades*, and a silver ribbon pointing at the exit during that stretch is an invitation
+to skip picks the player has already spent a card on. Past it the question genuinely
+becomes *get me out*. Five is late enough that the gate tour is clearly the early maze's
+business, early enough that Platinum still has real maze left to be useful in rather
+than firing once on the way through the exit arch.
+
+**The two must never be on screen together, and this had to be enforced.** They are
+ribbons of the same shape on the same floor, and gates sit on the solve path — so most
+of the time the route to the next gate *is* the route to the exit and the two lie
+exactly on top of each other. Drawn together the near one simply paints over the far
+one, and the player sees one ribbon in a muddled colour: worse than either alone, and it
+destroys the one thing the split is for, which is seeing the two **disagree**.
+
+This is not an edge case. At rank 3 the intervals are 5s and 6s against a draw phase of
+up to 2.5s plus a 2s linger, so overlap is the common case — and the first rendered frame
+of both lines together showed exactly that, gold over silver with the silver reading as a
+white smear underneath. **Only a rendered frame could show it**; both nodes were behaving
+correctly on their own terms.
+
+The gate threshold does most of the work, since before gate 5 only Golden can fire at
+all. The **interlock** covers what is left: a trail whose cooldown expires while the
+other is drawing **defers rather than skips** — the cooldown is not reset, so it fires
+the moment the other clears. Skipping the cycle would make a rank of Platinum quietly
+worth less than its card claims whenever Golden happened to be busy.
+
+`RulesTest` asserts both directly, and the overlap check carries a **second assertion
+that Platinum fired at all** — "never overlaps" is trivially true of a line that never
+appears. Verified by removing the interlock: the check fails without it and passes with
+it.
+
+#### Both, mechanically
 
 - **Travels at 2x the player's current speed**, so it pulls away and stays ahead.
   Tying it to live speed rather than a fixed rate keeps it legible: at 5x the
-  player would otherwise outrun a fixed-rate streak and see it trailing behind.
+  player would otherwise outrun a fixed-rate streak and see it trailing behind. It
+  is now also what makes *reach* scale with speed, since length no longer does.
+- **The draw phase is bounded in seconds** (`TRAIL_MAX_DRAW`). With the route
+  uncapped, a slow racer would still be drawing when the next firing was due, so a
+  trail could monopolise its own line and never re-snapshot from the player's
+  current cell — which is the thing that keeps the ribbon honest.
 - **Lingers 2s** after it finishes drawing, so a trail fired just before a
   junction is still on screen when the junction arrives.
 - **Free and automatic.** No input, no speed cost. Adding a fourth key would
-  break the three-input contract in section 2, and an automatic timer that
+  break the three-input contract in §2, and an automatic timer that
   silently taxed speed would be unreadable.
+- **One node class serves both**, differing only in target and colour. A second class
+  would have been a second copy of the ribbon, the shader and the timing to keep in
+  step — the parallel-array trap of §6 and §9c wearing different clothes. `mode` is a
+  **setter** because `Game` assigns it after `add_child`, which is when `_ready` builds
+  the material; a plain field would have left a platinum trail wearing gold, a failure
+  nothing headless can see.
+- **Card text is derived from the tuning tables**, never written out — including the
+  gate threshold. Same reason Fast Turnaround's is (§7): a description that restates a
+  tuning value goes stale silently, and the player makes a decision on it.
 
-**Why it does not duplicate Path Indicator.** Path Indicator answers *this
-junction, right now*, every junction, forever. Golden Trail answers *where does
+**Why they do not duplicate Path Indicator.** Path Indicator answers *this
+junction, right now*, every junction, forever. A trail answers *where does
 this whole corridor go*, a few times a minute, and says nothing in between. One
 is a continuous readout, the other is an occasional map. Taking both is meant to
 be strong; taking either alone leaves a real gap.
+
+`TrailShot.gd` is the picture half. It **seeks a frame where Platinum is mid-firing**
+rather than shooting on a timer — the silver line appearing at all is the fixture, since
+Golden shows in every other frame of a run — and it reports `OVERLAP` on every shot,
+which must always be false.
 
 ### Legendaries
 
@@ -1340,6 +1434,113 @@ banks a small number multiplied by a small number. At max rank a run is worth ~7
 Deliberately **not** added to the time multiplier, which is already the dominant term in the
 score (§8b): a line that pushed that number directly would be a must-pick, and would flatten
 the choice between it and the survival lines it is supposed to compete with.
+
+### Quadrant and Compass — where you are, and which way you point
+
+Two lines, deliberately separate, answering two questions the maze never
+otherwise answers.
+
+| Line | Ranks | Effect |
+|---|---|---|
+| **Quadrant** | 3 | A small box in the corner drawing the maze divided into 2×2 / 3×3 / 4×4, with the region you occupy lit |
+| **Compass** | 1 | A cardinal readout: the direction you are facing, as N / E / S / W |
+
+**They sit on the "have I been here" side of the line**, which is the only
+reason they are safe to add. Landmarks (§6), the spent gate marker (§7) and the
+rear-view mirror (§12) all hold that line, and it is what keeps this from
+cannibalising Path Indicator, Gate Compass and Golden Trail — three *paid* lines
+sold on answering the route ahead. A quadrant number tells the player which
+sixteenth of the maze they stand in; it says nothing about which opening to
+take, and the box is **position only**, with no highlight for the region ahead.
+
+**The box is not a minimap and does not compete with one.** The minimap is
+local — 6 to 24 cells of actual corridor, rotated to the direction of travel
+(§12). The quadrant box is global, static, and carries no walls at all: 16 cells
+of nothing but *which sixteenth*. On a 100×100 maze the widest minimap covers
+under a quarter of one quadrant, so the two never overlap in what they show, and
+a player holding both is reading two different scales rather than the same
+information twice.
+
+#### Quadrants are numbered, and the exit is always the highest
+
+Numbering runs **row-major from the start corner**: quadrant 1 contains
+`start_cell`, and the last quadrant contains `exit_cell`. At 2×2 the exit is 4,
+at 3×3 it is 9, at 4×4 it is 16.
+
+That is a fact about the generator rather than a rule imposed on it. `start_cell`
+is `(0,0)` and `exit_cell` is `(width-1, height-1)` — opposite corners — so
+row-major numbering from the start necessarily puts the exit last. **The
+numbering is derived from those two cells, never from a literal**, so a
+generator that ever moves either one keeps the promise instead of quietly
+breaking it. `RulesTest` asserts the two ends directly.
+
+**"You are in 6 of 16" is a progress statement, not a route.** It says how far
+through the maze the player has worked without saying how to get further, which
+is exactly the split §11.2 asks for: routing stays the player's problem, and
+what this buys is knowing whether the last two minutes of driving actually went
+anywhere. In a maze braided to 30% that is a genuinely hard thing to know.
+
+#### The compass tells the truth about north, and the exit is not in it
+
+North is north: `-Y` on the grid, the direction `Maze.N` already means. **The
+exit is in the SOUTH-EAST**, because the start is the north-west corner and the
+exit is the opposite one.
+
+**An "exit is always north" compass was considered and rejected.** Relabelling
+the bearing so the exit reads north makes the compass a second route hint
+wearing a cardinal costume — and it would disagree with the minimap, which draws
+real cells in real orientation. Moving the exit to the north edge instead is a
+generation change touching the solve path, the gate spacing and every measured
+solve time in §8, to buy a property the quadrant number already gives for free:
+**the exit is the highest quadrant**, whichever compass direction that is.
+
+So the two lines together answer the corner question without either one lying.
+The quadrant box says the exit is at 16 and you are at 6; the compass says you
+are pointing west. The player draws the conclusion, which is the part that is
+supposed to be theirs.
+
+**The compass is one rank, like Gate Compass.** There is no second thing a
+cardinal readout can do — it is either on or it is not, and a rank that added
+eight-point bearings would be precision nobody routes on at 8x.
+
+**It reads absolute, where Gate Compass reads relative.** Gate Compass shows an
+arrow *relative to facing* ("turn that way"), because it is a bearing to a
+target. This one shows the letter you are facing, because it is a statement
+about orientation itself. Two absolute readouts would be redundant; two relative
+ones could not tell you which way is north at all.
+
+#### It is a HUD element, not a world object
+
+Every other "have I been here" signal in the game is in the world — a landmark,
+a spent gate, a mirror — and this one is not, because **it is a fact about the
+whole maze rather than about anywhere in it**. There is no cell a quadrant box
+belongs to, which is the same argument §7 makes for keeping Gate Compass on the
+HUD after moving Path Indicator off it.
+
+**Top-left, stacked directly under the rear-view mirror**, in the one column §12
+established as empty on both platforms. The compass letter sits inside the
+quadrant box rather than in its own slot: the two are read together, and a
+player holding only the compass gets the letter on its own with no grid under it.
+
+**It hangs off the mirror's measured bottom edge, never off a constant.** Both
+widgets size themselves from the shorter viewport edge, so a literal offset here
+would be correct at one screen size and overlapping at every other — the
+hard-coded-band trap §12 records for the upgrade card row. `SceneTest` asserts
+the two rects do not intersect **at desktop and phone sizes**; a deliberately
+wrong gap fails at both, which is what says the check is not passing trivially.
+
+Two things only a rendered frame caught, and both are the §12 lesson that *rect
+clearance is not text clearance*:
+
+- **The count label reached up into the mirror.** "12 of 16" was drawn at a
+  negative offset above the grid, which put it outside this widget's rect and
+  inside the one stacked above. The two boxes never overlapped; their text did.
+  Both bands are now part of the box's own rect.
+- **The cardinal letter was a smudge.** At 15px in the dim label blue it was
+  illegible against the corridor, and a readout the player has to squint at is
+  not one they check at 8x — it is the only orientation cue on screen. It is now
+  22px in near-white, on a band wider than the glyph so the outline is not
+  clipped by the rect edge.
 
 ### Snap Turn reduces the freeze, never removes it
 
@@ -1958,6 +2159,25 @@ fetch would mean no daily run at all.
 versions, and a seed that changed on an engine upgrade would silently redraw every past daily
 maze — making old scores incomparable with new ones on a board whose whole premise is that
 the maze is fixed.
+
+**The name is picked BEFORE the first run, not after it.** A one-time prompt on the first
+PLAY, then never again. It was originally asked for on the end-of-run summary, on the
+reasoning that a finished score is when a player has a reason to care what it is filed
+under — and that is true, but it leaves a real hole: the run has *already posted* by the
+time the summary draws, so a first score lands on the board as `anon` and is only renamed
+if the player then fills the field in. A score good enough to reach a board is exactly the
+one that must not be anonymous.
+
+**It never blocks PLAY.** SKIP starts the run and posts as `anon`, and the summary keeps
+its field so a name can still be set afterwards. A player who will not name themselves is
+not a player who should be stopped from playing. The prompt is also skipped entirely when
+there is no board to post to — desktop, every harness, or an unreachable service — since
+it would otherwise be asking for something nothing will use.
+
+**A dimmed menu is still a menu.** The first version drew only the full-screen scrim, and a
+rendered frame showed the title landing on the logo's wordmark with the PLAY button visible
+straight through the name field. The prompt needs its own filled card to sit on, or it reads
+as text scattered over the screen rather than as something to answer.
 
 **Anonymous auth, not the cookbook's email/password.** Nobody makes an account before their
 first two-minute run, and a score that needs a signup to count is a score that gets thrown
@@ -2668,8 +2888,8 @@ Six harnesses, each answering a different question:
 
 | Harness | Question it answers |
 |---|---|
-| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, and the date-derived daily and monthly seeds. 358 assertions. |
-| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, and the end-of-run summary on both the death and completion paths. 145 assertions. |
+| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely. 421 assertions. |
+| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths. 170 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
 | `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, and the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed. 69 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 22 assertions. |
@@ -2744,12 +2964,34 @@ Indicator (§7) are actually in the picture. It seeks a junction rather than sho
 timer, because a shot taken on a timer lands in a plain corridor and shows nothing of the
 indicator it exists to check.
 
+`TrailShot.gd` is the picture half of the two trail lines (§7). It **seeks a frame where
+Platinum is mid-firing** rather than shooting on a timer — Platinum is not eligible until
+5 of 8 gates are banked, so an untimed shot lands in the first half of a maze and can only
+ever show Golden, which every other frame of a run already shows. Its budget is
+deliberately large for the same reason: a budget sized for "wait for a junction" expires
+long before the fixture can exist, and the tool then shoots a frame with no silver in it
+and reports success.
+
+It reports `OVERLAP` on every shot, which must always be false. The tool's **first
+version** held out for both trails visible together, and the frame it produced is why the
+interlock exists — gold drawn over silver down the same corridor, the silver reading as a
+white smear beneath it. Both nodes were behaving correctly on their own terms; only the
+rendered frame showed the result.
+
 `PathStripShot.gd` aims at the Path Indicator alone, and it seeks a junction where **two or
 more colours are actually on screen** — a frame showing three strips that all say the same
 thing does not demonstrate the scheme. It keeps Golden Trail out of the shot deliberately:
 the trail is a long gold ribbon drawn *along* the route, it looks exactly like a strip laid
 the wrong way, and mistaking it for one cost two "fixes" to geometry that measured correct
 throughout.
+
+`QuadrantShot.gd` is the picture half of the Quadrant box and the Compass (§7): three
+frames at each of the three ranks. It **seeks a region change** rather than shooting on a
+timer, and that is the whole point of the tool — a box that never updated would look
+*identical* to a working one in any single frame, since a lit square is a lit square.
+Shooting either side of a crossing is the only frame pair that shows the highlight
+actually move. It caught both the count label reaching into the mirror and the cardinal
+letter being too faint to read.
 
 `RearViewShot.gd` is the picture half of the rear-view mirror (§12): two frames per maze,
 one a cell or two **past a turn** and one at a junction. It seeks the corner rather than

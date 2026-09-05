@@ -17,7 +17,10 @@
 class_name MainMenu
 extends Control
 
-signal play_pressed()
+# Carries the board the run counts toward (Tuning.Board). Shell hands it
+# straight to Game.board, which is what derives the seed -- so DAILY and MONTHLY
+# are not a separate mode, they are the ordinary game with a date-derived seed.
+signal play_pressed(board: int)
 signal trailer_pressed()
 
 const COL_ACCENT := Color(0.12, 0.85, 1.0)
@@ -78,8 +81,18 @@ const _COG_STEP: Array[float] = [0.06, 0.20, 0.30, 0.44]
 const COG_SIZE := 52.0
 const COG_MARGIN := 24.0
 
-# Where the button stack starts, relative to screen centre. The stack grows
-# downward from here and the hint follows it.
+# Where the button stack starts, relative to screen centre.
+#
+# The stack hangs BELOW the logo and grows downward -- it is deliberately not
+# centred on its own height. Centring was tried and the two constraints fight:
+# any centre that keeps the hint clear of the bottom edge at five buttons puts
+# the stack's top above the logo's baseline (-75), so the title and the first
+# button overlap. Hanging from a fixed top is what keeps both ends honest.
+#
+# The number that actually needed deriving is the stack's HEIGHT, which reads
+# the button count (see _build_buttons) -- that is the section 12 trap, and it
+# was already avoided. This offset is a gap below the logo, which does not
+# change with the count.
 const ROW_TOP := -40.0
 
 # --- Two columns (docs/plans/leaderboards.md) --------------------------------
@@ -109,6 +122,9 @@ const PANEL_MARGIN := 28.0
 const TWO_COLUMN_MIN_WINDOW_WIDTH := 1100.0
 
 var _leaderboard: LeaderboardPanel = null
+
+# The one-time name prompt, built on the first PLAY when no name is stored.
+var _name_modal: Control = null
 
 var _buttons: Array[Button] = []
 var _hint: Label = null
@@ -241,7 +257,15 @@ func _build_buttons() -> void:
 	row.offset_right = BUTTON_SIZE.x * 0.5
 	add_child(row)
 
-	row.add_child(_make_button("PLAY", _on_play))
+	# One button per board rather than a selector beside PLAY: a toggle would
+	# make starting a daily run two presses and would need the lit board to be
+	# legible at a glance, where a labelled button says which maze it starts by
+	# being pressed. The stack height is derived from the count below, so
+	# growing it from three to five costs nothing but the space it takes.
+	row.add_child(_make_button("PLAY", _on_play.bind(Tuning.Board.GENERAL)))
+	row.add_child(_make_button("PLAY DAILY", _on_play.bind(Tuning.Board.DAILY)))
+	row.add_child(_make_button("PLAY MONTHLY",
+		_on_play.bind(Tuning.Board.MONTHLY)))
 	row.add_child(_make_button("WATCH TRAILER", _on_trailer))
 	# MOBILE CONTROLS used to sit here. It moved into the settings panel so
 	# that preferences live in exactly one place -- a toggle in the button
@@ -560,8 +584,145 @@ func _on_toggle_touch() -> void:
 		_hint.text = _hint_text()
 
 
-func _on_play() -> void:
-	emit_signal("play_pressed")
+# PLAY, with the leaderboard name asked for once before the first run.
+#
+# The name is picked BEFORE driving rather than on the end-of-run summary, and
+# the reason is a real flaw in doing it after: a first run posts immediately, so
+# it lands on the board as "anon" and is only renamed if the player then fills
+# the field in. That leaves a genuine score filed under the wrong name for as
+# long as it takes them to notice -- and a score good enough to reach a board is
+# exactly the one that must not be anonymous.
+#
+# It gates only the FIRST run. Once a name is stored, PLAY starts a run with no
+# interruption, because a prompt on every launch would be a toll on the button
+# the whole menu exists to press.
+func _on_play(board: int) -> void:
+	var lb := _board()
+	# Absent on desktop and in every harness, and unavailable when the service
+	# cannot be reached. Either way there is no board to be named on, so the
+	# prompt would be asking for something nothing will use.
+	if lb == null or not lb.available or lb.has_name():
+		emit_signal("play_pressed", board)
+		return
+	_ask_name(board)
+
+
+# The one-time name prompt.
+#
+# Deliberately not a blocker: SKIP starts the run and the score posts as "anon",
+# which is still better than refusing to let someone play until they have named
+# themselves. The name can be set later from the summary, which already has the
+# field.
+func _ask_name(board: int) -> void:
+	if _name_modal != null and is_instance_valid(_name_modal):
+		return
+
+	_name_modal = Control.new()
+	_name_modal.name = "NamePrompt"
+	_name_modal.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_name_modal.mouse_filter = Control.MOUSE_FILTER_STOP
+	_name_modal.add_to_group(GROUP_BACKDROP)
+	add_child(_name_modal)
+
+	var scrim := ColorRect.new()
+	scrim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	scrim.color = Color(0.01, 0.015, 0.03, 0.88)
+	scrim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_name_modal.add_child(scrim)
+
+	# A real card behind the text, not just a scrim over the menu.
+	#
+	# The first version had only the full-screen scrim, and a rendered frame
+	# showed why that is not enough: the title landed on the RACER wordmark and
+	# the PLAY button showed straight through the name field. A dimmed menu is
+	# still a menu -- the prompt needs its own surface to sit on, or it reads as
+	# text scattered over the screen rather than as something to answer.
+	var plate := PanelContainer.new()
+	plate.anchor_left = 0.5
+	plate.anchor_right = 0.5
+	plate.anchor_top = 0.5
+	plate.anchor_bottom = 0.5
+	plate.offset_left = -250.0
+	plate.offset_right = 250.0
+	plate.offset_top = -108.0
+	plate.offset_bottom = 108.0
+	var plate_style := StyleBoxFlat.new()
+	plate_style.bg_color = Color(0.04, 0.06, 0.10, 0.97)
+	plate_style.set_corner_radius_all(14)
+	plate_style.set_border_width_all(1)
+	plate_style.border_color = Color(0.22, 0.40, 0.56, 0.7)
+	plate_style.content_margin_left = 26.0
+	plate_style.content_margin_right = 26.0
+	plate_style.content_margin_top = 22.0
+	plate_style.content_margin_bottom = 22.0
+	plate.add_theme_stylebox_override("panel", plate_style)
+	_name_modal.add_child(plate)
+
+	var card := VBoxContainer.new()
+	card.add_theme_constant_override("separation", 12)
+	plate.add_child(card)
+
+	card.add_child(_centred_line("NAME FOR THE LEADERBOARD", 20, COL_ACCENT))
+	card.add_child(_centred_line("shown beside your scores", 13, COL_DIM))
+
+	var field := LineEdit.new()
+	field.placeholder_text = "your name"
+	field.max_length = 24
+	field.custom_minimum_size = Vector2(0, 38)
+	field.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	card.add_child(field)
+
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 10)
+	card.add_child(row)
+
+	var start := Button.new()
+	start.text = "START RUN"
+	start.custom_minimum_size = Vector2(160, 40)
+	row.add_child(start)
+
+	var skip := Button.new()
+	skip.text = "SKIP"
+	skip.custom_minimum_size = Vector2(100, 40)
+	row.add_child(skip)
+
+	var go := func(save: bool) -> void:
+		if save:
+			var chosen := field.text.strip_edges()
+			if chosen != "":
+				var b := _board()
+				if b != null:
+					b.set_player_name(chosen)
+		_close_name_modal()
+		emit_signal("play_pressed", board)
+
+	start.pressed.connect(go.bind(true))
+	skip.pressed.connect(go.bind(false))
+	# Enter submits, so the whole thing is type-and-go without reaching for the
+	# mouse -- the same reason the upgrade cards take 1/2/3.
+	field.text_submitted.connect(func(_t): go.call(true))
+	field.grab_focus.call_deferred()
+
+
+func _close_name_modal() -> void:
+	if _name_modal != null and is_instance_valid(_name_modal):
+		_name_modal.queue_free()
+	_name_modal = null
+
+
+func _centred_line(text: String, size: int, colour: Color) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", colour)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return l
+
+
+func _board() -> Node:
+	return get_node_or_null("/root/Leaderboard")
 
 
 func _on_trailer() -> void:

@@ -65,9 +65,12 @@ var _environment: Environment
 var _marker: PlayerMarker
 var _path_indicator: PathIndicator
 var _golden_trail: GoldenTrail
+var _platinum_trail: GoldenTrail
 var _mesh: MazeMesh
 var _hud: HUD
 var _minimap: Minimap
+var _rear_view: RearView
+var _quadrant_box: QuadrantBox
 var _upgrade_screen: UpgradeScreen
 var _run_summary: RunSummary
 var _touch: TouchControls
@@ -145,6 +148,21 @@ func _build_world() -> void:
 	_golden_trail = GoldenTrail.new()
 	_golden_trail.name = "GoldenTrail"
 	_world.add_child(_golden_trail)
+	# mode is set AFTER add_child, which is when _ready builds the material.
+	# GoldenTrail.mode is a setter for exactly that reason -- see its comment.
+	_golden_trail.mode = GoldenTrail.Mode.GOLDEN
+
+	_platinum_trail = GoldenTrail.new()
+	_platinum_trail.name = "PlatinumTrail"
+	_world.add_child(_platinum_trail)
+	_platinum_trail.mode = GoldenTrail.Mode.PLATINUM
+
+	# The two ribbons are the same shape on the same floor, and gates sit on the
+	# solve path -- so left alone they draw on top of each other and the player
+	# sees one muddled line instead of two that disagree. Pairing them means
+	# whichever fires second waits rather than overlapping.
+	_golden_trail.set_partner(_platinum_trail)
+	_platinum_trail.set_partner(_golden_trail)
 
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
@@ -245,6 +263,24 @@ func _build_ui() -> void:
 	_minimap.name = "Minimap"
 	ui_root.add_child(_minimap)
 
+	# The rear-view mirror. Top-left under the speed row, and it renders the
+	# SAME World3D the main camera does -- see RearView.gd for why a second copy
+	# of the world would be the wrong construction.
+	#
+	# Added after the minimap and before the upgrade screen, so the cards and
+	# the summary both draw over it.
+	_rear_view = RearView.new()
+	_rear_view.name = "RearView"
+	ui_root.add_child(_rear_view)
+	_rear_view.attach_world(get_viewport().world_3d)
+
+	# The quadrant box hangs under the mirror in the same left column. It is
+	# given the mirror's bottom edge rather than measuring it, so the two cannot
+	# drift apart -- see QuadrantBox.place().
+	_quadrant_box = QuadrantBox.new()
+	_quadrant_box.name = "QuadrantBox"
+	ui_root.add_child(_quadrant_box)
+
 	_upgrade_screen = UpgradeScreen.new()
 	_upgrade_screen.name = "UpgradeScreen"
 	_upgrade_screen.upgrade_chosen.connect(_on_upgrade_chosen)
@@ -285,6 +321,51 @@ func _build_ui() -> void:
 	if settings != null:
 		settings.touch_controls_changed.connect(
 			func(_enabled: bool) -> void: _apply_touch_setting())
+
+	# The mirror derives its whole size from the viewport's shorter edge, so it
+	# has to be re-placed whenever that changes -- otherwise a window resized
+	# after boot leaves a box sized for the old screen, and on a phone that is
+	# the difference between a usable mirror and a postage stamp. The minimap
+	# gets the same call for the same reason.
+	ui_root.resized.connect(_place_ui)
+	_place_ui()
+
+
+# Positions everything whose layout is derived from the viewport size rather
+# than fixed by anchors. Called at build and on every resize.
+func _place_ui() -> void:
+	_place_minimap()
+	_place_rear_view()
+	_place_quadrant_box()
+
+
+func _place_rear_view() -> void:
+	if _rear_view == null:
+		return
+	var parent := _rear_view.get_parent()
+	if parent == null:
+		return
+	var view: Vector2 = parent.size
+	if view.x <= 0.0 or view.y <= 0.0:
+		return
+	_rear_view.place(view)
+
+
+# Hung off the MIRROR's bottom edge rather than off a constant of its own. Both
+# widgets size themselves from the viewport's shorter edge, so a literal here
+# would be correct at one screen size and overlap at every other -- the same
+# hard-coded-band trap CLAUDE.md section 12 records for the upgrade card row.
+func _place_quadrant_box() -> void:
+	if _quadrant_box == null:
+		return
+	var parent := _quadrant_box.get_parent()
+	if parent == null:
+		return
+	var view: Vector2 = parent.size
+	if view.x <= 0.0 or view.y <= 0.0:
+		return
+	var top: float = _rear_view.offset_bottom if _rear_view != null else 96.0
+	_quadrant_box.place(view, top)
 
 
 # The minimap sits DIRECTLY BELOW THE PLAYER MARKER, on desktop and mobile
@@ -404,6 +485,8 @@ func _start_maze(index: int) -> void:
 
 	if _golden_trail:
 		_golden_trail.reset()
+	if _platinum_trail:
+		_platinum_trail.reset()
 
 	racer = Racer.new()
 	racer.setup(maze, upgrades, index)
@@ -567,6 +650,42 @@ func _process(delta: float) -> void:
 	if racer:
 		_hud.update_hud(racer, upgrades, elapsed,
 			String(Tuning.MAZES[maze_index]["name"]), maze_index, score)
+		_update_quadrant_box()
+
+
+# Feeds the quadrant box everything it draws.
+#
+# It is NOT frozen with the phase the way the mirror is. The mirror shows live
+# corridor, so a stopped clock would hand the player a free look at the world;
+# this shows which sixteenth of the maze they occupy, which does not change
+# while they are parked and gives nothing away when it is read at leisure. The
+# same reasoning that makes it safe as a free-standing readout makes it safe
+# during a pick.
+func _update_quadrant_box() -> void:
+	if _quadrant_box == null or racer == null or racer.maze == null:
+		return
+
+	var divisions := 0
+	var here := Vector2i(-1, -1)
+	var exit_at := Vector2i(-1, -1)
+	var number := 0
+	var total := 0
+
+	if upgrades.has_quadrant():
+		divisions = upgrades.quadrant_divisions()
+		here = racer.maze.quadrant_coord(racer.cell, divisions)
+		exit_at = racer.maze.quadrant_coord(racer.maze.exit_cell, divisions)
+		number = racer.maze.quadrant_of(racer.cell, divisions)
+		total = racer.maze.quadrant_count(divisions)
+
+	var cardinal := ""
+	if upgrades.has_cardinal_compass():
+		cardinal = Maze.cardinal_name(racer.facing)
+
+	_quadrant_box.show_state(divisions, here, exit_at, number, total, cardinal)
+	# Hidden outright when neither line is held, so an untaken pair costs no
+	# pixels rather than leaving an empty frame in the corner.
+	_quadrant_box.visible = divisions > 0 or cardinal != ""
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -700,6 +819,24 @@ func _update_camera(delta: float) -> void:
 		_marker.rotation = Vector3(0.0, _yaw_for(racer.facing), 0.0)
 		_marker.update_state(racer, delta)
 
+	# Aimed off the RACER's facing, not the camera's trailing yaw. The chase
+	# camera deliberately lags through a pivot so the swing reads smoothly
+	# (the turn freeze exists to pay for exactly that), but a mirror that lagged
+	# would spend every corner showing the wall it was in the middle of leaving.
+	# The mirror is an instrument: it should be pointing behind you the moment
+	# you are facing the new way.
+	if _rear_view:
+		_rear_view.aim(ground, racer.facing_vector())
+		# Frozen off the PHASE, in one place, rather than a line beside each of
+		# the seven sites that blur the minimap. Those sites blur because each
+		# knows it is opening a modal; the mirror only cares whether the clock
+		# is stopped, and deriving that from the phase means a phase added later
+		# cannot forget to freeze it. It stops rendering rather than blurring:
+		# it only ever shows ground already driven, so there is nothing to
+		# scramble -- the cost being paid is a free look at a static world on a
+		# stopped clock, and not drawing it is the cheapest way to refuse that.
+		_rear_view.frozen = phase != Phase.RACING
+
 	# Flying Vision lifts the camera clear of the maze and looks straight down.
 	#
 	# This is the ONE place the section 12 rule "camera height stays below
@@ -734,6 +871,11 @@ func _update_camera(delta: float) -> void:
 			_golden_trail.update_state(racer, upgrades, delta)
 		else:
 			_golden_trail.visible = false
+	if _platinum_trail:
+		if phase == Phase.RACING:
+			_platinum_trail.update_state(racer, upgrades, delta)
+		else:
+			_platinum_trail.visible = false
 
 	_cam_target_yaw = _yaw_for(racer.facing)
 	# Rotate the short way round, so a west-to-north turn does not spin 270.

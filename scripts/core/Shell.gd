@@ -28,8 +28,11 @@ func show_menu() -> void:
 	_swap(Mode.MENU, _build_menu())
 
 
-func start_game() -> void:
-	_swap(Mode.GAME, _build_game())
+# `board` decides the seed and which leaderboard the run posts to. It defaults
+# to GENERAL so a caller that just wants a game -- ShellTest, and anything else
+# driving the shell -- keeps the wall-clock seed it always had.
+func start_game(board: int = Tuning.Board.GENERAL) -> void:
+	_swap(Mode.GAME, _build_game(board))
 
 
 func start_trailer() -> void:
@@ -66,8 +69,12 @@ func _build_menu() -> Node:
 # starts it in _start_maze. Setting a run-wide track here would fight that, and
 # a game instantiated bare by a harness would behave differently from one
 # reached through the menu.
-func _build_game() -> Node:
+func _build_game(board: int) -> Node:
 	var game: Node = load("res://scenes/Game.tscn").instantiate()
+	# Before add_child, not after: Game._ready derives run_seed from this, so a
+	# board set afterwards would arrive one maze too late -- the same ordering
+	# trailer_seed needs, and for the same reason.
+	game.board = board
 	# Back to the menu when the player dismisses the end-of-run summary, the
 	# same shape as the trailer's finished signal. Game does not free itself:
 	# owning the mode swap is this node's whole job, and a harness that loads

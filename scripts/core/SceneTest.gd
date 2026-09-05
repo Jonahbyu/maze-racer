@@ -213,6 +213,8 @@ func _run() -> void:
 	_check_pause(game)
 	_check_landmark_meshes(game)
 	_check_minimap_placement(game)
+	_check_rear_view(game)
+	_check_quadrant_box(game)
 	_check_gate_names_survive_a_rebuild()
 	_check_run_summary()
 
@@ -1028,6 +1030,133 @@ func _check_minimap_placement(game) -> void:
 	game._place_minimap()
 
 
+# The rear-view mirror renders the REAL world, points BEHIND the player, and
+# clears the HUD bands that already own their pixels.
+#
+# The half worth asserting headlessly is the wiring, not the picture: that the
+# sub-viewport shares the main World3D rather than rendering an empty room, that
+# the mirror camera faces opposite the racer, and that the box lands where it is
+# meant to at more than one size. What it looks like is RearViewShot's job.
+func _check_rear_view(game) -> void:
+	var mirror = game._rear_view
+	check("the rear view exists", mirror != null)
+	if mirror == null:
+		return
+
+	var viewport: SubViewport = mirror._viewport
+	var camera: Camera3D = mirror._camera
+	check("the mirror has a viewport", viewport != null)
+	check("the mirror has a camera", camera != null)
+	if viewport == null or camera == null:
+		return
+
+	# THE assertion that matters most. A SubViewport builds its own empty
+	# World3D unless one is handed to it, and an empty world renders as flat
+	# background -- which looks like a mirror that is simply dark, not like one
+	# that is wired wrong. Sharing the main world is what makes it truthful.
+	check("the mirror shares the main world",
+		viewport.world_3d == game.get_viewport().world_3d)
+
+	# A zero on either axis is a viewport that renders nothing at all.
+	check("the mirror viewport has a real size",
+		viewport.size.x > 0 and viewport.size.y > 0,
+		"size %dx%d" % [viewport.size.x, viewport.size.y])
+
+	# Points BEHIND. The camera's -Z is its forward, so a mirror aimed correctly
+	# has that forward opposing the racer's facing -- the dot must be clearly
+	# negative, not merely non-positive, or a camera aimed 90 degrees sideways
+	# would satisfy it.
+	game._process(0.016)
+	var facing: Vector3 = game.racer.facing_vector()
+	var look: Vector3 = -camera.global_transform.basis.z
+	var flat_look := Vector3(look.x, 0.0, look.z).normalized()
+	var flat_facing := Vector3(facing.x, 0.0, facing.z).normalized()
+	check("the mirror looks behind the player",
+		flat_look.dot(flat_facing) < -0.5,
+		"dot %.3f" % flat_look.dot(flat_facing))
+
+	# It must sit near the player, not somewhere else in the maze. The whole
+	# mirror is worthless if it is framing another corridor entirely.
+	var ground: Vector3 = game.racer.world_position()
+	ground.y = 0.0
+	var eye := camera.global_position
+	check("the mirror camera rides with the player",
+		Vector2(eye.x - ground.x, eye.z - ground.z).length() < Tuning.CELL_SIZE,
+		"%.2f from the marker" % Vector2(eye.x - ground.x, eye.z - ground.z).length())
+
+	# Placement, at two sizes, for the reason _check_minimap_placement gives:
+	# the box derives its size from the shorter viewport edge, so one size
+	# proves nothing about the branch it does not take. Headless ignores
+	# window_set_size, so UIRoot is driven directly.
+	var ui: Control = mirror.get_parent()
+	ui.anchor_right = 0.0
+	ui.anchor_bottom = 0.0
+
+	for view in [Vector2(1600.0, 900.0), Vector2(844.0, 390.0)]:
+		ui.size = view
+		game._place_ui()
+		for i in 3:
+			game._process(0.016)
+
+		var box: Rect2 = mirror.get_rect()
+		var label := "at %dx%d" % [int(view.x), int(view.y)]
+
+		# Below the speed / maze / timer row, which runs to y=70. Anything
+		# overlapping it collides with a timer whose width CHANGES past a
+		# minute -- the section 9d failure.
+		check("the mirror clears the top HUD row %s" % label,
+			box.position.y >= 70.0, "top %.1f" % box.position.y)
+
+		# Fully on screen. A box sized off the wrong edge runs off it, which is
+		# the failure the touch pads had.
+		check("the mirror stays on screen %s" % label,
+			box.position.x >= 0.0 and box.end.x <= view.x \
+				and box.end.y <= view.y,
+			"rect %s in %s" % [box, view])
+
+		# Clear of the bottom band the barrier and integrity bars own. On a
+		# phone the top band is clamped, so this is the check that stops the
+		# clamp pushing the mirror down onto them.
+		check("the mirror clears the bottom bars %s" % label,
+			box.end.y <= view.y - 120.0 or view.y < 400.0,
+			"bottom %.1f of %.1f" % [box.end.y, view.y])
+
+		# And large enough to be worth having. A mirror that satisfied every
+		# clearance above by collapsing to nothing would pass and show nothing.
+		check("the mirror stays legible %s" % label,
+			box.size.x >= RearView.MIN_SIZE.x - 1.0,
+			"width %.1f" % box.size.x)
+
+		# The render target tracks the control, or the picture is stretched
+		# from a stale size.
+		check("the viewport tracks the box %s" % label,
+			absi(viewport.size.x - int(box.size.x)) <= 1,
+			"viewport %d vs box %.1f" % [viewport.size.x, box.size.x])
+
+	# Left as found: later checks share this scene, and a tool must not write
+	# the state it inspects (section 9d).
+	ui.anchor_right = 1.0
+	ui.anchor_bottom = 1.0
+	ui.offset_right = 0.0
+	ui.offset_bottom = 0.0
+	game._place_ui()
+
+	# Frozen off the phase, in one place, so a phase added later cannot forget
+	# to freeze it. Asserted through _process rather than by setting the flag,
+	# because the derivation is the thing that would rot.
+	game.phase = 4  # PAUSED
+	game._process(0.016)
+	check("the mirror freezes when the clock stops", mirror.frozen)
+	check("a frozen mirror stops rendering",
+		mirror._viewport.render_target_update_mode == SubViewport.UPDATE_DISABLED)
+
+	game.phase = 0  # RACING
+	game._process(0.016)
+	check("the mirror resumes when racing does", not mirror.frozen)
+	check("a live mirror renders",
+		mirror._viewport.render_target_update_mode == SubViewport.UPDATE_ALWAYS)
+
+
 func _finish() -> void:
 	print("")
 	print("passed: %d   failed: %d" % [_passed, _failed])
@@ -1286,6 +1415,127 @@ class SummaryRecorder extends RefCounted:
 
 	func on_signal() -> void:
 		count += 1
+
+
+# The quadrant box: it builds, it stacks under the mirror without touching it,
+# and it lights the region the racer is actually in (CLAUDE.md section 7).
+#
+# Placement is what no headless rule test can see. The box and the mirror share
+# the left column and both size themselves off the shorter viewport edge, so
+# they can only be proven not to overlap by measuring them together at more
+# than one screen size.
+func _check_quadrant_box(game) -> void:
+	var box = game._quadrant_box
+	check("the quadrant box exists", box != null)
+	if box == null:
+		return
+
+	# Hidden while neither line is held: an untaken pair should cost no pixels
+	# rather than leave an empty frame in the corner.
+	game.upgrades.ranks[Upgrades.Line.QUADRANT] = 0
+	game.upgrades.ranks[Upgrades.Line.COMPASS] = 0
+	game._process(0.016)
+	check("the box is hidden without either line", not box.visible)
+	check("an untaken box draws no grid", box.divisions == 0)
+
+	# The compass alone shows the letter with no grid under it.
+	game.upgrades.ranks[Upgrades.Line.COMPASS] = 1
+	game._process(0.016)
+	check("the compass alone shows the box", box.visible)
+	check("the compass alone draws no grid", box.divisions == 0)
+	check("the compass alone still reads a letter", box.cardinal != "")
+
+	game.upgrades.ranks[Upgrades.Line.QUADRANT] = 3
+	game._process(0.016)
+	check("a taken quadrant shows the box", box.visible)
+	check("rank 3 draws a 4x4 grid", box.divisions == 4,
+		"divisions %d" % box.divisions)
+	check("rank 3 counts 16 regions", box.quadrant_total == 16,
+		"total %d" % box.quadrant_total)
+
+	# The lit region must be the racer's OWN, re-read from the racer in the same
+	# frame -- a node reference captured before _process is stale after it, and
+	# a maze change mid-frame builds a whole new Racer on a new grid.
+	var racer = game.racer
+	var maze = racer.maze
+	check("the lit region is the racer's",
+		box.here == maze.quadrant_coord(racer.cell, box.divisions),
+		"lit %s for cell %s" % [box.here, racer.cell])
+	check("the printed number is the racer's",
+		box.quadrant_number == maze.quadrant_of(racer.cell, box.divisions),
+		"printed %d" % box.quadrant_number)
+
+	# The exit outline marks the highest region, which is the promise the card
+	# text makes. Derived from the maze rather than restated as (3,3), so a
+	# generator that moved the exit fails here instead of drawing the wrong box.
+	check("the exit outline is at the exit's region",
+		box.exit_at == maze.quadrant_coord(maze.exit_cell, box.divisions),
+		"outline %s" % box.exit_at)
+	check("the exit is the highest region",
+		maze.quadrant_of(maze.exit_cell, box.divisions) 			== maze.quadrant_count(box.divisions),
+		"exit is %d of %d" % [maze.quadrant_of(maze.exit_cell, box.divisions),
+			maze.quadrant_count(box.divisions)])
+
+	# The compass letter must match the way the racer actually faces. Read from
+	# the direction rather than compared to a literal "N", since the racer's
+	# heading here depends on wherever the earlier checks left it.
+	check("the compass letter matches the facing",
+		box.cardinal == Maze.cardinal_name(racer.facing),
+		"letter %s for facing %s" % [box.cardinal,
+			Maze.cardinal_name(racer.facing)])
+
+	# The letter must be one of the four. A missing entry would render "?" and
+	# look like a font problem rather than a wiring one.
+	check("the compass letter is cardinal",
+		box.cardinal in ["N", "E", "S", "W"], "letter %s" % box.cardinal)
+
+	# Placement, at two sizes, for the reason the mirror check gives: both boxes
+	# derive their size from the shorter edge, so the wide case alone would pass
+	# trivially. Headless ignores window_set_size, so UIRoot is driven directly.
+	var ui: Control = box.get_parent()
+	ui.anchor_right = 0.0
+	ui.anchor_bottom = 0.0
+
+	for view in [Vector2(1600.0, 900.0), Vector2(844.0, 390.0)]:
+		ui.size = view
+		game._place_ui()
+		for i in 3:
+			game._process(0.016)
+
+		var rect: Rect2 = box.get_rect()
+		var label := "at %dx%d" % [int(view.x), int(view.y)]
+
+		check("the quadrant box stays on screen %s" % label,
+			rect.position.x >= 0.0 and rect.end.x <= view.x \
+				and rect.position.y >= 0.0 and rect.end.y <= view.y,
+			"rect %s in %s" % [rect, view])
+
+		# THE placement assertion. The box hangs off the mirror's bottom edge
+		# rather than off a constant, and an overlap is exactly what a literal
+		# would produce at one of these two sizes -- the hard-coded-band trap.
+		var mirror = game._rear_view
+		if mirror != null:
+			var mrect: Rect2 = mirror.get_rect()
+			check("the quadrant box clears the mirror %s" % label,
+				not rect.intersects(mrect),
+				"box %s vs mirror %s" % [rect, mrect])
+			check("the quadrant box hangs below the mirror %s" % label,
+				rect.position.y >= mrect.end.y,
+				"box top %.1f vs mirror bottom %.1f" % [rect.position.y, mrect.end.y])
+
+		# Clear of the bottom band the barrier and integrity bars own, on a
+		# screen tall enough for that band to mean anything.
+		check("the quadrant box clears the bottom bars %s" % label,
+			rect.end.y <= view.y - 120.0 or view.y < 400.0,
+			"bottom %.1f of %.1f" % [rect.end.y, view.y])
+
+		# Large enough to read. A box satisfying every clearance above by
+		# collapsing to nothing would pass and show the player nothing -- and at
+		# 4x4 each region is a sixteenth of it, so the floor has to leave a
+		# region big enough to see.
+		check("the quadrant box stays legible %s" % label,
+			rect.size.x >= 60.0 and rect.size.y >= 60.0,
+			"size %s" % rect.size)
 
 
 func _check_gate_names_survive_a_rebuild() -> void:

@@ -102,17 +102,24 @@ func _autopilot() -> void:
 		racer.request_reverse()
 
 
-# Anything but Golden Trail.
+# Anything but a trail line -- either of them.
 #
-# The trail is a long gold ribbon drawn ALONG the route, and it is the one thing
-# on screen that can be mistaken for a strip laid the wrong way -- it reads as a
-# bar running lengthwise down a corridor, which is exactly the failure this tool
+# A trail is a long ribbon drawn ALONG the route, and it is the one thing on
+# screen that can be mistaken for a strip laid the wrong way -- it reads as a bar
+# running lengthwise down a corridor, which is exactly the failure this tool
 # exists to catch. It cost a wrong diagnosis and two "fixes" to correct geometry
 # before the ribbon was identified. Keeping it out of the frame means anything
 # long and lying down the corridor in these shots is a real bug.
+#
+# Platinum is excluded for the same reason and not merely by association: it is
+# the SAME ribbon in silver, and silver against a lit floor strip is if anything
+# the easier of the two to misread.
+const TRAIL_LINES := [Upgrades.Line.GOLDEN_TRAIL, Upgrades.Line.PLATINUM_TRAIL]
+
+
 func _pick(offered: Array) -> int:
 	for line in offered:
-		if int(line) != int(Upgrades.Line.GOLDEN_TRAIL):
+		if not TRAIL_LINES.has(int(line)):
 			return int(line)
 	return int(offered[0])
 

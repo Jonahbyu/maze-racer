@@ -15,17 +15,20 @@ run/main_scene="res://scenes/Main.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.png"
 
+[audio]
+
+driver/output_latency.web=100
+
 [autoload]
 
-; Music has to outlive Shell's scene swaps. Shell frees its entire live child on
-; every mode change, so a player parented under the menu or the game restarts
-; the track from zero on every button press. docs/specs/music.md
 Music="*res://scripts/core/Music.gd"
-
-; Settings outlives Shell's scene swaps for the same reason Music does: the
-; mobile-controls toggle is set in the menu and read by the game, and Shell
-; frees the menu on the way there.
 Settings="*res://scripts/core/Settings.gd"
+
+[debug]
+
+file_logging/log_path="res://logs/godot.log"
+file_logging/max_log_files=10
+cleanwhennothingwas#actuallychecked.Fileloggingisindependentoftheconsole,soitcaptures#playsessionstoo.file_logging/enable_file_logging=true
 
 [display]
 
@@ -33,13 +36,6 @@ window/size/viewport_width=1600
 window/size/viewport_height=900
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
-
-[input_devices]
-
-; The pads handle InputEventScreenTouch and mouse clicks both, but a phone
-; browser also needs mouse events synthesised from touch for the ordinary
-; menu Buttons, which are not touch-aware on their own.
-pointing/emulate_mouse_from_touch=true
 
 [input]
 
@@ -60,37 +56,12 @@ turn_around={
 }
 pause_game={
 "deadzone": 0.5,
-"events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":4194305,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null), Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":80,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)]
+"events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":4194305,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)
+, Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":80,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)
+]
 }
-
-[debug]
-
-# The GUI build used by play.ps1 detaches from the console and produces no
-# capturable stdout, so a real play session used to leave NO error record at all
-# -- while logs/errors.log kept showing whatever a past dev run put there. That
-# combination is worse than no log: it reads as "clean" when nothing was
-# actually checked. File logging is independent of the console, so it captures
-# play sessions too.
-file_logging/enable_file_logging=true
-file_logging/log_path="res://logs/godot.log"
-file_logging/max_log_files=10
 
 [rendering]
 
-renderer/rendering_method="forward_plus"
-# Web has no Forward+ without WebGPU, which browsers ship inconsistently.
-# The GL Compatibility renderer targets WebGL2 and runs everywhere, so the
-# browser build overrides the desktop default rather than downgrading it.
-renderer/rendering_method.web="gl_compatibility"
 rendering_device/driver.windows="d3d12"
-
-[audio]
-
-; The single-threaded web build mixes on the main thread, so the audio ring
-; buffer is only refilled between frames. At the default 50ms web latency the
-; buffer drains faster than the frame loop refills it under this project's
-; load, and the playback head stops advancing entirely -- measured in Chrome
-; as pos frozen at 9.83 across eight seconds while playing stayed true, the
-; worklet stayed live and every volume read correct. A deeper buffer gives the
-; frame loop room to keep it fed.
-driver/output_latency.web=100
+#WebhasnoForward+withoutWebGPU,whichbrowsersshipinconsistently.#TheGLCompatibilityrenderertargetsWebGL2andrunseverywhere,sothe#browserbuildoverridesthedesktopdefaultratherthandowngradingit.renderer/rendering_method.web="gl_compatibility"

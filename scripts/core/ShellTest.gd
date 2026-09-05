@@ -70,6 +70,49 @@ func _go() -> void:
 	check("a normal run is NOT trailer-seeded",
 		game != null and int(game.get("run_seed")) != TrailerDirector.TRAILER_SEED,
 		"seed %d" % (int(game.get("run_seed")) if game != null else 0))
+	check("PLAY counts toward the general board",
+		game != null and int(game.get("board")) == Tuning.Board.GENERAL)
+
+	# The daily and monthly buttons.
+	#
+	# Asserted through the MENU's own signal rather than by calling start_game
+	# directly, because the wiring is the part that can rot: a button bound to
+	# the wrong board, or a signal that drops its argument, both leave
+	# start_game perfectly correct and the player on the wrong maze.
+	#
+	# The seed is checked against Tuning rather than a literal -- restating the
+	# hash would be a transcription check (CLAUDE.md section 12), and it would
+	# go stale the day after it was written.
+	for spec in [[Tuning.Board.DAILY, "DAILY", Tuning.seed_for_date(Tuning.today_key())],
+			[Tuning.Board.MONTHLY, "MONTHLY", Tuning.seed_for_month(Tuning.this_month_key())]]:
+		var want_board: int = int(spec[0])
+		var label: String = String(spec[1])
+		var want_seed: int = int(spec[2])
+
+		shell.show_menu()
+		var m = shell._current
+		var button: Button = null
+		for b in m._buttons:
+			if b.text == "PLAY " + label:
+				button = b
+		check("the menu has a PLAY %s button" % label, button != null)
+		if button == null:
+			continue
+
+		button.pressed.emit()
+		var run = shell._current
+		check("PLAY %s starts a game" % label,
+			int(shell.mode) == Shell.Mode.GAME and run != null)
+		check("PLAY %s counts toward the %s board" % [label, label],
+			run != null and int(run.get("board")) == want_board)
+		# The whole point of the button: a shared maze, not a fresh one.
+		check("PLAY %s uses the date-derived seed" % label,
+			run != null and int(run.get("run_seed")) == want_seed,
+			"seed %d, want %d" % [int(run.get("run_seed")) if run != null else 0, want_seed])
+		_take_loadout(run)
+		check("PLAY %s reaches a racing game" % label,
+			run != null and int(run.get("phase")) == 0
+				and run.get("racer") != null)
 
 	# The mobile-controls toggle, which is the one preference that has to
 	# survive a mode change -- it is set on the menu and read by the game, and
@@ -282,6 +325,7 @@ func _go() -> void:
 		int(shell.mode) == Shell.Mode.MENU, "mode %d" % int(shell.mode))
 
 	_check_leaderboard_panel(shell)
+	_check_name_prompt(shell)
 
 	_finish()
 
@@ -294,6 +338,66 @@ func _go() -> void:
 # a desktop player is in. The panel must draw its empty state and the menu must
 # be completely usable, or the desktop build breaks for want of a feature it was
 # never meant to have.
+# The one-time leaderboard name prompt (docs/plans/leaderboards.md).
+#
+# The interesting case here is the one a harness gets for free: with no
+# Leaderboard autoload available, PLAY must start a run with NO prompt at all.
+# A gate that fired without a board to post to would make the desktop build
+# unplayable for a feature it does not have -- and it would fire in every
+# harness, so this is asserted rather than assumed.
+func _check_name_prompt(shell) -> void:
+	shell.show_menu()
+	var menu = shell._current
+	if menu == null:
+		check("the menu exists for the name-prompt check", false)
+		return
+
+	var started := SignalCounter.new()
+	menu.play_pressed.connect(started.on_play)
+
+	# Offline: PLAY goes straight through, and no modal is built.
+	menu._on_play(Tuning.Board.GENERAL)
+	check("PLAY starts a run with no board available", started.count == 1)
+	check("no name prompt is built when there is no board",
+		menu._name_modal == null)
+
+	# The prompt itself, driven directly. It cannot be reached through _on_play
+	# here (there is no autoload to report a missing name), but the modal must
+	# still build, take a name and hand the run on -- otherwise the web build
+	# would be the only place this code ever ran, untested.
+	menu._ask_name(Tuning.Board.DAILY)
+	check("the prompt builds when asked directly", menu._name_modal != null)
+	if menu._name_modal == null:
+		return
+
+	# SKIP must still start the run. A player who will not name themselves is
+	# not a player who should be prevented from playing.
+	var skip: Button = _find_button(menu._name_modal, "SKIP")
+	check("the prompt offers SKIP", skip != null)
+	if skip != null:
+		skip.pressed.emit()
+		check("SKIP starts the run anyway", started.count == 2)
+		check("SKIP closes the prompt", menu._name_modal == null)
+
+	# And the board it was asked for must survive the prompt -- a daily run that
+	# came back as a general one would post to the wrong board silently.
+	check("the prompt preserves the board it was opened for",
+		int(started.last_board) == int(Tuning.Board.DAILY),
+		"got %d" % int(started.last_board))
+
+
+# Depth-first search for a button by its label.
+func _find_button(node: Node, text: String) -> Button:
+	for child in node.get_children():
+		var b := child as Button
+		if b != null and b.text == text:
+			return b
+		var found := _find_button(child, text)
+		if found != null:
+			return found
+	return null
+
+
 func _check_leaderboard_panel(shell) -> void:
 	shell.show_menu()
 	var menu = shell._current
@@ -417,6 +521,11 @@ func _check_leaderboard_panel(shell) -> void:
 
 class SignalCounter extends RefCounted:
 	var count := 0
+	var last_board := -1
+
+	func on_play(board: int) -> void:
+		count += 1
+		last_board = board
 
 	func on_board(_b, _s, _rows) -> void:
 		count += 1

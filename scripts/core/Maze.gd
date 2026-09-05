@@ -31,6 +31,20 @@ const DIR_VECTORS := {
 
 const OPPOSITE := {N: S, E: W, S: N, W: E}
 
+# What each direction is CALLED, for the Compass upgrade (CLAUDE.md section 7).
+#
+# These are the real cardinal directions, not a relabelling that puts the exit
+# north. The exit sits at the far corner from the start -- SOUTH-EAST, given
+# start_cell (0,0), exit_cell (width-1, height-1) and +Y running south -- and
+# the compass says so. Rotating the labels so the exit read north would make the
+# compass a route hint in cardinal costume, and it would disagree with the
+# minimap, which draws real cells in real orientation.
+const CARDINAL_NAMES := {N: "N", E: "E", S: "S", W: "W"}
+
+
+static func cardinal_name(dir: int) -> String:
+	return String(CARDINAL_NAMES.get(dir, "?"))
+
 # Longest run a player may travel without a junction appearing.
 #
 # The `straighten` carve bias lengthens corridors on AVERAGE but cannot bound
@@ -786,6 +800,77 @@ func get_distance(cell: Vector2i) -> int:
 	return distance_field[_index(cell)]
 
 
+# --- Quadrants (CLAUDE.md section 7) -----------------------------------------
+#
+# The maze split into a coarse grid of regions, so a player can tell WHICH
+# SIXTEENTH of the maze they stand in without being told anything about the
+# route. Position, never direction: nothing here reads the distance field, the
+# solve path, the gates or the openings, so a quadrant number cannot leak the
+# answer the paid route lines are sold on.
+#
+# Numbering runs row-major from the START corner, so quadrant 1 holds
+# start_cell and the LAST quadrant holds exit_cell. That is derived from the
+# two cells rather than assumed of them -- _quadrant_axes() reports which way
+# each axis runs by comparing the corners, so a generator that ever moves the
+# entrance or the exit keeps the promise instead of quietly breaking it.
+
+# Which quadrant a cell falls in, as a 1-based number, given `divisions` splits
+# per axis. Returns 0 for a cell outside the maze or a nonsensical division.
+func quadrant_of(cell: Vector2i, divisions: int) -> int:
+	var coord := quadrant_coord(cell, divisions)
+	if coord.x < 0:
+		return 0
+	return coord.y * divisions + coord.x + 1
+
+
+# The cell's region as a grid coordinate, already oriented so that (0,0) is the
+# start's region and (divisions-1, divisions-1) is the exit's. Returns (-1,-1)
+# when the cell is out of bounds or `divisions` is below 1.
+#
+# A coordinate rather than only a number, because the box has to LIGHT a cell in
+# a drawn grid -- handing the renderer a number it would have to divide back
+# apart is the same round trip the per-axis tuning value avoids.
+func quadrant_coord(cell: Vector2i, divisions: int) -> Vector2i:
+	if divisions < 1 or not _in_bounds(cell):
+		return Vector2i(-1, -1)
+
+	var axes := _quadrant_axes()
+	var x := _axis_band(cell.x, width, divisions, axes.x < 0)
+	var y := _axis_band(cell.y, height, divisions, axes.y < 0)
+	return Vector2i(x, y)
+
+
+# The total number of regions at this division count. The renderer and the
+# readout both need it, and computing it in two places is how the two drift.
+func quadrant_count(divisions: int) -> int:
+	if divisions < 1:
+		return 0
+	return divisions * divisions
+
+
+# Which way each axis runs, as +1 or -1, so that the start's region is always
+# (0,0). Read off the two corner cells rather than assumed, because the
+# numbering promise -- start is 1, exit is the highest -- is a statement about
+# THOSE cells and must survive either of them moving.
+func _quadrant_axes() -> Vector2i:
+	var x := 1 if exit_cell.x >= start_cell.x else -1
+	var y := 1 if exit_cell.y >= start_cell.y else -1
+	return Vector2i(x, y)
+
+
+# One axis of the band lookup. Split by cell count rather than by a fixed cell
+# width so the last band is never short: a 100-wide maze in 3 gives bands of
+# 34/33/33 rather than 33/33/34-and-a-remainder.
+func _axis_band(value: int, extent: int, divisions: int, flipped: bool) -> int:
+	if extent <= 0:
+		return 0
+	var band := (value * divisions) / extent
+	band = clampi(band, 0, divisions - 1)
+	if flipped:
+		band = divisions - 1 - band
+	return band
+
+
 # The direction from this cell that moves closest to the exit. Recomputed live
 # from the distance field, so it stays correct well off the canonical path.
 # Returns -1 if there is no improving move.
@@ -835,6 +920,73 @@ func route_from(cell: Vector2i, max_cells: int) -> Array[Vector2i]:
 		path.append(current)
 
 	return path
+
+# The shortest route from `cell` to an arbitrary `target`, inclusive of both.
+#
+# route_from() descends the distance field, which only ever knows one
+# destination -- the exit. The Golden Trail routes to the next uncollected GATE
+# instead (CLAUDE.md section 7), and a gate is not on that gradient: walking
+# toward it frequently means walking AWAY from the exit, so no amount of reading
+# `distance_field` answers it. This is a plain BFS with a parent map, run once
+# per firing rather than per frame.
+#
+# BOUNDED for the same reason _reaches_exit_avoiding is: an unbounded flood is
+# O(cells), and while one firing every few seconds can afford that, anything
+# that ever sweeps it cannot. The cap is generous because unlike a branch
+# classification this must never return a WRONG answer when it runs long -- a
+# target beyond the cap yields no route at all, which reads as the trail waiting
+# a cycle rather than as it pointing somewhere untrue.
+const ROUTE_SEARCH_CELLS := 4000
+
+
+func route_to(cell: Vector2i, target: Vector2i) -> Array[Vector2i]:
+	var path: Array[Vector2i] = []
+	if not _in_bounds(cell) or not _in_bounds(target):
+		return path
+	if cell == target:
+		path.append(cell)
+		return path
+
+	var parent := {}
+	parent[cell] = cell
+	var queue: Array[Vector2i] = [cell]
+	var head := 0
+	var visited := 0
+	var found := false
+
+	while head < queue.size():
+		if visited >= ROUTE_SEARCH_CELLS:
+			return path
+		var current: Vector2i = queue[head]
+		head += 1
+		visited += 1
+
+		if current == target:
+			found = true
+			break
+
+		for dir in DIRS:
+			if not is_open(current, dir):
+				continue
+			var neighbour: Vector2i = current + DIR_VECTORS[dir]
+			if parent.has(neighbour):
+				continue
+			parent[neighbour] = current
+			queue.append(neighbour)
+
+	if not found:
+		return path
+
+	# Walk the parent chain back and reverse, so the route reads start-first the
+	# same way route_from() does -- callers draw it head-outward from the player.
+	var back: Array[Vector2i] = []
+	var walk: Vector2i = target
+	while walk != cell:
+		back.append(walk)
+		walk = parent[walk]
+	back.append(cell)
+	back.reverse()
+	return back
 
 
 # How good is stepping from `cell` in `dir`? Used by the Path Indicator to pick
