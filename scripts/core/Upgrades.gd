@@ -18,11 +18,15 @@ enum Line {
 	GATE_COMPASS,
 	WALL_ARMOR,
 	GOLDEN_TRAIL,
+	PLATINUM_TRAIL,
 	SNAP_TURN,
 	CORNERING,
 	EXPIRY_GRACE,
 	HP_REGEN,
 	SCORE_BONUS,
+	QUADRANT,
+	COMPASS,
+	TRAIL_MEMORY,
 	# Legendaries. Rare, active, one per run -- see is_legendary() and the
 	# rarity rule in roll_cards().
 	WALL_SMASHER,
@@ -144,9 +148,18 @@ const DEFINITIONS := {
 		"name": "Golden Trail",
 		"max_rank": 3,
 		"desc": [
-			"Every 12s a golden streak races 10 cells down the best route.",
-			"Every 8s, and it runs 15 cells.",
-			"Every 5s, and it runs 20 cells.",
+			"Every 12s a gold streak runs the whole route to the next gate.",
+			"Every 8s.",
+			"Every 5s.",
+		],
+	},
+	Line.PLATINUM_TRAIL: {
+		"name": "Platinum Trail",
+		"max_rank": 3,
+		"desc": [
+			"After 5 gates, every 15s a silver streak runs the shortest way OUT.",
+			"Every 10s.",
+			"Every 6s.",
 		],
 	},
 	Line.CORNERING: {
@@ -176,6 +189,22 @@ const DEFINITIONS := {
 			"Recover 2.0 HP per second. Drive clean and you drive it off.",
 		],
 	},
+	Line.QUADRANT: {
+		"name": "Quadrant",
+		"max_rank": 3,
+		"desc": [
+			"A corner box splits the maze in four and lights the quarter you are in.",
+			"Nine regions instead of four. A finer read on how far you have come.",
+			"Sixteen regions. The exit is always the highest.",
+		],
+	},
+	Line.COMPASS: {
+		"name": "Compass",
+		"max_rank": 1,
+		"desc": [
+			"Read the direction you face: N, E, S or W. The exit lies south-east.",
+		],
+	},
 	Line.SCORE_BONUS: {
 		"name": "Score Multiplier",
 		"max_rank": 4,
@@ -185,6 +214,14 @@ const DEFINITIONS := {
 			"+45% points earned.",
 			"+60% points earned.",
 		],
+	},
+	Line.TRAIL_MEMORY: {
+		"name": "Trail Memory",
+		"max_rank": 6,
+		# Descriptions are generated from the rank table in
+		# next_rank_description(), so this list is only the flavour of the FIRST
+		# rank -- see the comment there.
+		"desc": [],
 	},
 	Line.WALL_SMASHER: {
 		"name": "Wall Smasher",
@@ -264,6 +301,43 @@ func next_rank_description(line: int) -> String:
 		return "A 180 costs %.2fx instead of %.2fx." % [
 			float(costs[r + 1]), float(costs[r])
 		]
+
+	# Both trail lines derive their numbers for the same reason: a card that
+	# restates a tuning value is a transcription that goes stale silently, and
+	# the player makes a decision on it. Fast Turnaround's strings had already
+	# drifted a whole retune before this was noticed (CLAUDE.md section 7).
+	if line == Line.GOLDEN_TRAIL:
+		var gi: Array = Tuning.TRAIL_INTERVAL_BY_RANK
+		if r + 1 >= gi.size():
+			return ""
+		if r == 0:
+			return "Every %ds a gold streak runs the whole route to the next gate." % int(gi[r + 1])
+		return "Every %ds instead of %ds." % [int(gi[r + 1]), int(gi[r])]
+
+	if line == Line.PLATINUM_TRAIL:
+		var pi: Array = Tuning.PLATINUM_INTERVAL_BY_RANK
+		if r + 1 >= pi.size():
+			return ""
+		if r == 0:
+			return "After %d gates, every %ds a silver streak runs the shortest way OUT." % [
+				Tuning.PLATINUM_MIN_GATES, int(pi[r + 1])
+			]
+		return "Every %ds instead of %ds." % [int(pi[r + 1]), int(pi[r])]
+
+	# Trail Memory's cards are generated from the window table for the same
+	# reason Fast Turnaround's are: a hand-written string that restates a tuning
+	# number drifts silently, and the player picks a card on what it says.
+	if line == Line.TRAIL_MEMORY:
+		var windows: Array = Tuning.TRAIL_WINDOW_BY_RANK
+		if r + 1 >= windows.size():
+			return ""
+		var next_w := float(windows[r + 1])
+		if next_w == Tuning.TRAIL_WINDOW_INFINITE:
+			return "Ground you have driven stays lit for the REST OF THE MAZE."
+		var text := "%d:%02d" % [int(next_w) / 60, int(next_w) % 60]
+		if r == 0:
+			return "Ground you have driven lights up, dimming as you re-cross it. Remembered for %s." % text
+		return "Remembered for %s." % text
 
 	var descs: Array = DEFINITIONS[line]["desc"]
 	if r >= descs.size():
@@ -443,6 +517,48 @@ func has_compass() -> bool:
 	return rank(Line.GATE_COMPASS) > 0
 
 
+# --- Quadrant and Compass ----------------------------------------------------
+# Position and orientation. Both sit on the "have I been here" side of the line
+# landmarks, spent gates and the rear-view mirror hold (CLAUDE.md section 7) --
+# they never answer "which way", which is what keeps them clear of the three
+# paid route lines.
+
+func has_quadrant() -> bool:
+	return rank(Line.QUADRANT) > 0
+
+
+# Divisions per AXIS: 2, 3 or 4, giving 4, 9 or 16 regions. Zero when the line
+# is untaken, so callers must check has_quadrant() rather than dividing by this.
+func quadrant_divisions() -> int:
+	var r := mini(rank(Line.QUADRANT), Tuning.QUADRANT_DIVISIONS_BY_RANK.size() - 1)
+	return int(Tuning.QUADRANT_DIVISIONS_BY_RANK[r])
+
+
+func has_cardinal_compass() -> bool:
+	return rank(Line.COMPASS) > 0
+
+
+# --- Trail Memory ------------------------------------------------------------
+# Ground the player has driven, tinted on the floor and on the minimap. It sits
+# on the "have I been here" side of the line landmarks, spent gates and the
+# rear-view mirror hold (CLAUDE.md sections 6 and 7) -- it says nothing whatever
+# about the route ahead, which is what keeps it clear of Path Indicator, Gate
+# Compass and Golden Trail. Being PAID makes it the strongest statement of that
+# position in the tree, not a departure from it.
+
+func has_trail_memory() -> bool:
+	return rank(Line.TRAIL_MEMORY) > 0
+
+
+# How long a driven cell stays remembered, in seconds. Returns
+# Tuning.TRAIL_WINDOW_INFINITE (a negative sentinel) at the top rank, and 0.0
+# when the line is untaken -- callers must check has_trail_memory() rather than
+# treating 0.0 as a duration.
+func trail_memory_window() -> float:
+	var r := mini(rank(Line.TRAIL_MEMORY), Tuning.TRAIL_WINDOW_BY_RANK.size() - 1)
+	return float(Tuning.TRAIL_WINDOW_BY_RANK[r])
+
+
 func has_trail() -> bool:
 	return rank(Line.GOLDEN_TRAIL) > 0
 
@@ -454,9 +570,13 @@ func trail_interval() -> float:
 	return float(Tuning.TRAIL_INTERVAL_BY_RANK[r])
 
 
-func trail_cells() -> float:
-	var r := mini(rank(Line.GOLDEN_TRAIL), Tuning.TRAIL_CELLS_BY_RANK.size() - 1)
-	return float(Tuning.TRAIL_CELLS_BY_RANK[r])
+func has_platinum_trail() -> bool:
+	return rank(Line.PLATINUM_TRAIL) > 0
+
+
+func platinum_interval() -> float:
+	var r := mini(rank(Line.PLATINUM_TRAIL), Tuning.PLATINUM_INTERVAL_BY_RANK.size() - 1)
+	return float(Tuning.PLATINUM_INTERVAL_BY_RANK[r])
 
 
 # --- Card offers -------------------------------------------------------------

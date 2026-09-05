@@ -365,6 +365,38 @@ func _test_trail_memory() -> void:
 	inf_mem.clear()
 	check_eq("clear empties the record", inf_mem.count(), 0)
 
+	# The line itself. Six ranks, the last of them infinite.
+	var u := Upgrades.new(1)
+	check("the line starts untaken", not u.has_trail_memory())
+	check_near("an untaken line has no window", u.trail_memory_window(), 0.0)
+
+	u.take(Upgrades.Line.TRAIL_MEMORY)
+	check("one rank holds the line", u.has_trail_memory())
+	check_near("rank 1 remembers a minute", u.trail_memory_window(), 60.0)
+
+	for i in 4:
+		u.take(Upgrades.Line.TRAIL_MEMORY)
+	check_near("rank 5 remembers three minutes", u.trail_memory_window(), 180.0)
+	check("rank 5 is not yet maxed", not u.is_maxed(Upgrades.Line.TRAIL_MEMORY))
+
+	u.take(Upgrades.Line.TRAIL_MEMORY)
+	check("the line caps at rank 6", u.is_maxed(Upgrades.Line.TRAIL_MEMORY))
+	check_near("the last rank is infinite",
+		u.trail_memory_window(), Tuning.TRAIL_WINDOW_INFINITE)
+
+	# The card text is DERIVED from the rank table, never written out. A
+	# hand-written description that restates a tuning value is the transcription
+	# trap section 12 flags for tests, and it is worse on a card because the
+	# player reads it and picks on it -- Fast Turnaround's strings drifted to
+	# advertising a 2.0x cost long after the 180 was retuned to 0.75x.
+	var fresh := Upgrades.new(1)
+	var first := fresh.next_rank_description(Upgrades.Line.TRAIL_MEMORY)
+	check("the first card names its window", first.contains("1:00"))
+	for i in 5:
+		fresh.take(Upgrades.Line.TRAIL_MEMORY)
+	var last := fresh.next_rank_description(Upgrades.Line.TRAIL_MEMORY)
+	check("the last card names it as permanent", last.to_lower().contains("rest of the maze"))
+
 
 # --- Assertions --------------------------------------------------------------
 
