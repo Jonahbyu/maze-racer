@@ -18,6 +18,16 @@ signal turn_requested(direction: int)
 signal reverse_requested()
 signal pause_requested()
 
+# Which direction is HELD, -1 / 0 / +1, whenever that changes.
+#
+# Deep Breath and Overclock (section 7) both need a key to still be down rather
+# than merely to have been pressed, and the keyboard path gets that from key
+# release events. The pads already track exactly this in `_held_dirs` for the
+# reverse chord -- it simply was not exposed, so both lines were inert on a
+# phone while working on a desktop. A view, still: this reports what the thumbs
+# are doing and decides nothing.
+signal held_direction_changed(direction: int)
+
 const COL_PAD := Color(0.10, 0.16, 0.26, 0.42)
 const COL_PAD_HELD := Color(0.16, 0.34, 0.52, 0.72)
 const COL_EDGE := Color(0.12, 0.85, 1.0, 0.55)
@@ -132,6 +142,10 @@ func clear_held() -> void:
 
 func _release_all() -> void:
 	_held_dirs.clear()
+	# Hiding the overlay must release the held direction too, or a Deep Breath
+	# extension bought on the way out lasts forever -- the same latch the chord
+	# comment below is about, reaching a second consumer.
+	emit_signal("held_direction_changed", 0)
 	for key in ["left", "right"]:
 		var pad: Panel = _pads.get(key)
 		if pad != null:
@@ -299,6 +313,7 @@ func _size_arrow(key: String, pad_size: Vector2) -> void:
 # to avoid it would be a far larger, and constant, cost.
 func _steer(direction: int) -> void:
 	_held_dirs[direction] = true
+	emit_signal("held_direction_changed", direction)
 	if _held_dirs.has(-direction):
 		emit_signal("reverse_requested")
 		return
@@ -334,6 +349,13 @@ func _on_pad_input(pad: Panel, event: InputEvent, handler: Callable,
 		# delivers its release here, so this is not only the lift-in-place case.
 		if direction != 0:
 			_held_dirs.erase(direction)
+			# Report whatever is STILL held rather than a bare 0: lifting one
+			# finger of a chord leaves the other down, and saying "nothing held"
+			# there would cut a Deep Breath extension short mid-corner.
+			var remaining := 0
+			for d in _held_dirs:
+				remaining = int(d)
+			emit_signal("held_direction_changed", remaining)
 		accept_event()
 
 

@@ -2771,6 +2771,25 @@ off, and the keyboard reaches `_on_reverse_input` directly. `ShellTest` asserts 
 with the pads switched off, since a later refactor that moved chord handling up
 into `Game` would break it silently.
 
+**The pads report HELD direction, not only presses.** Deep Breath and Overclock (§7) both
+need a key to still be *down* rather than merely to have been pressed, which the keyboard gets
+from key-release events. The pads already tracked exactly this in `_held_dirs` for the reverse
+chord and simply did not expose it — so both lines were **inert on a phone while working on a
+desktop**, the tap-versus-key divergence this section exists to prevent, and no keyboard-driven
+test would ever have seen it. It routes through the same `_set_held_direction` the keyboard
+uses, so the two cannot drift apart.
+
+**Releasing one finger of a chord reports what is STILL held, never a bare 0** — otherwise
+lifting one thumb would cut a Deep Breath extension short mid-corner. Hiding the overlay does
+report 0, for the same reason the chord state is cleared there.
+
+> **`ShellTest`'s first version of that assertion was a false positive.** It pressed the second
+> pad and then released the first, but the *press* emits too — so the sentinel already held the
+> right value before the release ran, and the check passed with the release emit deleted
+> entirely. Verified by breaking the code deliberately: it stayed green. The sentinel is now
+> reset between the press and the release. A test that cannot fail is not evidence, and the only
+> way to know is to break the thing it watches.
+
 **Held state must be cleared, or the chord latches.** A finger that slides off a pad
 before lifting may never deliver its release to that pad, which leaves a direction
 held and turns *every later tap* into a reverse. Releasing clears it, and hiding the
@@ -3271,7 +3290,7 @@ Six harnesses, each answering a different question:
 | `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count. 498 assertions. |
 | `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording. 176 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, and the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed. 69 assertions. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide. 83 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 22 assertions. |
 | `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 105 assertions. |
 
@@ -3285,6 +3304,19 @@ verified; "over cap" must always read 0.
 `LandmarkProbe.gd` reports landmark counts, tier split and dead-end coverage per maze,
 which is how the `landmarks` density knob gets tuned. `LandmarkShot.gd` shoots a frame
 next to a landmark in each maze, seeking one rather than shooting on a timer.
+
+`AddedLinesShot.gd` shoots the Gate Size line as a controlled pair — the same question at rank
+0 and rank 3, both **5 cells straight down an open corridor**. Measured: at rank 0 the marker is
+**not visible at all** at that distance, and at rank 3 it is unmissable, with a *second* gate
+also showing over the wall from a corridor the racer is not in. That is the §7 above-the-wall
+argument arriving one step further out than it was first measured, and it is what the line
+actually buys.
+
+> It **seeks a gate straight ahead with an OPEN line of sight**, walking the corridor cell by
+> cell. Alignment is not visibility: two earlier versions checked only that a gate shared an
+> axis and was in range, and both shot a gate sitting behind a wall — producing a rank 0
+> "control" frame of a dead end, which makes a before/after pair worthless for the one question
+> the shots exist to answer.
 
 `GateShot.gd` shoots each maze from 2.5-6 cells short of a gate, which is how the
 above-the-wall gate marker gets checked -- the question it answers is "can I see it

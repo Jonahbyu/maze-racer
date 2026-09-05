@@ -245,6 +245,45 @@ func _go() -> void:
 				int(seen["turns"]) == 2 and int(seen["reverses"]) == 1,
 				"turns %d reverses %d" % [seen["turns"], seen["reverses"]])
 
+			# The pads must report HELD direction, not only presses.
+			#
+			# Deep Breath and Overclock (section 7) both need a key to still be
+			# down, which the keyboard gets from release events. The pads already
+			# tracked this internally for the chord above and simply did not expose
+			# it, so both lines were inert on a phone while working on a desktop --
+			# a divergence between tap and key press that no keyboard-driven test
+			# would ever see, which is exactly what section 9d says must not rot.
+			var held := {"last": -99}
+			pads.held_direction_changed.connect(func(d: int) -> void:
+				held["last"] = d)
+
+			pads.clear_held()
+			pads._steer(-1)
+			check("a pad press reports the held direction",
+				int(held["last"]) == -1, "reported %d" % held["last"])
+
+			# Lifting one finger of a chord must report what is STILL held, never a
+			# bare 0 -- that would cut an extension short mid-corner.
+			#
+			# The sentinel is reset AFTER the second press and before the release,
+			# or the assertion reads the press's own emit and passes however the
+			# release behaves. Verified by deleting the release emit: without this
+			# reset the check still passed, which made it a false positive rather
+			# than a test.
+			pads._steer(1)
+			held["last"] = -99
+			pads._on_pad_input(pads._pads["left"], _release_event(),
+				func() -> void: pass, -1)
+			check("releasing one of a chord reports the other",
+				int(held["last"]) == 1, "reported %d, held=%s" % [
+					held["last"], str(pads._held_dirs)])
+
+			# And hiding the overlay releases everything, or an extension bought on
+			# the way out would last forever.
+			pads.clear_held()
+			check("hiding the pads releases the held direction",
+				int(held["last"]) == 0, "reported %d" % held["last"])
+
 		# Pads must SCALE with the screen, not sit at a fixed pixel size.
 		#
 		# They were a screen fraction capped at a pixel maximum, and the cap won
@@ -550,3 +589,12 @@ func _take_loadout(game) -> void:
 		game._on_upgrade_chosen(-1)
 	else:
 		game._on_upgrade_chosen(offered[0])
+
+
+# A release event, for driving the pads' own input path rather than reaching
+# past it into _held_dirs -- the release branch is where the latch bug lived.
+func _release_event() -> InputEventMouseButton:
+	var ev := InputEventMouseButton.new()
+	ev.button_index = MOUSE_BUTTON_LEFT
+	ev.pressed = false
+	return ev

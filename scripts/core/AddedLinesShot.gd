@@ -65,6 +65,7 @@ func _on_frame() -> void:
 			_stage = 5
 		5:
 			if _seek_gate():
+				_report()
 				_capture("gate_height_0")
 				_restart(3)
 				_stage = 6
@@ -73,6 +74,7 @@ func _on_frame() -> void:
 				quit(1)
 		6:
 			if _seek_gate():
+				_report()
 				_capture("gate_height_3")
 				_stage = 7
 			elif _frame > 6000:
@@ -127,14 +129,31 @@ func _seek_gate() -> bool:
 	var racer: Racer = _game.racer
 	if racer == null or _game.phase != 0:
 		return false
-	var ahead: Vector2i = Maze.DIR_VECTORS[racer.facing]
 	for gate in racer.maze.gates:
-		var d: Vector2i = gate - racer.cell
-		# Directly down the corridor the racer faces, 2-5 cells out.
-		if ahead.x != 0 and d.y == 0 and d.x * ahead.x >= 2 and d.x * ahead.x <= 5:
+		if _sees(racer, gate):
 			return true
-		if ahead.y != 0 and d.x == 0 and d.y * ahead.y >= 2 and d.y * ahead.y <= 5:
-			return true
+	return false
+
+
+# Is `gate` actually VISIBLE from where the racer stands -- straight ahead, 2-5
+# cells out, with open corridor the whole way?
+#
+# Alignment alone is not visibility, and that is the bug this replaced: the
+# earlier version checked only that the gate shared an axis and was in range, so
+# it fired on a gate sitting behind a wall. The rank 0 control frame came out
+# showing a dead end, which makes the before/after pair useless for the one
+# question the shots exist to answer.
+func _sees(racer: Racer, gate: Vector2i) -> bool:
+	var ahead: Vector2i = Maze.DIR_VECTORS[racer.facing]
+	var cell: Vector2i = racer.cell
+	for stepped in 5:
+		# Walk the corridor a cell at a time, stopping the moment a wall closes
+		# the line -- which is precisely what "can I see it coming" means.
+		if not racer.maze.is_open(cell, racer.facing):
+			return false
+		cell += ahead
+		if cell == gate:
+			return stepped >= 1
 	return false
 
 
@@ -163,6 +182,18 @@ func _autopilot() -> void:
 		racer.request_turn(-1)
 	elif best == racer.right_direction():
 		racer.request_turn(1)
+
+
+# What the shot actually caught, so a frame with no marker in it can be told
+# from a frame where the marker is merely dim.
+func _report() -> void:
+	var racer: Racer = _game.racer
+	print("  cell=%s facing=%d gates=%s scale=%.2f" % [
+		str(racer.cell), racer.facing, str(racer.maze.gates),
+		_game.upgrades.gate_height_scale()])
+	for gate in racer.maze.gates:
+		if _sees(racer, gate):
+			print("  SEES gate at %s, delta %s" % [str(gate), str(gate - racer.cell)])
 
 
 func _capture(label: String) -> void:

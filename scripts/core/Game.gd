@@ -323,6 +323,10 @@ func _build_ui() -> void:
 	_touch.turn_requested.connect(_on_turn_input)
 	_touch.reverse_requested.connect(_on_reverse_input)
 	_touch.pause_requested.connect(_on_pause_input)
+	# Deep Breath and Overclock need held state, which the keyboard gets from key
+	# releases. Routed through the same _set_held_direction the keyboard uses, so
+	# a tap and a key press cannot diverge on it (section 9d).
+	_touch.held_direction_changed.connect(_set_held_direction)
 	ui_root.add_child(_touch)
 	_apply_touch_setting()
 
