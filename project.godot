@@ -24,6 +24,12 @@ driver/output_latency.web=100
 Music="*res://scripts/core/Music.gd"
 Settings="*res://scripts/core/Settings.gd"
 
+; Leaderboard outlives Shell's scene swaps for the reason the other two do: it is
+; written by the game (posting a finished run) and read by the menu (drawing a
+; board), and Shell frees the game on the way back to the menu.
+; docs/plans/leaderboards.md
+Leaderboard="*res://scripts/core/Leaderboard.gd"
+
 [debug]
 
 file_logging/log_path="res://logs/godot.log"
