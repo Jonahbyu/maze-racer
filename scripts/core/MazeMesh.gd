@@ -22,6 +22,82 @@ var _palette: Dictionary = Tuning.PALETTES[0]
 
 var _maze: Maze
 
+# The floor's trail shader. One texel per cell holds how brightly that cell is
+# remembered; the shader mixes it over the palette floor.
+#
+# Written in-code via Shader.new() rather than as a .gdshader resource, matching
+# GoldenTrail -- and kept to plain GLSL ES 3.0 features, because the web build
+# runs gl_compatibility (WebGL2) while the desktop build runs Forward+, and the
+# same source has to compile on both.
+#
+# The texture is sampled with NEAREST filtering and no mipmaps: a cell is a hard
+# square of memory, not a smooth field, and linear filtering would bleed the
+# tint a half cell past the walls it stops at.
+const FLOOR_SHADER_SOURCE := """
+shader_type spatial;
+render_mode cull_back, diffuse_burley, specular_schlick_ggx;
+
+uniform vec3 base_col : source_color;
+uniform vec3 trail_col : source_color;
+uniform float trail_mix;
+uniform sampler2D trail_tex : filter_nearest, repeat_disable, hint_default_black;
+uniform vec2 grid_size;
+uniform float cell_size;
+uniform float origin_offset;
+uniform float roughness_v;
+uniform float metallic_v;
+
+varying vec2 cell_uv;
+
+void vertex() {
+	// The cell coordinate is computed HERE, in the vertex stage, where model
+	// space is actually available. In a fragment shader Godot 4's VERTEX is
+	// VIEW space, not model space, so deriving a world position there needs
+	// INV_VIEW_MATRIX and is easy to get subtly wrong -- and the floor is a
+	// flat, axis-aligned plane, so there is nothing a per-fragment derivation
+	// would buy. The rasteriser interpolates this exactly.
+	vec3 world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	cell_uv = (world.xz + vec2(origin_offset)) / cell_size;
+}
+
+void fragment() {
+	// Cell coordinate to the centre of that cell's texel. Sampling the centre
+	// rather than the corner is what keeps a cell a hard square under NEAREST
+	// filtering -- a corner sample sits exactly on the boundary between two
+	// texels and picks whichever way the rounding falls.
+	vec2 uv = (floor(cell_uv) + 0.5) / grid_size;
+
+	float lit = 0.5;
+	if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0) {
+		lit = texture(trail_tex, uv).r;
+	}
+
+	// The stored value is a signed tint packed into 0..1: 0.5 is untrodden,
+	// above lifts the floor, below darkens it. Packing it that way keeps the
+	// texture single-channel and 8-bit, which is what makes a per-cell write
+	// cheap at 100x100.
+	float signed_lit = (lit - 0.5) * 2.0;
+
+	vec3 col = base_col;
+	if (signed_lit > 0.0) {
+		col = mix(base_col, trail_col, trail_mix * signed_lit);
+		col *= 1.0 + signed_lit * 2.4;
+	} else {
+		col = base_col * (1.0 + signed_lit * 0.85);
+	}
+
+	ALBEDO = col;
+	ROUGHNESS = roughness_v;
+	METALLIC = metallic_v;
+}
+"""
+
+# The floor's trail texture, one texel per cell. Held here because the floor
+# material owns it; TrailFloor writes to it each frame.
+var trail_texture: ImageTexture
+var trail_image: Image
+var _floor_material: ShaderMaterial
+
 # Collected while emitting wall quads, consumed by _build_wall_tops().
 var _wall_edges: Array = []
 
@@ -62,11 +138,32 @@ func _build_floor() -> void:
 	var plane := PlaneMesh.new()
 	plane.size = Vector2(size_x, size_z)
 
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = _palette["floor"]
-	mat.roughness = 0.65
-	mat.metallic = 0.1
-	plane.material = mat
+	# One texel per cell, single-channel. 0.5 is untrodden -- see the shader's
+	# note on the signed packing. Rebuilt per maze because the grid changes size.
+	trail_image = Image.create(_maze.width, _maze.height, false, Image.FORMAT_R8)
+	trail_image.fill(Color(0.5, 0.5, 0.5))
+	trail_texture = ImageTexture.create_from_image(trail_image)
+
+	var shader := Shader.new()
+	shader.code = FLOOR_SHADER_SOURCE
+
+	_floor_material = ShaderMaterial.new()
+	_floor_material.shader = shader
+	var floor_col: Color = _palette["floor"]
+	_floor_material.set_shader_parameter("base_col",
+		Vector3(floor_col.r, floor_col.g, floor_col.b))
+	_floor_material.set_shader_parameter("trail_col",
+		Vector3(Tuning.TRAIL_COL.r, Tuning.TRAIL_COL.g, Tuning.TRAIL_COL.b))
+	_floor_material.set_shader_parameter("trail_mix", Tuning.TRAIL_COL_MIX)
+	_floor_material.set_shader_parameter("trail_tex", trail_texture)
+	_floor_material.set_shader_parameter("grid_size",
+		Vector2(float(_maze.width), float(_maze.height)))
+	_floor_material.set_shader_parameter("cell_size", Tuning.CELL_SIZE)
+	_floor_material.set_shader_parameter("origin_offset", Tuning.CELL_SIZE * 0.5)
+	_floor_material.set_shader_parameter("roughness_v", 0.65)
+	_floor_material.set_shader_parameter("metallic_v", 0.1)
+
+	plane.material = _floor_material
 
 	var instance := MeshInstance3D.new()
 	instance.mesh = plane
