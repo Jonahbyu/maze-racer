@@ -67,6 +67,7 @@ var _path_indicator: PathIndicator
 var _golden_trail: GoldenTrail
 var _platinum_trail: GoldenTrail
 var _mesh: MazeMesh
+var _trail_floor: TrailFloor
 var _hud: HUD
 var _minimap: Minimap
 var _rear_view: RearView
@@ -122,6 +123,13 @@ func _build_world() -> void:
 	_mesh = MazeMesh.new()
 	_mesh.name = "MazeMesh"
 	_world.add_child(_mesh)
+
+	_trail_floor = TrailFloor.new()
+	add_child(_trail_floor)
+	# Named AFTER add_child: a node's name is assigned on entry to the tree, so
+	# one set beforehand is overwritten and the node is not findable by it
+	# (CLAUDE.md section 12).
+	_trail_floor.name = "TrailFloor"
 
 	_camera = Camera3D.new()
 	_camera.name = "Camera"
@@ -508,6 +516,10 @@ func _start_maze(index: int) -> void:
 
 	var palette_index := int(config.get("palette", 0))
 	_mesh.build(maze, palette_index)
+	# After build(), which is what creates the maze's trail image and texture --
+	# they are sized to the grid, so a handle taken before the build is a handle
+	# to the previous maze's texture.
+	_trail_floor.set_mesh(_mesh)
 	_apply_palette(palette_index)
 	_minimap.racer = racer
 	_minimap.upgrades = upgrades
@@ -862,6 +874,12 @@ func _update_camera(delta: float) -> void:
 			_path_indicator.update_state(racer, upgrades, delta)
 		else:
 			_path_indicator.visible = false
+
+	# RACING only. During a card screen the clock is stopped and the trail is
+	# static, so there is nothing to update -- and unlike the Path Indicator
+	# there are no panels whose geometry would change under the player.
+	if _trail_floor and phase == Phase.RACING:
+		_trail_floor.update_state(racer, upgrades)
 
 	# RACING only, deliberately unlike the Path Indicator. A trail firing during
 	# the gate pause would draw the optimal route while the timer is stopped --
