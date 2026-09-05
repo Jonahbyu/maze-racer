@@ -397,6 +397,42 @@ func _test_trail_memory() -> void:
 	var last := fresh.next_rank_description(Upgrades.Line.TRAIL_MEMORY)
 	check("the last card names it as permanent", last.to_lower().contains("rest of the maze"))
 
+	# The racer keeps the record. It is written on every cell entered, whether
+	# or not the line is held -- holding the line decides what is DRAWN, not
+	# what is remembered. Gating the recording on the upgrade would mean a
+	# player who takes the line mid-maze starts with a blank trail through
+	# ground they demonstrably drove, which is the opposite of memory.
+	var m := _make_corridor(8)
+	var r := Racer.new()
+	r.setup(m, Upgrades.new(1))
+
+	check("a fresh racer has one cell remembered", r.trail.count() == 1)
+	check("the start cell is remembered", r.trail.has(m.start_cell))
+
+	# Drive forward a few cells.
+	var guard := 0
+	while r.cell.x < 3 and guard < 2000:
+		r.step(1.0 / 60.0)
+		guard += 1
+	check("the drive did not hang", guard < 2000)
+	check("driven ground is remembered", r.trail.has(Vector2i(2, 0)))
+	check_eq("a single crossing is one visit", r.trail.visits(Vector2i(2, 0)), 1)
+
+	# Reverse back over it. A re-crossing has to count, or "darker with repeats"
+	# has nothing to darken.
+	r.request_reverse()
+	guard = 0
+	while r.cell.x > 1 and guard < 2000:
+		r.step(1.0 / 60.0)
+		guard += 1
+	check("the reverse did not hang", guard < 2000)
+	check_eq("re-crossing counts twice", r.trail.visits(Vector2i(2, 0)), 2)
+
+	# setup() clears it, exactly as it clears `visited` and `gates_cleared`. A
+	# trail carried into maze 2 would paint maze 1's route onto a different grid.
+	r.setup(_make_corridor(8), Upgrades.new(1))
+	check_eq("a new maze starts with a fresh trail", r.trail.count(), 1)
+
 
 # --- Assertions --------------------------------------------------------------
 

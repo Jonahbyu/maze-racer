@@ -169,6 +169,27 @@ var gates_cleared: Array[Vector2i] = []
 # The count of re-entries lives on Score with the other tallies.
 var visited := {}
 
+# Ground driven this maze, for the Trail Memory upgrade: a visit count and a
+# last-seen time per cell.
+#
+# Deliberately NOT folded into `visited` above. That dictionary is a scoring
+# rule -- it holds "has this cell been re-entered" so the section 8b penalty can
+# be charged once per cell -- and widening it to carry counts and timestamps
+# would put a display feature inside a load-bearing rule. This record is written
+# alongside it and read by nothing in the simulation.
+#
+# Written whether or not the upgrade is held. The line decides what is DRAWN,
+# not what is remembered: a player who takes it at gate 4 should see the ground
+# they have already covered, not start from blank.
+var trail := TrailMemory.new()
+
+# Seconds of driving on this maze, the clock the trail's expiry runs on.
+#
+# The racer's own accumulated time rather than a wall clock, so the trail stops
+# ageing while the game is paused or a card screen is open -- a memory that
+# lapsed during an upgrade pick would punish the player for reading their cards.
+var trail_clock := 0.0
+
 var finished := false
 
 # True once HP has hit 0 with death enabled. The run is over; Game reads this
@@ -241,9 +262,12 @@ func setup(p_maze: Maze, p_upgrades: Upgrades, p_maze_index: int = 0) -> void:
 	# The start cell is pre-marked, so returning to it is a repeat like any
 	# other -- the racer has demonstrably been there.
 	visited.clear()
+	trail.clear()
+	trail_clock = 0.0
 	# false = seen once, not yet re-entered. The start cell is pre-marked, so
 	# returning to it is a repeat like any other.
 	visited[cell] = false
+	trail.visit(cell, trail_clock)
 
 	_gate_cells = maze.gates.duplicate()
 	gates_cleared.clear()
@@ -319,6 +343,12 @@ func request_reverse() -> void:
 func step(delta: float) -> void:
 	if finished or dead:
 		return
+
+	# The trail's clock. Advanced here rather than from a wall clock so it stops
+	# with the simulation -- Game does not call step() while paused or during an
+	# upgrade pick, and a trail that aged through a card screen would forget
+	# ground while the player was reading.
+	trail_clock += delta
 
 	if state == State.PARKED:
 		# Parked: no ramp, no movement. The barrier holds until un-stick so the
@@ -745,6 +775,12 @@ func _on_enter_cell() -> void:
 	# one after it. `visited` holds that flag rather than a bare marker.
 	var first_repeat: bool = repeat and not visited[cell]
 	visited[cell] = repeat
+	# Recorded here, beside `visited`, and for the same reason it is placed
+	# before the gate and exit early-returns below: those return before the end
+	# of this function, so a write placed after them would leave gate cells and
+	# the exit permanently untrodden -- and gates sit on the solve path, which is
+	# exactly the ground a looping player re-covers.
+	trail.visit(cell, trail_clock)
 	cell_entered.emit(cell, repeat, first_repeat)
 
 	if cell == maze.exit_cell:
