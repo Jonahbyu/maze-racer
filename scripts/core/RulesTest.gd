@@ -28,6 +28,7 @@ func _init() -> void:
 	_test_hp_regen_and_death()
 	_test_score()
 	_test_visited_cells()
+	_test_trail_memory()
 	_test_seeded_boards()
 	_test_legendaries()
 	_test_gates()
@@ -43,11 +44,188 @@ func _init() -> void:
 	_test_marker_heights()
 	_test_landmarks()
 	_test_landmarks_do_not_move_the_racer()
+	_test_quadrants()
+	_test_cardinal_compass()
+	_test_quadrant_upgrades()
 
 	print("")
 	print("passed: %d   failed: %d" % [_passed, _failed])
 	print("RESULT: %s" % ("PASS" if _failed == 0 else "FAIL"))
 	quit(1 if _failed > 0 else 0)
+
+
+# The quadrant box and the cardinal compass (CLAUDE.md section 7).
+#
+# Two properties matter far more than the arithmetic. First, the NUMBERING
+# PROMISE: quadrant 1 holds the start and the highest holds the exit, which the
+# card text states outright and the player reads their progress from. Second,
+# the SEPARATION: a quadrant number is position, never direction, so it must be
+# derivable with the distance field, the solve path and the openings all
+# ignored -- that is what keeps this clear of the three paid route lines.
+func _test_quadrants() -> void:
+	var m := _make_maze(60, 60)
+
+	# The promise, at every rank the line offers. Asserted across the whole
+	# table rather than at one division count, because the numbering is derived
+	# per-axis and an off-by-one in the flip would be correct at 2 and wrong at
+	# 3 -- a single sample of a curve says nothing about the curve.
+	for r in range(1, Tuning.QUADRANT_DIVISIONS_BY_RANK.size()):
+		var d: int = Tuning.QUADRANT_DIVISIONS_BY_RANK[r]
+		var total := m.quadrant_count(d)
+		check_eq("rank %d gives %d regions" % [r, d * d], total, d * d)
+		check_eq("rank %d: start is quadrant 1" % r,
+			m.quadrant_of(m.start_cell, d), 1)
+		check_eq("rank %d: exit is the highest quadrant" % r,
+			m.quadrant_of(m.exit_cell, d), total)
+		check_eq("rank %d: start sits at grid origin" % r,
+			m.quadrant_coord(m.start_cell, d), Vector2i(0, 0))
+		check_eq("rank %d: exit sits at the far corner" % r,
+			m.quadrant_coord(m.exit_cell, d), Vector2i(d - 1, d - 1))
+
+	# Every cell must land in a real region. A cell falling outside would draw
+	# the highlight off the box, or nowhere at all.
+	var out_of_range := 0
+	var coord_out := 0
+	for y in m.height:
+		for x in m.width:
+			var n := m.quadrant_of(Vector2i(x, y), 4)
+			if n < 1 or n > 16:
+				out_of_range += 1
+			var c := m.quadrant_coord(Vector2i(x, y), 4)
+			if c.x < 0 or c.x > 3 or c.y < 0 or c.y > 3:
+				coord_out += 1
+	check_eq("every cell has a quadrant", out_of_range, 0)
+	check_eq("every cell has a grid coord", coord_out, 0)
+
+	# The number and the coordinate are two views of one answer, so they must
+	# agree everywhere -- the renderer lights the coord and the readout prints
+	# the number, and a player seeing "6 of 16" beside a lit cell 7 would be
+	# reading two accounts of the same fact.
+	var disagreed := 0
+	for y in m.height:
+		for x in m.width:
+			var c := m.quadrant_coord(Vector2i(x, y), 3)
+			if c.y * 3 + c.x + 1 != m.quadrant_of(Vector2i(x, y), 3):
+				disagreed += 1
+	check_eq("number and coord agree", disagreed, 0)
+
+	# Regions are contiguous bands: moving one cell can never skip a region.
+	# A band computed by rounding rather than by integer division would jump.
+	var jumped := 0
+	for y in m.height:
+		for x in range(m.width - 1):
+			var a := m.quadrant_coord(Vector2i(x, y), 4)
+			var b := m.quadrant_coord(Vector2i(x + 1, y), 4)
+			if absi(b.x - a.x) > 1 or b.y != a.y:
+				jumped += 1
+	check_eq("bands are contiguous across x", jumped, 0)
+
+	# Bad input is refused rather than clamped into a lie: 0 divisions is the
+	# untaken line, and a caller that forgot to check has_quadrant() must get an
+	# obvious zero rather than a plausible "quadrant 1".
+	check_eq("zero divisions has no regions", m.quadrant_count(0), 0)
+	check_eq("zero divisions has no quadrant", m.quadrant_of(m.start_cell, 0), 0)
+	check_eq("out of bounds has no quadrant",
+		m.quadrant_of(Vector2i(-1, -1), 4), 0)
+	check_eq("out of bounds has no coord",
+		m.quadrant_coord(Vector2i(999, 999), 4), Vector2i(-1, -1))
+
+	# THE SEPARATION. A quadrant number is a statement about POSITION, so two
+	# mazes that differ in every wall must still agree on it -- if the number
+	# tracked the route at all, a different carve would move it. Same shape as
+	# the landmark separation check: assert the thing that must NOT influence
+	# the answer, since it is reachable and must never be used.
+	var other := _make_maze(60, 60, 0.30)
+	var differed := 0
+	var walls_differ := false
+	for y in m.height:
+		for x in m.width:
+			var cell := Vector2i(x, y)
+			if m.quadrant_of(cell, 4) != other.quadrant_of(cell, 4):
+				differed += 1
+			if m.get_distance(cell) != other.get_distance(cell):
+				walls_differ = true
+	check("the two mazes really do differ", walls_differ)
+	check_eq("quadrant ignores the maze routing", differed, 0)
+
+
+# The Compass reports the direction the player FACES, in real cardinal terms.
+#
+# The exit is south-east, and the compass is not allowed to pretend otherwise --
+# a relabelling that made the exit read north would turn an orientation readout
+# into a second route hint. Asserted against the direction VECTORS rather than
+# against a table of letters, so this checks the naming is consistent with the
+# geometry rather than transcribing one constant into another.
+func _test_cardinal_compass() -> void:
+	check_eq("north is -Y", Maze.DIR_VECTORS[Maze.N], Vector2i(0, -1))
+	check_eq("north is called N", Maze.cardinal_name(Maze.N), "N")
+	check_eq("east is called E", Maze.cardinal_name(Maze.E), "E")
+	check_eq("south is called S", Maze.cardinal_name(Maze.S), "S")
+	check_eq("west is called W", Maze.cardinal_name(Maze.W), "W")
+
+	# Opposite directions must never share a name.
+	var clashes := 0
+	for dir in Maze.DIRS:
+		if Maze.cardinal_name(dir) == Maze.cardinal_name(Maze.OPPOSITE[dir]):
+			clashes += 1
+	check_eq("opposites have different names", clashes, 0)
+
+	# The exit really is south and east of the start, which is the fact the card
+	# text tells the player. Read off the two cells rather than restated, so a
+	# generator that moved either one fails here instead of leaving the card
+	# quietly wrong.
+	var m := _make_maze(40, 40)
+	check("exit is south of start", m.exit_cell.y > m.start_cell.y)
+	check("exit is east of start", m.exit_cell.x > m.start_cell.x)
+
+
+# Both lines are ordinary picks: they must be offerable, cap correctly, and
+# never be mistaken for the rare tier.
+func _test_quadrant_upgrades() -> void:
+	var u := Upgrades.new(1)
+
+	check_eq("quadrant starts untaken", u.rank(Upgrades.Line.QUADRANT), 0)
+	check("no box without the line", not u.has_quadrant())
+	check_eq("untaken quadrant has no divisions", u.quadrant_divisions(), 0)
+	check("no compass without the line", not u.has_cardinal_compass())
+
+	for i in 3:
+		u.take(Upgrades.Line.QUADRANT)
+	check_eq("quadrant caps at rank 3", u.rank(Upgrades.Line.QUADRANT), 3)
+	check_eq("rank 3 divides by 4", u.quadrant_divisions(), 4)
+	check("quadrant is not legendary", not u.is_legendary(Upgrades.Line.QUADRANT))
+
+	# Divisions rise with rank and never repeat: a rank that bought the same
+	# grid as the one before it would be a card offering nothing.
+	var seen := {}
+	var previous := 0
+	var rises := true
+	for r in range(1, Tuning.QUADRANT_DIVISIONS_BY_RANK.size()):
+		var d: int = Tuning.QUADRANT_DIVISIONS_BY_RANK[r]
+		if d <= previous:
+			rises = false
+		previous = d
+		seen[d] = true
+	check("divisions rise with every rank", rises)
+	check_eq("every rank is a distinct grid", seen.size(),
+		Tuning.QUADRANT_DIVISIONS_BY_RANK.size() - 1)
+
+	u.take(Upgrades.Line.COMPASS)
+	check("compass reads after one rank", u.has_cardinal_compass())
+	check("compass maxes at one rank", u.is_maxed(Upgrades.Line.COMPASS))
+	check("compass is distinct from gate compass",
+		Upgrades.Line.COMPASS != Upgrades.Line.GATE_COMPASS)
+
+	# Every rank must offer a card that says something. An empty description is
+	# a blank card the player cannot evaluate.
+	var blank := 0
+	for line in [Upgrades.Line.QUADRANT, Upgrades.Line.COMPASS]:
+		var fresh := Upgrades.new(2)
+		for r in int(Upgrades.DEFINITIONS[line]["max_rank"]):
+			if fresh.next_rank_description(line).strip_edges() == "":
+				blank += 1
+			fresh.take(line)
+	check_eq("every rank has card text", blank, 0)
 
 
 # Lanes are a DISPLAY offset and must never leak into the rules.
@@ -122,6 +300,70 @@ func _test_lanes() -> void:
 	check_near("lane settles on a whole lane line", r.lane, roundf(r.lane))
 	check("lane holds its line instead of returning to centre",
 		absf(r.lane) > 0.5, "lane drifted to %.2f" % r.lane)
+
+
+# Trail Memory: the per-cell record behind the floor tint and the map tint.
+#
+# Pure logic on purpose. The renderer reads this; it never computes it -- which
+# is what keeps the rule headlessly testable (CLAUDE.md section 12) and what
+# lets the floor and the minimap agree by construction rather than by two
+# implementations happening to match.
+func _test_trail_memory() -> void:
+	var t := TrailMemory.new()
+
+	# An untouched cell is not merely at zero visits, it is ABSENT. The
+	# difference matters to the renderer: absent means "draw nothing", zero
+	# would mean "draw the untrodden tint", and at maze 5 that is 10,000 cells
+	# of nothing being drawn.
+	check("an undriven cell is unknown", not t.has(Vector2i(3, 4)))
+	check_eq("an undriven cell reads zero visits", t.visits(Vector2i(3, 4)), 0)
+
+	t.visit(Vector2i(3, 4), 0.0)
+	check("a driven cell is known", t.has(Vector2i(3, 4)))
+	check_eq("one drive is one visit", t.visits(Vector2i(3, 4)), 1)
+
+	# Re-crossing counts. This is the whole "darker with repeats" rule.
+	t.visit(Vector2i(3, 4), 1.0)
+	t.visit(Vector2i(3, 4), 2.0)
+	check_eq("re-crossing accumulates", t.visits(Vector2i(3, 4)), 3)
+
+	# Intensity: full while the window has time left, decaying to nothing across
+	# the final TRAIL_FADE seconds. A cell that snapped off at its deadline
+	# would blink out on its own, which reads as a rendering glitch rather than
+	# as memory.
+	var window := 60.0
+	check_near("fresh ground is fully lit", t.intensity(Vector2i(3, 4), 2.0, window), 1.0)
+
+	var mid := 2.0 + window - Tuning.TRAIL_FADE * 0.5
+	check_near("half through the fade is half lit",
+		t.intensity(Vector2i(3, 4), mid, window), 0.5, 0.01)
+
+	check_near("past the window it is gone",
+		t.intensity(Vector2i(3, 4), 2.0 + window + 1.0, window), 0.0)
+
+	# The COUNT expires with the cell, not just the drawing. A cell looped four
+	# times and then left alone reads as never driven -- the window is the whole
+	# rule, which is what makes the infinite rank a difference in what is KNOWN
+	# rather than only in what is shown.
+	t.expire(2.0 + window + 1.0, window)
+	check("a lapsed cell is forgotten", not t.has(Vector2i(3, 4)))
+	check_eq("a lapsed cell's count resets", t.visits(Vector2i(3, 4)), 0)
+
+	# An infinite window never expires. Passed as a negative, which is the
+	# sentinel the rank table uses -- a huge float would work until someone ran
+	# a long enough session, and 0.0 would be indistinguishable from "no memory".
+	var inf_mem := TrailMemory.new()
+	inf_mem.visit(Vector2i(1, 1), 0.0)
+	inf_mem.expire(100000.0, Tuning.TRAIL_WINDOW_INFINITE)
+	check("an infinite window never forgets", inf_mem.has(Vector2i(1, 1)))
+	check_near("an infinite window stays fully lit",
+		inf_mem.intensity(Vector2i(1, 1), 100000.0, Tuning.TRAIL_WINDOW_INFINITE), 1.0)
+
+	# clear() is the per-maze reset. A trail carried into maze 2 would draw
+	# maze 1's route onto a different grid -- the same stale-state trap section
+	# 12 records for gates_cleared.
+	inf_mem.clear()
+	check_eq("clear empties the record", inf_mem.count(), 0)
 
 
 # --- Assertions --------------------------------------------------------------
@@ -1984,23 +2226,44 @@ func _test_golden_trail() -> void:
 	u.take(Upgrades.Line.GOLDEN_TRAIL)
 	check("rank 1 enables the trail", u.has_trail())
 	check_near("rank 1 interval", u.trail_interval(), 12.0)
-	check_near("rank 1 length", u.trail_cells(), 10.0)
 
 	u.take(Upgrades.Line.GOLDEN_TRAIL)
 	u.take(Upgrades.Line.GOLDEN_TRAIL)
 	check_near("rank 3 interval", u.trail_interval(), 5.0)
-	check_near("rank 3 length", u.trail_cells(), 20.0)
 	check("trail line caps at rank 3", u.is_maxed(Upgrades.Line.GOLDEN_TRAIL))
 
-	# Both scale together, and both in the direction that makes the upgrade
-	# stronger: shorter interval, longer trail.
+	# Rank drives the INTERVAL only. Length is no longer a rank table at all --
+	# the trail runs the whole route and how far it is seen comes from the
+	# racer's speed (section 7), so a test asserting a cell count per rank would
+	# now be asserting a number the game does not have.
 	var u2 := Upgrades.new(1)
 	u2.take(Upgrades.Line.GOLDEN_TRAIL)
 	var i1 := u2.trail_interval()
-	var c1 := u2.trail_cells()
 	u2.take(Upgrades.Line.GOLDEN_TRAIL)
 	check("interval shortens with rank", u2.trail_interval() < i1)
-	check("length grows with rank", u2.trail_cells() > c1)
+
+	# Platinum is a separate line: taking one must not enable the other, or the
+	# two would be one upgrade sold twice.
+	var up := Upgrades.new(1)
+	check("no platinum at rank 0", not up.has_platinum_trail())
+	up.take(Upgrades.Line.GOLDEN_TRAIL)
+	check("golden does not grant platinum", not up.has_platinum_trail())
+	up.take(Upgrades.Line.PLATINUM_TRAIL)
+	check("platinum rank 1 enables it", up.has_platinum_trail())
+	check("platinum does not disturb golden", up.has_trail())
+	check_near("platinum rank 1 interval", up.platinum_interval(), 15.0)
+	up.take(Upgrades.Line.PLATINUM_TRAIL)
+	check("platinum interval shortens with rank", up.platinum_interval() < 15.0)
+
+	# Platinum fires less often than Golden at equal rank -- it answers the
+	# bigger question, and a continuous readout of the whole solve would flatten
+	# the maze. Read from Tuning rather than restated, so this checks the shape
+	# of the two tables rather than transcribing them (section 12).
+	var slower := true
+	for r in range(1, Tuning.TRAIL_INTERVAL_BY_RANK.size()):
+		if float(Tuning.PLATINUM_INTERVAL_BY_RANK[r]) <= float(Tuning.TRAIL_INTERVAL_BY_RANK[r]):
+			slower = false
+	check("platinum fires less often than golden at equal rank", slower)
 
 	# The route must follow the live distance field, so it is correct even when
 	# the player has stepped off the canonical path (section 6).
@@ -2040,6 +2303,167 @@ func _test_golden_trail() -> void:
 	var corridor := _make_corridor(6)
 	var stuck := corridor.route_from(Vector2i(0, 0), 10)
 	check("unreachable exit yields no route to draw", stuck.size() < 2)
+
+	# --- The two trails never draw at once -----------------------------------
+	#
+	# They are the same ribbon shape on the same floor, and gates sit on the
+	# solve path -- so most of the time both routes coincide and the near one
+	# simply paints over the far one. A rendered frame showed exactly that:
+	# gold over silver, the silver reading as a white smear beneath it.
+	var maze_l := _make_maze(20, 20)
+	var ur := Upgrades.new(1)
+	for _i in 3:
+		ur.take(Upgrades.Line.GOLDEN_TRAIL)
+		ur.take(Upgrades.Line.PLATINUM_TRAIL)
+
+	var rl := Racer.new()
+	rl.setup(maze_l, ur, 0)
+
+	var gold := GoldenTrail.new()
+	var plat := GoldenTrail.new()
+	gold.mode = GoldenTrail.Mode.GOLDEN
+	plat.mode = GoldenTrail.Mode.PLATINUM
+	gold.set_partner(plat)
+	plat.set_partner(gold)
+
+	# Past the gate threshold, so both lines are genuinely eligible -- otherwise
+	# this would pass on the gate rule alone and assert nothing about the lock.
+	rl.gates_taken = Tuning.PLATINUM_MIN_GATES
+
+	var overlapped := false
+	var plat_fired := false
+	for _f in 3000:
+		gold.update_state(rl, ur, 1.0 / 60.0)
+		plat.update_state(rl, ur, 1.0 / 60.0)
+		if gold.is_showing() and plat.is_showing():
+			overlapped = true
+		if plat.is_showing():
+			plat_fired = true
+	check("the two trails never draw simultaneously", not overlapped)
+	# Guard against the assertion passing because platinum simply never fired:
+	# "never overlaps" is trivially true of a line that never appears.
+	check("platinum does fire past the gate threshold", plat_fired)
+
+	gold.free()
+	plat.free()
+
+	# --- Platinum stays silent until the gate tour is done --------------------
+	var early := Racer.new()
+	early.setup(_make_maze(20, 20), ur, 0)
+	early.gates_taken = Tuning.PLATINUM_MIN_GATES - 1
+
+	var solo := GoldenTrail.new()
+	solo.mode = GoldenTrail.Mode.PLATINUM
+	var showed_early := false
+	for _f in 3000:
+		solo.update_state(early, ur, 1.0 / 60.0)
+		if solo.is_showing():
+			showed_early = true
+	check("platinum never fires below the gate threshold", not showed_early)
+
+	# And the very next gate switches it on, so the threshold is a real edge
+	# rather than a line that simply never runs.
+	early.gates_taken = Tuning.PLATINUM_MIN_GATES
+	var showed_after := false
+	for _f in 3000:
+		solo.update_state(early, ur, 1.0 / 60.0)
+		if solo.is_showing():
+			showed_after = true
+	check("platinum fires once the threshold is reached", showed_after)
+	solo.free()
+
+	# Golden is NOT gated -- it is the line that answers the gate tour, so
+	# gating it on gates taken would silence it exactly when it is wanted.
+	var g0 := Racer.new()
+	g0.setup(_make_maze(20, 20), ur, 0)
+	var gsolo := GoldenTrail.new()
+	gsolo.mode = GoldenTrail.Mode.GOLDEN
+	var gold_early := false
+	for _f in 3000:
+		gsolo.update_state(g0, ur, 1.0 / 60.0)
+		if gsolo.is_showing():
+			gold_early = true
+	check("golden fires with no gates taken", gold_early)
+	gsolo.free()
+
+	# --- route_to: the Golden Trail's gate routing ---------------------------
+	#
+	# route_from descends the distance field, which knows exactly one
+	# destination. A gate is not on that gradient, so this is the rule that
+	# makes "the trail goes through the gates" expressible at all.
+	var line := _make_corridor(8, true)
+	var to_mid := line.route_to(Vector2i(0, 0), Vector2i(5, 0))
+	check("route_to starts at the given cell", to_mid.size() > 0 and to_mid[0] == Vector2i(0, 0))
+	check("route_to ends at the target", to_mid[to_mid.size() - 1] == Vector2i(5, 0))
+	check_eq("route_to is the shortest path", to_mid.size(), 6)
+
+	# Every step legal, same requirement route_from has: a route that jumped
+	# through geometry would draw a ribbon straight through a wall.
+	var to_legal := true
+	for i in to_mid.size() - 1:
+		var st: Vector2i = to_mid[i + 1] - to_mid[i]
+		var ok := false
+		for dir in Maze.DIRS:
+			if Maze.DIR_VECTORS[dir] == st and line.is_open(to_mid[i], dir):
+				ok = true
+		if not ok:
+			to_legal = false
+	check("every route_to step passes through an opening", to_legal)
+
+	# Standing on the target is "nowhere to go", which _fire skips rather than
+	# drawing a zero-length streak.
+	check_eq("route_to onto own cell is a single cell",
+		line.route_to(Vector2i(3, 0), Vector2i(3, 0)).size(), 1)
+
+	# An unreachable target yields NO route rather than a wrong one. A trail
+	# that quietly pointed at the closest thing it could reach would be
+	# advice, and false advice is worse than none (section 7).
+	var split := _make_corridor(4)
+	check("unreachable target yields no route",
+		split.route_to(Vector2i(0, 0), Vector2i(99, 99)).size() == 0)
+
+	# The trail must aim at a gate that is genuinely NOT down the exit
+	# gradient, which is the whole reason route_to exists. On a real maze,
+	# routing to a gate and routing to the exit must be able to disagree.
+	var real := _make_maze(20, 20)
+	if not real.gates.is_empty():
+		var gate: Vector2i = real.gates[0]
+		var to_gate := real.route_to(real.start_cell, gate)
+		check("route to a real gate reaches it",
+			to_gate.size() > 1 and to_gate[to_gate.size() - 1] == gate)
+		# And it is the SHORTEST such route: no step may be skippable. BFS
+		# guarantees this by construction, so the check is that the
+		# construction was not quietly broken -- a parent map walked back
+		# wrongly still terminates and still yields a connected path.
+		check_eq("route to a gate is shortest",
+			to_gate.size(), _bfs_length(real, real.start_cell, gate))
+
+
+# An INDEPENDENT shortest-path length, so the route_to assertion is checked
+# against a second implementation rather than against itself. A distance-only
+# flood cannot share route_to's parent-map bug, which is the class of error
+# most likely to survive a test written from the same code.
+func _bfs_length(m: Maze, from: Vector2i, to: Vector2i) -> int:
+	if from == to:
+		return 1
+	var dist := {}
+	dist[from] = 1
+	var queue: Array[Vector2i] = [from]
+	var head := 0
+	while head < queue.size():
+		var current: Vector2i = queue[head]
+		head += 1
+		for dir in Maze.DIRS:
+			if not m.is_open(current, dir):
+				continue
+			var next: Vector2i = current + Maze.DIR_VECTORS[dir]
+			if dist.has(next):
+				continue
+			dist[next] = int(dist[current]) + 1
+			if next == to:
+				return int(dist[next])
+			queue.append(next)
+	return 0
 
 
 func _test_wall_position() -> void:
@@ -2449,3 +2873,5 @@ func _test_marker_heights() -> void:
 	check("markers stay under a sane ceiling",
 		Tuning.EXIT_MARKER_HEIGHT < 5.0,
 		"%.2f x WALL_HEIGHT" % Tuning.EXIT_MARKER_HEIGHT)
+
+

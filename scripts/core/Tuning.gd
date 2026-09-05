@@ -222,19 +222,136 @@ const INDICATOR_LOOKAHEAD_BY_RANK := [0.0, 1.0, 2.0, 3.5]
 # Minimap radius in cells, by rank. Rank 0 means no minimap at all.
 const MINIMAP_RADIUS_BY_RANK := [0.0, 6.0, 10.0, 16.0, 24.0]
 
-# Golden Trail: seconds between firings and trail length in cells, by rank.
-# Index 0 is rank 0 -- no trail. Both scale together (CLAUDE.md section 7).
+# --- Trail Memory ------------------------------------------------------------
+# How long a driven cell is remembered, by rank, in SECONDS.
+#
+# A memory DURATION rather than a cell count, which is the one place this line
+# deliberately departs from section 4's "measure forgiveness in cells, not
+# seconds" rule. That rule exists so forgiveness does not grow with speed; this
+# is not forgiveness, it is memory, and memory of "the last minute of driving"
+# is the thing a player actually wants to hold. It does mean the trail covers
+# more ground at 8x than at 1x -- which is correct: at 8x you have genuinely
+# driven more ground in that minute.
+#
+# Sized against the 180s maze budget (section 8b). Rank 1 at 60s is a third of
+# a maze, which is enough to recognise a loop you just closed and not enough to
+# map the maze. The final rank is the whole maze, which is why it is the last.
+const TRAIL_WINDOW_INFINITE := -1.0
+const TRAIL_WINDOW_BY_RANK := [
+	0.0,                     # untaken -- callers must check has_trail_memory()
+	60.0,                    # 1:00
+	90.0,                    # 1:30
+	120.0,                   # 2:00
+	150.0,                   # 2:30
+	180.0,                   # 3:00
+	TRAIL_WINDOW_INFINITE,   # the whole maze
+]
+
+# How long a cell spends fading out at the end of its window. The tail of the
+# trail visibly retreats rather than individual cells blinking off -- a cell
+# that snapped off at its own deadline would read as a rendering fault, and
+# ranking up would be invisible except by counting. With a fade, ranking up is
+# watching the tail stretch.
+const TRAIL_FADE := 3.0
+
+# The tint applied to remembered ground, as a multiplier on the palette's floor
+# colour, indexed by visit count.
+#
+# Index 1 (a single visit) LIFTS the floor: ground you have driven once glows
+# faintly, which is the "have I been here" answer. Every further visit takes it
+# DOWN, past the base floor into shadow, so heavily re-crossed ground burns out.
+# Fresh ground is dark, known ground glows, flogged ground is black.
+#
+# That shape is deliberate and is not the same as "darker with every visit". A
+# strictly monotonic dimming has nowhere to go on a floor that is already near
+# black (every palette's floor sits under 0.08), so the first few visits would
+# be indistinguishable from each other and from untrodden ground.
+const TRAIL_TINT_BY_VISITS := [
+	1.0,    # 0 -- untrodden, the palette's own floor
+	3.4,    # 1 -- lit
+	2.1,    # 2
+	1.2,    # 3
+	0.6,    # 4
+	0.3,    # 5+ -- burnt out
+]
+
+# Colour the lit trail is pushed toward, mixed with the palette floor rather
+# than replacing it, so the trail reads as the same floor lit rather than as a
+# different surface painted on top. Neutral-cool on purpose: it must not collide
+# with the three route colours the Path Indicator owns (green/yellow/red), with
+# gate amber, or with exit white (section 8's reserved list).
+const TRAIL_COL := Color(0.30, 0.62, 0.85)
+
+# How far the tint pushes toward TRAIL_COL at full intensity. Well under 1.0 --
+# the grid lines are the timing contract (section 11.3) and must stay the
+# dominant marking on the floor, so the trail is a wash beneath them and never
+# a surface that competes with them.
+const TRAIL_COL_MIX := 0.45
+
+# Golden Trail: seconds between firings, by rank. Index 0 is rank 0 -- no trail.
+#
+# Rank no longer sets a LENGTH. The trail runs the whole route to its target,
+# and how far that reaches is the player's own speed: it draws at
+# TRAIL_SPEED_MULTIPLIER times the racer's current cell rate, so at 8x it
+# stretches several times as far in the same wall-clock moment as it does at 1x.
+# That is the point -- lookahead is worth most exactly when a cell passes in
+# 125ms, and a fixed cell count hands the fast player the same short streak it
+# hands the slow one.
+#
+# The old TRAIL_CELLS_BY_RANK is gone rather than retained at a large value: a
+# cap that never binds is a number the reader has to prove inert before they can
+# ignore it, which is the same trap CLAUDE.md section 8 records for the dead-end
+# density target.
 const TRAIL_INTERVAL_BY_RANK := [0.0, 12.0, 8.0, 5.0]
-const TRAIL_CELLS_BY_RANK := [0.0, 10.0, 15.0, 20.0]
+
+# Gates that must be banked before Platinum will fire at all.
+#
+# The two lines own different halves of a maze. Up to here the live question is
+# "where are my upgrades" and Golden answers it; a silver ribbon pointing at the
+# exit during that stretch is an invitation to skip picks the player has already
+# spent a card on. Past it the question is genuinely "get me out".
+#
+# 5 of 8 -- late enough that the gate tour is the clear business of the early
+# maze, early enough that Platinum still has a real stretch of maze to be useful
+# in rather than firing once on the way through the exit arch.
+const PLATINUM_MIN_GATES := 5
+
+# Platinum Trail: the same shape, aimed at the exit instead of the next gate.
+# Slower firings at equal rank than Golden, because its route is the one the
+# player is scored on finishing (section 8b) and it answers a bigger question --
+# a continuous readout of the whole solve would flatten the maze.
+const PLATINUM_INTERVAL_BY_RANK := [0.0, 15.0, 10.0, 6.0]
 
 # The streak runs at this multiple of the player's CURRENT speed, so it always
 # pulls ahead. A fixed rate would trail behind a player at 5x, which inverts the
 # whole point of a forward scout.
 const TRAIL_SPEED_MULTIPLIER := 2.0
 
+# The longest a single firing may spend DRAWING, in seconds. Bounds the reach:
+# the head runs at TRAIL_SPEED_MULTIPLIER times the racer's cell rate for at
+# most this long, so a 1x racer is shown ~5 cells and an 8x racer ~40 -- the
+# same wall-clock moment of lookahead, scaled by how fast it is being consumed.
+#
+# It also stops a long route outliving its own cycle. The shortest interval is
+# 5s (rank 3 Golden), so a draw phase that could exceed that would leave the
+# trail permanently mid-flight and never re-snapshot from the player's current
+# cell, which is what keeps the ribbon honest.
+const TRAIL_MAX_DRAW := 2.5
+
 # How long the fully-drawn trail holds before fading, in seconds. Long enough
 # that a trail fired just before a junction is still there when it arrives.
 const TRAIL_LINGER := 2.0
+
+# Quadrant: how many divisions per axis, by rank. Rank 0 is no box at all.
+#
+# Per AXIS rather than a total count, because the box is drawn as a grid and the
+# axis count is what a renderer actually needs -- storing 4/9/16 would mean
+# taking a square root back out at every draw, and would let a non-square total
+# be written by accident.
+#
+# The quadrant a cell falls in is derived from the maze's own dimensions, so a
+# maze of any size divides correctly and nothing here restates a grid size.
+const QUADRANT_DIVISIONS_BY_RANK := [0, 2, 3, 4]
 
 const CARDS_PER_GATE := 3
 
