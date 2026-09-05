@@ -2349,6 +2349,55 @@ Verified against the deployed rules with a real token: a legitimate daily write 
 better score overwrites, a **worse score is rejected**, posting under another uid is rejected,
 and a 999,999,999 score is rejected.
 
+### It works on desktop too, over REST
+
+`Leaderboard` carries two transports behind one public surface
+(`docs/plans/leaderboard-desktop.md`): the JS bridge in a browser, and plain `HTTPRequest`
+against the same project everywhere else. Desktop was originally left out on the reasoning
+that the boards are a web feature — but that made the desktop shortcut a practice mode that
+posted nothing and showed no history, since run history is Firestore-backed rather than a
+local file.
+
+**The refresh token is persisted, and that is what makes desktop one player.** A fresh
+anonymous sign-up on every launch mints a *new uid each time*, so every run would post as a
+different person and the history would always be empty. The token lives in `settings.cfg`
+beside the display name.
+
+**Desktop and browser are still different players.** Anonymous auth has no cross-device
+identity — the browser's uid lives in browser storage and a desktop process cannot reach it.
+Linking them needs a real signup, which this game deliberately does not ask for. A player who
+uses both holds two entries under one display name; recorded as a known cost.
+
+**The ID token lasts an hour and is refreshed before every post.** A run takes minutes, so a
+credential that is merely valid *now* is not good enough — it has to survive the post at the
+end. REST is switched off entirely when `DisplayServer` reports headless, so no harness ever
+waits on a network.
+
+### Three failures that only the live service could show
+
+- **The autoload was never registered.** `Leaderboard` was missing from `project.godot`
+  entirely — `git log -S "Leaderboard="` finds it in no commit — so the feature was **inert in
+  every build shipped**, web included. The panel drew its offline state, which is exactly what
+  it should do when the service is unreachable, so nothing looked broken.
+- **The boards needed composite Firestore indexes.** A filter plus an order-by on a different
+  field requires one, and none existed, so *every* board and history query failed with
+  `FAILED_PRECONDITION` — on desktop and in the browser alike. Three are now deployed from
+  `firebase/firestore.indexes.json`; they take a few minutes to build, and queries fail until
+  the state reads `READY`.
+- **A stale admin token read as an empty database.** Mid-diagnosis, a listing returned 0 rows
+  and looked like proof that desktop writes were silently failing. The writes had landed; the
+  *read* was using an ID token that had expired an hour earlier. An expired credential and an
+  empty collection are indistinguishable if only the row count is checked — verify the token
+  before believing the emptiness.
+
+`LeaderboardProbe.gd` is the instrument, and it is not a test: it drives the real REST backend
+against the live project and reports sign-in, the post state, the board and the history. It
+exists for the same reason `MusicProbe` does — every harness runs headless with REST disabled,
+so they prove the wiring and say nothing about whether desktop can actually reach Firebase.
+Its own first version looked the autoload up from `_init`'s deferred call, which fires *before
+autoloads enter the tree*, and reported the node missing from a project where it was correctly
+registered.
+
 **Transport is `JavaScriptBridge` into `shell.html`**, the shape the audio unlock established
 (§12) — Godot has no Firebase SDK, and the REST API would mean hand-rolling token refresh.
 The JS side **cannot call back into Godot**, so every async result is parked in a slot and
