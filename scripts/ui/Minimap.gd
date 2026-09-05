@@ -41,6 +41,24 @@ const COL_GATE_SPENT := Color(0.30, 0.55, 0.95)
 const COL_EXIT := Color(0.35, 1.0, 0.45)
 const COL_RING := Color(0.4, 0.7, 1.0, 0.35)
 
+# Trail Memory. Ground driven once lifts ABOVE the untrodden cell colour; every
+# re-crossing takes it down, past COL_OPEN into near-black. Fresh ground is
+# dark, ground you know glows, ground you have flogged is burnt out.
+#
+# The hue matches the world floor's TRAIL_COL so the two readings of the same
+# record read as the same thing, but the VALUES are brighter here -- the same
+# argument COL_GATE_SPENT records a few lines up. A map cell is a handful of
+# pixels against an already-dark disc, where the floor is a large surface seen
+# under fog and a headlight.
+const COL_TRAIL_BY_VISITS := [
+	Color(0.06, 0.09, 0.15, 0.75),   # 0 -- unused; untrodden draws COL_OPEN
+	Color(0.20, 0.42, 0.62, 0.90),   # 1 -- lit
+	Color(0.14, 0.29, 0.44, 0.88),   # 2
+	Color(0.10, 0.19, 0.30, 0.85),   # 3
+	Color(0.07, 0.12, 0.19, 0.82),   # 4
+	Color(0.04, 0.06, 0.10, 0.80),   # 5+ -- burnt out
+]
+
 var racer: Racer
 var upgrades: Upgrades
 var blurred := false
@@ -141,6 +159,19 @@ func _draw_cell(cell: Vector2i, at: Vector2, scale: float, spin: float) -> void:
 	var cell_size := scale * 0.82
 
 	var colour := COL_OPEN
+
+	# Trail Memory, drawn BENEATH every other cell state. The exit, gates and
+	# spent gates all override it: those answer "where am I going" and "what have
+	# I opened", which are worth more at a glance than "have I been here", and a
+	# gate whose square went grey with re-crossings would be a gate the player
+	# could no longer find.
+	if upgrades.has_trail_memory():
+		var lit := racer.trail.intensity(
+			cell, racer.trail_clock, upgrades.trail_memory_window())
+		if lit > 0.0:
+			var v := mini(racer.trail.visits(cell), COL_TRAIL_BY_VISITS.size() - 1)
+			colour = COL_OPEN.lerp(COL_TRAIL_BY_VISITS[v], lit)
+
 	if cell == racer.maze.exit_cell:
 		colour = COL_EXIT
 	elif racer.gates_cleared.has(cell):
