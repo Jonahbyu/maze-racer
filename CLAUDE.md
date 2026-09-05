@@ -1974,6 +1974,27 @@ reached someone else's row still cannot vandalise it downward. Every score store
 it was driven on**, which is what keeps a future replay-validation upgrade possible; it is
 deliberately not pretending to be one now.
 
+**Two things the live service rejected that no local check could have caught.** Both were
+found by driving the real endpoints with a real anonymous token, and both would have looked
+identical from here — a board that silently never fills:
+
+- **`string()` on a number does not rebuild the document ID.** The create rule pinned the ID
+  to `uid_board_ + string(seed)`, and measured against the deployed rules a legitimate daily
+  score was rejected with `1442907934` *and* `1442907934.0` as the suffix — the comparison was
+  simply never true, so **both shared boards were unwritable**. The general board hid it
+  completely, because that branch short-circuits before the comparison is reached: the one
+  board that worked was the one that skipped the broken clause. The rule now matches the ID's
+  *shape* (`_[0-9]+`) rather than rebuilding it, which keeps one-entry-per-player-per-board
+  while leaving the seed's value to `scoreIsPlausible`.
+- **`authorizedDomains` did not include `jonahbyu.github.io`.** Firebase Auth rejects requests
+  from any origin not on that list, so even with anonymous sign-in enabled the live site could
+  not have authenticated at all — and the symptom would have been indistinguishable from the
+  sign-in provider still being off.
+
+Verified against the deployed rules with a real token: a legitimate daily write is accepted, a
+better score overwrites, a **worse score is rejected**, posting under another uid is rejected,
+and a 999,999,999 score is rejected.
+
 **Transport is `JavaScriptBridge` into `shell.html`**, the shape the audio unlock established
 (§12) — Godot has no Firebase SDK, and the REST API would mean hand-rolling token refresh.
 The JS side **cannot call back into Godot**, so every async result is parked in a slot and
@@ -1984,6 +2005,46 @@ otherwise identical.
 settings have — the autoload is absent in every harness, and a dead network must never be
 what stops a run starting. The trailer is excluded from posting on `trailer_seed`, the flag
 that already suppresses the HUD banner and the loadout pick.
+
+### The daily and monthly runs each get their own button
+
+`PLAY` / `PLAY DAILY` / `PLAY MONTHLY` / `WATCH TRAILER` / `QUIT`. The two new
+entries start the ordinary game on a date-derived seed rather than the wall clock.
+
+**Everything below the menu already existed.** `Game.board` derives the seed and
+decides which board the run posts to, and `Tuning.seed_for_board()` has answered all
+three cases since the leaderboards landed — nothing ever *set* it, so the shared
+mazes were reachable only from code. The change is three lines of plumbing:
+`play_pressed` carries a board, `Shell.start_game()` takes one, and `_build_game`
+assigns it **before `add_child`** — `Game._ready` derives `run_seed` from it, so a
+board set afterwards arrives one maze too late, the same ordering `trailer_seed`
+needs and for the same reason.
+
+**A button per board, not a selector beside PLAY.** A three-way toggle would make a
+daily run two presses and would need the lit board legible at a glance; a labelled
+button says which maze it starts by being pressed. The stack height is derived from
+the button count, so growing it from three to five costs only the space it takes.
+
+**The stack stays top-anchored, and centring it was tried and is wrong.** Hanging the
+row from its own centre keeps it balanced as it grows, but at five buttons every
+centre that clears the bottom edge pushes the stack's top above the logo's baseline
+(−75), so the title and the first button overlap. The two constraints genuinely
+fight, and hanging from a fixed top below the logo is what satisfies both. Measured
+at five buttons: the row runs −40..+342 with the hint ending at +402 against 450
+available. **The number that needed deriving was the stack's height, not its top** —
+the height reads the count and so was never the §12 trap; the top is a gap below the
+logo, which does not change with the count.
+
+`ShellTest` asserts the wiring through the **menu's own signal** rather than by
+calling `start_game` directly, because that is the half that rots: a button bound to
+the wrong board, or a signal that drops its argument, leaves `start_game` perfectly
+correct and the player on the wrong maze. The seeds are read from `Tuning` rather
+than restated — a literal hash would be a transcription check (§12) and would go
+stale the day after it was written.
+
+Verified across two separate processes: `DAILY` and `MONTHLY` produced identical
+seeds and identical maze signatures both times, while `GENERAL` moved with the clock
+and drew a different maze — which is the whole property the buttons exist to expose.
 
 ### The menu is two columns
 
@@ -2383,6 +2444,71 @@ The cost is that the maze's absolute orientation is no longer legible. That is a
 trade because recognising *where you are* was never this map's job at these radii — that is
 what landmarks are for (§6).
 
+### The rear-view mirror
+
+**A small box in the top-left corner showing the corridor behind, live, at all times.**
+Free and always on, from the first frame of maze 1.
+
+**It is safe to give away because it answers "have I been here", never "which way".** That
+is the same line landmarks (§6) and spent gate markers (§7) sit on, and it is what keeps
+the mirror from cannibalising Path Indicator, Gate Compass and Golden Trail — three *paid*
+lines all sold on answering the route ahead. Everything a mirror can show is ground the
+player has already driven. What it adds is **memory**, not routing: a corridor you are
+about to reverse into is one you can see before committing the −0.75x (§5.3), and a
+landmark or spent gate you have passed stays legible a moment longer than the eye alone
+would keep it.
+
+**It renders the real world through a second camera, sharing the main `World3D`.** That
+sharing is the whole construction: the maze, the marker, the gates, the Path Indicator
+strips and the Golden Trail in the mirror are the *same nodes* as on screen, so nothing can
+drift out of step with the main view. A separate scene would be a second copy of the world
+to keep in sync — the parallel-array trap of §6 and §9c wearing different clothes. Verified
+in a rendered frame: the mirror picks up each maze's palette and has drawn a landmark and a
+green floor strip in it, neither of which a faked view would have.
+
+**Top-left, under the speed row, because every other corner is spoken for.** The timer's
+width *changes past a minute*, so nothing may share its line (the §9d collision); bottom-
+left is the barrier and integrity bars; bottom-centre is the minimap. Top-left under the row
+is the one band empty on both platforms — the touch pads are bottom-anchored and the pause
+pad is top-*right*.
+
+**Aimed off the racer's facing, not the camera's trailing yaw.** The chase camera lags
+through a pivot deliberately, so the swing reads smoothly and the turn freeze pays for it
+(§2) — but a mirror that lagged would spend every corner showing the wall it was in the
+middle of leaving. The mirror is an instrument; it points behind you the moment you are
+facing the new way.
+
+**It freezes off the phase, in one place, rather than beside each of the seven sites that
+blur the minimap.** Those sites blur because each knows it is opening a modal; the mirror
+only cares whether the clock is stopped, so deriving it from the phase means a phase added
+later cannot forget. It **stops rendering** rather than blurring — it only ever shows ground
+already driven, so there is nothing to scramble, and what is being refused is a free look at
+a static world on a stopped clock (§2, §7).
+
+**Sized off the shorter viewport edge, with a floor and not a ceiling** — the §9d lesson,
+that a pixel is a count rather than a size and a pixel *cap* hands the smallest screen the
+smallest box.
+
+Two things only a rendered frame caught, both fixed:
+
+- **The frame cut through the maze name.** The top row's band ends at y=70 and the mirror
+  was placed at 86, so the two *rects* did not overlap — but the maze name and gate count
+  sit on the row's baseline, well below its nominal top, and the text did. Rect clearance is
+  not text clearance.
+- **The view was 40% empty ceiling.** A 95° lens over a 3m corridor sees a lot of nothing
+  above the wall line, and aiming *below* the eye — the intuitive way to frame a mirror —
+  only adds more of it. The aim now sits slightly *above* the eye, trading ceiling the
+  player cannot use for the floor grid and wall bands where every recognisable feature is.
+
+`SceneTest` asserts the wiring — most importantly that the sub-viewport shares the main
+world, since a `SubViewport` silently builds its own empty one otherwise and renders as flat
+background, which looks like a mirror that is merely dark rather than one wired wrong. It
+also checks the camera faces opposite the racer, rides with them, and that the box clears
+both HUD bands **at two sizes**, desktop and phone. `RearViewShot.gd` is the picture half:
+it **seeks a corner** rather than shooting on a timer, for the reason `PaletteShot` seeks a
+junction — a straight corridor shows two identical walls receding, which is exactly the
+frame that cannot tell a working mirror from one aimed forward.
+
 **View: third person.** The camera trails behind and slightly above a player marker — a
 glowing ring with an arrow inside it, sitting on the floor. First person hid the two things
 the player most needs: where they actually sit in the corridor, and which way they point.
@@ -2543,9 +2669,9 @@ Six harnesses, each answering a different question:
 | Harness | Question it answers |
 |---|---|
 | `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, and the date-derived daily and monthly seeds. 358 assertions. |
-| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, and the end-of-run summary on both the death and completion paths. 124 assertions. |
+| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, and the end-of-run summary on both the death and completion paths. 145 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline. 58 assertions. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, and the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed. 69 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 22 assertions. |
 | `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 105 assertions. |
 
@@ -2624,6 +2750,13 @@ thing does not demonstrate the scheme. It keeps Golden Trail out of the shot del
 the trail is a long gold ribbon drawn *along* the route, it looks exactly like a strip laid
 the wrong way, and mistaking it for one cost two "fixes" to geometry that measured correct
 throughout.
+
+`RearViewShot.gd` is the picture half of the rear-view mirror (§12): two frames per maze,
+one a cell or two **past a turn** and one at a junction. It seeks the corner rather than
+shooting on a timer for the reason `PaletteShot` seeks a junction — down a straight corridor
+the mirror shows two identical walls receding, which is precisely the frame that cannot
+distinguish a working mirror from one aimed forward. It caught both the frame cutting
+through the maze name and the view being 40% empty ceiling.
 
 Maze generation, the distance field, buffer/turn resolution, and the penalty math are all
 pure logic and **must** stay testable headlessly. Movement *feel* is not — that needs a

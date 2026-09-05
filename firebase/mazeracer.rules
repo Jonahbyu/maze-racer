@@ -57,13 +57,26 @@ match /mazeRacer/data/scores/{scoreId} {
   // monthly, so a player replaying a daily overwrites their own single entry
   // rather than adding a second -- and cannot flood a board by replaying it.
   // Without the ID check a client could simply pick a different ID each time.
+  // The seed is matched as a PATTERN, not rebuilt with string().
+  //
+  // string() on a number does not produce the digits the client used to build
+  // the document ID -- measured against the live rules, a legitimate daily
+  // score was rejected with both '1442907934' and '1442907934.0' as the
+  // suffix, so the comparison was simply never true and BOTH shared boards
+  // were unwritable. The general board hid it completely, since that branch
+  // short-circuits before the comparison is reached.
+  //
+  // Matching the shape instead keeps what the ID is actually for: one entry
+  // per player per board, with the uid pinned to the caller. The seed VALUE is
+  // still checked by scoreIsPlausible, and a client that lied about it in the
+  // ID would only be fragmenting its own entries, not reaching anyone else's.
   allow create: if request.auth != null
     && request.resource.data.uid == request.auth.uid
     && scoreIsPlausible(request.resource.data)
     && (
       request.resource.data.board == 'general'
-        || scoreId == request.auth.uid + '_' + request.resource.data.board
-             + '_' + string(request.resource.data.seed)
+        || scoreId.matches(request.auth.uid + '_'
+             + request.resource.data.board + '_[0-9]+')
     );
 
   // Update is how a better run replaces a standing daily entry. Only the owner,
