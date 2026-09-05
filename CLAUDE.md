@@ -2390,6 +2390,12 @@ waits on a network.
   empty collection are indistinguishable if only the row count is checked — verify the token
   before believing the emptiness.
 
+`tools/web-leaderboard-probe.py` is the matching instrument for the HOSTED build: it drives
+the live page in headless Chrome over CDP, signs in through the real bridge, posts a score and
+reads the board back. Curl against the same endpoints proves the *service*; only this proves
+the *page* — the identical gap that let a silent web build pass every check. It runs headless
+so it never opens a window.
+
 `LeaderboardProbe.gd` is the instrument, and it is not a test: it drives the real REST backend
 against the live project and reports sign-in, the post state, the board and the history. It
 exists for the same reason `MusicProbe` does — every harness runs headless with REST disabled,
