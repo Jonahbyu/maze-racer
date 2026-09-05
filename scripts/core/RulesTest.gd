@@ -29,6 +29,7 @@ func _init() -> void:
 	_test_score()
 	_test_visited_cells()
 	_test_trail_memory()
+	_test_trail_memory_does_not_move_the_racer()
 	_test_seeded_boards()
 	_test_legendaries()
 	_test_gates()
@@ -432,6 +433,44 @@ func _test_trail_memory() -> void:
 	# trail carried into maze 2 would paint maze 1's route onto a different grid.
 	r.setup(_make_corridor(8), Upgrades.new(1))
 	check_eq("a new maze starts with a fresh trail", r.trail.count(), 1)
+
+
+# The trail is a DISPLAY record and must never leak into the rules.
+#
+# Same shape as _test_landmarks_do_not_move_the_racer, and for the same reason:
+# `trail` hangs off the Racer, so it is REACHABLE from every movement rule even
+# though none may read it. That is the failure hardest to notice by eye -- a
+# rule that started consulting the trail would still pass every other test in
+# this file, because every other test drives a racer whose trail happens to
+# match its history.
+#
+# Driven as two racers on the same seed, one with the line maxed and one with it
+# untaken. The upgrade changes what is remembered and drawn; it must change
+# nothing about where the racer goes or what it costs.
+func _test_trail_memory_does_not_move_the_racer() -> void:
+	var m1 := _make_corridor(40)
+	var m2 := _make_corridor(40)
+
+	var plain := Upgrades.new(1)
+	var lit := Upgrades.new(1)
+	for i in 6:
+		lit.take(Upgrades.Line.TRAIL_MEMORY)
+
+	var a := Racer.new()
+	a.setup(m1, plain)
+	var b := Racer.new()
+	b.setup(m2, lit)
+
+	var diverged := 0
+	for i in 1200:
+		a.step(1.0 / 60.0)
+		b.step(1.0 / 60.0)
+		if a.cell != b.cell 				or absf(a.progress - b.progress) > 0.0001 				or absf(a.speed - b.speed) > 0.0001 				or a.facing != b.facing 				or a.hp != b.hp:
+			diverged += 1
+
+	check_eq("the trail line never moves the racer", diverged, 0)
+	check("the lit racer did record a trail", b.trail.count() > 1)
+	check("the plain racer records one too", a.trail.count() > 1)
 
 
 # --- Assertions --------------------------------------------------------------
