@@ -81,9 +81,9 @@ void fragment() {
 	vec3 col = base_col;
 	if (signed_lit > 0.0) {
 		col = mix(base_col, trail_col, trail_mix * signed_lit);
-		col *= 1.0 + signed_lit * 2.4;
+		col *= 1.0 + signed_lit * 0.8;
 	} else {
-		col = base_col * (1.0 + signed_lit * 0.85);
+		col = base_col * (1.0 + signed_lit * 0.9);
 	}
 
 	ALBEDO = col;

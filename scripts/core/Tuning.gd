@@ -270,9 +270,9 @@ const TRAIL_TINT_BY_VISITS := [
 	1.0,    # 0 -- untrodden, the palette's own floor
 	3.4,    # 1 -- lit
 	2.1,    # 2
-	1.2,    # 3
-	0.6,    # 4
-	0.3,    # 5+ -- burnt out
+	1.1,    # 3
+	0.4,    # 4
+	0.0,    # 5+ -- burnt out
 ]
 
 # Colour the lit trail is pushed toward, mixed with the palette floor rather

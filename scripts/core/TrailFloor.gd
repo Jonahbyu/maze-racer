@@ -58,7 +58,13 @@ func update_state(racer: Racer, upgrades: Upgrades) -> void:
 		# and the texture stores a signed value around NEUTRAL. Map one to the
 		# other, and scale by the fade so a lapsing cell walks back to neutral
 		# rather than snapping.
-		var signed := clampf((tint - 1.0) / 2.4, -1.0, 1.0) * lit
+		# Normalised against the table's OWN brightest entry rather than a
+		# literal. The divisor is what maps the lit rank onto the texture's
+		# +1.0 ceiling, so a hand-written copy of it goes silently wrong the
+		# moment TRAIL_TINT_BY_VISITS is retuned -- the transcription trap
+		# CLAUDE.md section 12 records for tests, in tuning clothes.
+		var span: float = float(Tuning.TRAIL_TINT_BY_VISITS[1]) - 1.0
+		var signed := clampf((tint - 1.0) / span, -1.0, 1.0) * lit
 		_paint(cell, clampf(NEUTRAL + signed * 0.5, 0.0, 1.0))
 
 	if _dirty:
