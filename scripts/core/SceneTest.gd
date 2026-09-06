@@ -217,6 +217,7 @@ func _run() -> void:
 	_check_rear_view(game)
 	_check_quadrant_box(game)
 	_check_gate_names_survive_a_rebuild()
+	_check_marker_shapes()
 	_check_run_summary()
 
 	_finish()
@@ -988,15 +989,7 @@ func _check_wall_winding() -> void:
 	# This is the divergence theorem applied to F = position: it needs no
 	# knowledge of where any individual wall sits, and it flips sign precisely
 	# when the winding does, which is the thing that has actually broken.
-	var signed_volume := 0.0
-
-	for i in range(0, verts.size(), 3):
-		var p1: Vector3 = verts[i]
-		var p2: Vector3 = verts[i + 1]
-		var p3: Vector3 = verts[i + 2]
-		signed_volume += p1.dot(p2.cross(p3))
-
-	signed_volume /= 6.0
+	var signed_volume := _signed_volume_of(verts)
 
 	check("wall mesh is outward-wound", signed_volume > 0.0,
 		"signed volume %.1f -- negative means inverted normals and see-through walls"
@@ -1596,6 +1589,82 @@ func _check_quadrant_box(game) -> void:
 		check("the quadrant box stays legible %s" % label,
 			rect.size.x >= 60.0 and rect.size.y >= 60.0,
 			"size %s" % rect.size)
+
+
+# Every marker shape actually BUILDS (CLAUDE.md, "The marker's shape is the
+# player's to pick").
+#
+# RulesTest asserts the table's geometry; this asserts that the builder can turn
+# each entry into a mesh with surfaces in it. The two are different failures: an
+# outline can satisfy every rule about pointing and still produce nothing, since
+# the fan closes the shape at build time and a table entry is never drawn until
+# a PlayerMarker is put in a tree.
+func _check_marker_shapes() -> void:
+	var host := Node3D.new()
+	get_root().add_child(host)
+
+	for shape in Tuning.MARKER_SHAPES:
+		var id: String = String(shape["id"])
+
+		var marker := PlayerMarker.new()
+		# BEFORE add_child: _ready builds the mesh on entry to the tree, so a
+		# shape assigned afterwards would build the default and this check would
+		# pass for every entry while testing only one.
+		marker.shape_id = id
+		host.add_child(marker)
+
+		var mark := marker.get_node_or_null("Arrow") as MeshInstance3D
+		check("marker shape %s builds a mark" % id, mark != null)
+		if mark == null:
+			marker.queue_free()
+			continue
+
+		check("marker shape %s has a mesh" % id, mark.mesh != null)
+		if mark.mesh != null:
+			check("marker shape %s has a surface" % id,
+				mark.mesh.get_surface_count() > 0)
+			# The MESH IS SOLID, asserted by signed volume rather than by a
+			# vertex count. A count would restate the builder -- it broke the
+			# moment the fan became a triangulation with a rim, reporting six
+			# failures about a mesh that was fine. Volume asks the question
+			# actually worth asking, and it flips sign exactly when the winding
+			# does, which is the failure that cannot be eyeballed (section 12,
+			# the landmark drums and the wall boxes).
+			var volume := _signed_volume(mark.mesh)
+			check("marker shape %s is a closed solid" % id, volume > 0.0,
+				"signed volume %f" % volume)
+
+		# The ring is NOT on the menu -- every shape keeps it, because it is
+		# what answers position and wall clearance. A picker that could remove
+		# it would let a player choose a marker that fails at half its job.
+		check("marker shape %s keeps its ring" % id,
+			marker.get_node_or_null("Ring") != null)
+
+		marker.queue_free()
+
+	host.queue_free()
+
+
+
+# The divergence theorem applied to F = position: the summed triple products of
+# every triangle's vertices give +6V for outward winding and -6V for inward. It
+# needs no knowledge of where any individual surface sits, and it flips sign
+# precisely when the winding does -- which is the thing that has actually broken
+# more than once (the wall boxes, the landmark drums), and the thing that cannot
+# be eyeballed because an unshaded material looks identical either way.
+#
+# Shared rather than copied: two versions of this drifting apart would be two
+# different answers to the same question.
+func _signed_volume_of(verts: PackedVector3Array) -> float:
+	var total := 0.0
+	for i in range(0, verts.size(), 3):
+		total += verts[i].dot(verts[i + 1].cross(verts[i + 2]))
+	return total / 6.0
+
+
+func _signed_volume(mesh: Mesh) -> float:
+	return _signed_volume_of(mesh.get_faces())
+
 
 
 func _check_gate_names_survive_a_rebuild() -> void:

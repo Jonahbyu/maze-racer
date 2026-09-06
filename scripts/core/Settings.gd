@@ -15,10 +15,12 @@ extends Node
 
 signal touch_controls_changed(enabled: bool)
 signal music_changed(volume: float, muted: bool)
+signal marker_shape_changed(id: String)
 
 const CONFIG_PATH := "user://settings.cfg"
 const SECTION := "controls"
 const SECTION_AUDIO := "audio"
+const SECTION_LOOK := "look"
 
 # Where the music sits on a fresh install. Deliberately low: the tracks are
 # already trimmed per-entry in Tuning.TRACKS, and a first launch at full bus
@@ -46,6 +48,15 @@ var music_volume := MUSIC_VOLUME_DEFAULT
 # restores the level the player chose instead of dumping them at silence and
 # making them find it again.
 var music_muted := false
+
+# Which inner mark the player marker draws, by Tuning.MARKER_SHAPES id.
+#
+# Stored by NAME, never by index. An index would silently re-point every
+# existing player's choice at a different shape the moment that table is
+# reordered -- and reordering a cosmetic table is exactly the sort of change
+# nobody expects to alter anyone's settings. An id that no longer exists falls
+# back to the arrow (Tuning.marker_shape), rather than failing.
+var marker_shape := Tuning.MARKER_SHAPE_DEFAULT
 
 
 func _ready() -> void:
@@ -92,6 +103,20 @@ func set_music_muted(value: bool) -> void:
 	emit_signal("music_changed", music_volume, music_muted)
 
 
+# The only way the marker preference should ever change at runtime, for the
+# reason set_touch_controls exists: persisting and announcing a change must not
+# be forgettable at a call site.
+func set_marker_shape(id: String) -> void:
+	# Normalised through Tuning rather than stored raw, so an unknown id can
+	# never be written to the file and come back to haunt a later build.
+	var resolved: String = String(Tuning.marker_shape(id)["id"])
+	if resolved == marker_shape:
+		return
+	marker_shape = resolved
+	_save()
+	emit_signal("marker_shape_changed", marker_shape)
+
+
 func _load() -> void:
 	var config := ConfigFile.new()
 	# No file on first run is the normal case, not an error -- fall through to
@@ -104,6 +129,10 @@ func _load() -> void:
 	music_volume = clampf(float(config.get_value(
 		SECTION_AUDIO, "music_volume", MUSIC_VOLUME_DEFAULT)), 0.0, 1.0)
 	music_muted = bool(config.get_value(SECTION_AUDIO, "music_muted", false))
+	# Through Tuning, so a shape dropped or renamed since this file was written
+	# lands the player on the arrow instead of on nothing.
+	marker_shape = String(Tuning.marker_shape(String(config.get_value(
+		SECTION_LOOK, "marker_shape", Tuning.MARKER_SHAPE_DEFAULT)))["id"])
 
 
 func _save() -> void:
@@ -112,4 +141,5 @@ func _save() -> void:
 	config.set_value(SECTION, "touch_controls", touch_controls)
 	config.set_value(SECTION_AUDIO, "music_volume", music_volume)
 	config.set_value(SECTION_AUDIO, "music_muted", music_muted)
+	config.set_value(SECTION_LOOK, "marker_shape", marker_shape)
 	config.save(CONFIG_PATH)

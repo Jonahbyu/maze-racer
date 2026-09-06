@@ -70,8 +70,27 @@ const LOGO_TOP := -286.0
 # says so for itself rather than needing the filter widened again.
 const GROUP_BACKDROP := "menu_backdrop"
 
+# The button row's WIDTH, and its height at full size. The height is a maximum,
+# not a fixed value -- see _build_buttons, which shrinks it when the count no
+# longer fits the band below the logo.
 const BUTTON_SIZE := Vector2(360, 62)
 const SEPARATION := 18.0
+
+# Below this a button stops being comfortably pressable, on a phone especially,
+# so the row stops shrinking here and something else has to give. Same shape of
+# rule as the minimap sliding clear of the barrier bars rather than shrinking
+# into illegibility (section 12).
+const BUTTON_HEIGHT_MIN := 48.0
+
+# The lowest the hint may end, relative to screen centre. The viewport is 900
+# tall and pinned there by stretch/mode="canvas_items", so half of it is 450 and
+# this leaves a 10px margin at the bottom edge.
+const ROW_BOTTOM_LIMIT := 440.0
+
+# Gap between the last button and the hint, and the hint's own height. Named
+# because _build_buttons has to subtract them to find the space the row may use.
+const HINT_GAP := 30.0
+const HINT_HEIGHT := 30.0
 
 # Angular offsets of the four points that make one gear tooth, as a fraction
 # of one tooth's arc: rise, flat top, fall, flat gap. Named rather than inlined
@@ -130,6 +149,7 @@ var _buttons: Array[Button] = []
 var _hint: Label = null
 var _cog: Button = null
 var _panel: SettingsPanel = null
+var _marker_picker: MarkerPicker = null
 
 
 func _ready() -> void:
@@ -266,6 +286,14 @@ func _build_buttons() -> void:
 	row.add_child(_make_button("PLAY DAILY", _on_play.bind(Tuning.Board.DAILY)))
 	row.add_child(_make_button("PLAY MONTHLY",
 		_on_play.bind(Tuning.Board.MONTHLY)))
+	# MARKER sits with the play buttons rather than behind the cog, which is a
+	# deliberate exception to the rule that moved MOBILE CONTROLS into the
+	# settings panel. That rule is about PREFERENCES -- things set once to make
+	# the game work on your hardware. This is closer to picking a character: it
+	# is the one cosmetic choice in the game, it wants to be seen rather than
+	# found, and it needs a preview, which is a panel row's worth of screen on
+	# its own.
+	row.add_child(_make_button("MARKER", _on_marker))
 	row.add_child(_make_button("WATCH TRAILER", _on_trailer))
 	# MOBILE CONTROLS used to sit here. It moved into the settings panel so
 	# that preferences live in exactly one place -- a toggle in the button
@@ -276,9 +304,27 @@ func _build_buttons() -> void:
 	# literal 180 fitted three buttons by luck and already clipped the third
 	# slightly; a fourth overflowed it outright. Same trap as the upgrade card
 	# row (CLAUDE.md section 12) -- read the count, do not restate the total.
+	#
+	# The HEIGHT is now derived too, for the same reason one step along. At six
+	# buttons a full-size row runs -40..+422 with the hint ending at +482
+	# against 450 available, and the two constraints this stack already records
+	# genuinely fight: no top that clears the logo's -75 baseline also keeps the
+	# hint on screen. Shrinking to a new literal that happens to fit six would
+	# be the identical trap, correct now and overflowing again at seven -- so
+	# the row shrinks its buttons to the space it has, and stops at a legible
+	# minimum rather than shrinking forever.
 	var count: int = _buttons.size()
 	var gaps: float = float(max(count - 1, 0))
-	var stack: float = BUTTON_SIZE.y * float(count) + SEPARATION * gaps
+	var available: float = (
+		ROW_BOTTOM_LIMIT - HINT_GAP - HINT_HEIGHT - ROW_TOP - SEPARATION * gaps)
+	var height: float = BUTTON_SIZE.y
+	if count > 0:
+		height = clampf(available / float(count), BUTTON_HEIGHT_MIN,
+			BUTTON_SIZE.y)
+	for button in _buttons:
+		button.custom_minimum_size = Vector2(BUTTON_SIZE.x, height)
+
+	var stack: float = height * float(count) + SEPARATION * gaps
 	row.offset_top = ROW_TOP
 	row.offset_bottom = ROW_TOP + stack
 
@@ -287,7 +333,8 @@ func _build_buttons() -> void:
 
 	# Below the row wherever the row now ends, for the same reason.
 	_hint = _centred_label(_hint_text(), 16, COL_DIM,
-		row.offset_bottom + 30.0, row.offset_bottom + 60.0)
+		row.offset_bottom + HINT_GAP,
+		row.offset_bottom + HINT_GAP + HINT_HEIGHT)
 	add_child(_hint)
 
 
@@ -482,6 +529,31 @@ func _tint_cog(lit: bool) -> void:
 	var hub := _cog.get_node_or_null("CogIcon/CogHub")
 	if hub != null:
 		hub.color = COL_CARD_HOVER if lit else COL_CARD
+
+
+# The marker picker, mounted the same way the settings panel is -- a modal
+# child of the menu, closed by its own signal. It writes through Settings, so
+# nothing has to be read back out of it here.
+func _on_marker() -> void:
+	if _marker_picker != null:
+		return
+	var picker := MarkerPicker.new()
+	picker.closed.connect(_on_marker_closed)
+	_marker_picker = picker
+	add_child(picker)
+	picker.focus_first()
+
+
+func _on_marker_closed() -> void:
+	if _marker_picker != null:
+		_marker_picker.queue_free()
+		_marker_picker = null
+	# Land the player back on the button they opened, rather than at the top of
+	# the stack -- the same courtesy the cog gets on the way out of settings.
+	for button in _buttons:
+		if button.text == "MARKER":
+			button.grab_focus()
+			break
 
 
 func _on_settings() -> void:

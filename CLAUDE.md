@@ -3183,6 +3183,127 @@ the existing clipping loop rather than a second one, since a separate pass would
 harness runtime to assert over identical play. It caught a real residual case at the
 pull-in floor, which is what the last-resort branch exists for.
 
+### The marker's shape is the player's to pick — its colour is not
+
+**A picker on the main menu offers several inner shapes for the marker: the arrow and a
+handful of alternatives.** Purely cosmetic, chosen once and remembered.
+
+**Shape is the only axis it touches, and that division is not arbitrary.** The three rules
+above are all rules about *colour and visibility*, and the picker is built to leave every
+one of them untouched:
+
+- **Near-white stays mandatory.** The marker went white because maze 3's palette turned the
+  walls green and the thing the player steers with matched the scenery it has to be picked
+  out from. A colour picker would hand that failure straight back — and worse, it would hand
+  it back *chosen*, so the player who picked deep violet would be the one who could not see
+  themselves in The Vault. Every shape draws in the same near-white.
+- **Amber and red must keep reading as STATE.** The scrape and crash colours work precisely
+  because the resting marker carries no hue of its own (§12). A tinted resting marker makes
+  the drain-to-red a shift between two hues rather than the arrival of one, which is a weaker
+  read at exactly the moment it matters most.
+- **The ring is not on the menu either.** It answers position and wall clearance, which is
+  half of what the marker is for; the shapes vary the half that answers *facing*. Every
+  option is therefore still a footprint plus a direction, and a player cannot pick their way
+  into a marker that fails to say which way they point.
+
+**Every shape has to point.** That is the acceptance test for adding one, not a matter of
+taste — a symmetric mark would read as position only, and the arrow exists because a bare
+ring says nothing about direction. Each option is longer along its facing axis than across
+it, and each has a distinguishable front.
+
+**It is a menu button rather than a settings-panel row**, which is a deliberate exception to
+the rule that put MOBILE CONTROLS behind the cog. That rule is about *preferences* — things
+the player sets once to make the game work on their hardware. This is closer to picking a
+character: it is the one cosmetic choice in the game, it wants to be seen rather than found,
+and it needs a preview, which is a panel row's worth of screen on its own.
+
+**The sixth button forced the stack to stop hanging from a fixed size.** At `BUTTON_SIZE.y`
+62 and `SEPARATION` 18 the row ran −40..+342 with the hint ending at +402 against 450
+available; a sixth button takes that to +482 and pushes the hint clean off the bottom edge.
+The two constraints already recorded for this stack genuinely fight at six — no top that
+clears the logo's −75 baseline also keeps the hint on screen at full button height.
+
+**So the height is derived from the count against the available band, with a floor** — not
+set to a new literal that happens to fit six. Picking 56 would be the same hard-coded-band
+trap one step along (§12), correct at six and overflowing again at seven. The row now shrinks
+its buttons to fit and stops shrinking at a legible minimum, which is the same shape of fix
+the minimap uses against the barrier bars: shrink to the gap, and when shrinking would cost
+legibility, give up something else instead.
+
+**Nothing in the simulation may read the choice.** Movement, turn resolution, the buffer, the
+barrier and the penalties behave identically whichever shape is drawn — the same separation
+landmarks (§6), music (§9c) and touch controls (§9d) have. The shape is passed to
+`PlayerMarker` and read nowhere else, and `Settings` is absent in every harness that
+instantiates `Game.tscn` bare, so the read is guarded rather than assumed.
+
+**The shapes are a table, never a parallel array.** Each entry names itself and carries its
+own outline, so adding one is a table entry rather than an edit in several places — the
+failure §6 records for landmark density and §9c for music tracks. The saved preference is
+stored by **name**, not by index: an index would silently re-point every existing player's
+choice at a different shape the moment the table is reordered, and a name that no longer
+exists falls back to the arrow rather than crashing.
+
+`RulesTest` asserts the table's shape rather than its contents — every entry points (its
+outline reaches further along the facing axis than across it), every entry has a distinct
+name, and an unknown name resolves to the default. `SceneTest` asserts the marker builds for
+every shape in the table and that the choice moves nothing about the racer. `MarkerShot.gd`
+is the picture half: one frame per shape from the ordinary trailing camera, since whether a
+silhouette reads as pointing at that angle is exactly what no headless assertion can see.
+
+#### Four traps found while building the picker
+
+All four were found by a rendered frame, and every headless assertion was green
+through all of them.
+
+- **A fan cannot make a concave shape.** The inner mark was built by fanning
+  triangles from a single apex to every outline edge, which was correct for the
+  arrow and silently *fills in* any notch — the chevron rendered as a plain solid
+  triangle, identical to the delta. The outline was right the whole time and the
+  mesh built from it was not, so every assertion about the outline passed. It is
+  now triangulated with `Geometry2D.triangulate_polygon`, which closes any simple
+  polygon and leaves a notch a notch.
+- **A shallow taper reads as NO taper at the trailing camera's angle.** The first
+  lightcycle was a near-rectangular slab with a merely cut nose. In play it drew
+  as a **symmetric diamond** — pointing nowhere — because foreshortening at a
+  shallow angle compresses the length axis and eats a gentle taper entirely. It
+  satisfied the "longer than it is wide" rule outright, which is why that rule is
+  necessary and not sufficient: the nose has to be long and narrow enough to
+  survive the compression, and the tail is notched so the two ends can never read
+  alike.
+- **`Geometry2D` winds for 2D, which is INWARD once y becomes +Z.** Every shape
+  came out inside-out, at a signed volume of about −0.01. Nothing looked wrong,
+  because the material is unshaded — the same trap the landmark drums and the wall
+  boxes both hit. `SceneTest` asserts the signed volume per shape rather than a
+  vertex count; the count it replaced was a restatement of the builder and broke
+  the moment the fan became a triangulation with a rim, reporting six failures
+  about a mesh that was fine.
+- **`look_at` on a node that is not yet in a tree silently does nothing.** It
+  works in global space, so the preview camera kept its default orientation and
+  the picker rendered an **empty box** — which reads as the preview being unwired
+  rather than as the camera being aimed at nothing. Aim after `add_child`. The
+  matching framing numbers are tuned against rendered frames rather than
+  calculated: the arithmetic said the marker should fill 65% of the box and it did
+  not, because the aim point and the box's centre are not the same thing once the
+  camera looks down at a shape lying on the floor.
+
+`MarkerPickerShot.gd` is the other half — the picker's SCREEN rather than the shapes in
+play. Two different failures: a shape can read perfectly in a corridor and still be
+unchoosable, and the preview in particular is the thing most likely to come back blank,
+since a mis-aimed camera renders a plausible dark panel rather than an error. It shoots
+the first and last entry, because a lit button is a lit button in any single frame — the
+same reason `QuadrantShot` seeks a region change. It **restores the saved preference on
+the way out**: the picker persists through `Settings`, so without that the tool leaves the
+player on whichever shape it shot last and its own next run opens on that instead of the
+default. A tool must not write the state it is inspecting.
+
+> **The marker's state colour is on the RING, which the trailing camera barely
+> sees.** `update_state` recolours only the ring material, so a scrape leaves the
+> inner mark pure white — measured, a frame with the barrier bar visibly
+> half-drained is pixel-identical to a clean one. This predates the picker and is
+> recorded rather than fixed, but §5.1 calls the barrier read load-bearing and
+> §12 makes the marker carry it, so the colour is currently landing somewhere the
+> player mostly cannot see.
+
 ### Layout
 
 ```
@@ -3287,8 +3408,8 @@ Six harnesses, each answering a different question:
 
 | Harness | Question it answers |
 |---|---|
-| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count. 498 assertions. |
-| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording. 176 assertions. |
+| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count, and the marker shape table -- that every entry points forward and is longer than it is wide, that ids are unique, that an unknown id falls back to the arrow, and that the choice never moves the racer. 544 assertions. |
+| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording, and that every marker shape builds a closed, outward-wound solid inside its ring. 206 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
 | `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide. 83 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 22 assertions. |

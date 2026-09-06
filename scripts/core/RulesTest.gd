@@ -48,11 +48,108 @@ func _init() -> void:
 	_test_quadrants()
 	_test_cardinal_compass()
 	_test_quadrant_upgrades()
+	_test_marker_shapes()
 
 	print("")
 	print("passed: %d   failed: %d" % [_passed, _failed])
 	print("RESULT: %s" % ("PASS" if _failed == 0 else "FAIL"))
 	quit(1 if _failed > 0 else 0)
+
+
+# The marker shape table (CLAUDE.md, "The marker's shape is the player's to
+# pick").
+#
+# Asserts the table's SHAPE, never its contents. Checking that "dart" has four
+# vertices would be a transcription check -- it would fail the moment anyone
+# retuned the outline and would say nothing about whether the shape still
+# works. What matters is the three properties that make an entry usable at all.
+func _test_marker_shapes() -> void:
+	check("marker shapes exist", Tuning.MARKER_SHAPES.size() > 0)
+
+	var seen := {}
+	for shape in Tuning.MARKER_SHAPES:
+		var id: String = String(shape["id"])
+		var label: String = String(shape["label"])
+		var outline: Array = shape["outline"]
+
+		check("marker shape %s has an id" % id, id != "")
+		check("marker shape %s has a label" % id, label != "")
+		# Ids address the saved preference, so a duplicate would make one of the
+		# two unreachable -- and silently, since the lookup returns the first.
+		check("marker shape %s is unique" % id, not seen.has(id))
+		seen[id] = true
+
+		# A closed outline needs three vertices. Fewer is not a shape at all,
+		# and the builder would emit degenerate triangles rather than failing.
+		check("marker shape %s has >= 3 vertices" % id, outline.size() >= 3)
+
+		# EVERY SHAPE MUST POINT. This is the acceptance test for adding one:
+		# the ring already answers "here", so a mark that is not longer along
+		# its facing axis than across it leaves nothing answering "this way".
+		var min_z := INF
+		var max_z := -INF
+		var max_x := 0.0
+		for v in outline:
+			min_z = minf(min_z, v.y)
+			max_z = maxf(max_z, v.y)
+			max_x = maxf(max_x, absf(v.x))
+		var length: float = max_z - min_z
+		check("marker shape %s is longer than it is wide" % id,
+			length > max_x * 2.0, "length %f, half-width %f" % [length, max_x])
+
+		# It must point FORWARD, along -Z. A shape whose bulk sits ahead of its
+		# tip would draw a marker facing backwards -- which no assertion about
+		# length alone would catch.
+		check("marker shape %s reaches forward" % id, min_z < 0.0)
+
+	# The choice must move NOTHING. Two racers on one seed, driven identically
+	# with different shapes recorded, must never diverge.
+	#
+	# This is the failure hardest to notice: the shape is reachable from the
+	# rules layer -- it hangs off Settings, which every node can see -- even
+	# though nothing in movement, turn resolution, the buffer, the barrier or
+	# the penalties may read it. Same trap landmarks and Trail Memory have, and
+	# it gets the same assertion.
+	var ma := Maze.new()
+	ma.generate(24, 24, 4242, 0.15, 0.03, 5)
+	var mb := Maze.new()
+	mb.generate(24, 24, 4242, 0.15, 0.03, 5)
+
+	var ra := Racer.new()
+	ra.setup(ma, Upgrades.new(1))
+	var rb := Racer.new()
+	rb.setup(mb, Upgrades.new(1))
+
+	var diverged := 0
+	for i in 900:
+		ra.step(1.0 / 60.0)
+		rb.step(1.0 / 60.0)
+		if ra.cell != rb.cell or absf(ra.progress - rb.progress) > 0.0001 				or ra.facing != rb.facing or absf(ra.speed - rb.speed) > 0.0001:
+			diverged += 1
+
+	check_eq("the marker shape never moves the racer", diverged, 0)
+
+	# An unknown id resolves to the default rather than failing. This is the
+	# ordinary consequence of a shape being renamed or dropped between builds,
+	# and it must land the player on the arrow instead of on nothing.
+	var fallback: Dictionary = Tuning.marker_shape("no-such-shape")
+	check_eq("unknown marker shape falls back",
+		String(fallback["id"]), Tuning.MARKER_SHAPE_DEFAULT)
+
+	# The default has to BE in the table, or the fallback above points nowhere.
+	var has_default := false
+	for shape in Tuning.MARKER_SHAPES:
+		if String(shape["id"]) == Tuning.MARKER_SHAPE_DEFAULT:
+			has_default = true
+	check("the default marker shape is in the table", has_default)
+
+	# A known id resolves to itself -- the lookup must not quietly return the
+	# default for everything, which would pass every check above.
+	for shape in Tuning.MARKER_SHAPES:
+		var id2: String = String(shape["id"])
+		check_eq("marker shape %s resolves to itself" % id2,
+			String(Tuning.marker_shape(id2)["id"]), id2)
+
 
 
 # The quadrant box and the cardinal compass (CLAUDE.md section 7).

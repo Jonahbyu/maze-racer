@@ -1109,6 +1109,142 @@ const CAM_SIGHT_FLOOR := 0.06
 const MARKER_RADIUS := 0.62
 const MARKER_HEIGHT := 0.22
 
+# --- Marker shapes (CLAUDE.md, "The marker's shape is the player's to pick") --
+#
+# The inner mark inside the ring, as a pickable table. Cosmetic only: nothing in
+# the simulation reads the choice, and every entry draws in the SAME near-white
+# as the arrow always did. Colour is deliberately NOT on the menu -- the marker
+# is white because a saturated marker collides with a maze palette, and because
+# scrape-amber and crash-red only read as STATE while the resting colour carries
+# no hue of its own.
+#
+# A TABLE, not a parallel array: each entry names itself and carries its own
+# outline, so adding a shape is one entry here rather than an edit in several
+# places -- the failure recorded for landmark density and music tracks. The
+# preference is stored by `id`, never by index, because an index would silently
+# re-point every existing player's choice at a different shape the moment this
+# table is reordered.
+#
+# `outline` is the shape's footprint on the floor, in units of MARKER_RADIUS,
+# with -Z forward. Wound counter-clockwise seen from above, which is what the
+# builder's fan expects. Winding cannot be eyeballed (section 12) -- it is
+# asserted rather than trusted.
+#
+# EVERY ENTRY MUST POINT. That is the acceptance test for adding one, not a
+# matter of taste: a symmetric mark reads as position only, and the ring already
+# says that. Each outline reaches further along its facing axis than across it,
+# and each has a distinguishable front. RulesTest asserts exactly this.
+const MARKER_SHAPE_DEFAULT := "arrow"
+
+const MARKER_SHAPES := [
+	{
+		"id": "arrow",
+		"label": "ARROW",
+		# The original: a tip ahead, two barbs behind, and a notched tail so the
+		# shape reads as an arrow rather than a plain triangle at a glance.
+		"outline": [
+			Vector2(0.0, -1.15),
+			Vector2(0.85, 0.75),
+			Vector2(0.0, 0.32),
+			Vector2(-0.85, 0.75),
+		],
+	},
+	{
+		"id": "dart",
+		"label": "DART",
+		# Narrower and deeper than the arrow, with a harder tail notch. Reads as
+		# faster at a glance, which is the whole point of offering it.
+		"outline": [
+			Vector2(0.0, -1.30),
+			Vector2(0.62, 0.85),
+			Vector2(0.0, 0.10),
+			Vector2(-0.62, 0.85),
+		],
+	},
+	{
+		"id": "delta",
+		"label": "DELTA",
+		# A plain swept triangle -- no tail notch, so it reads as a solid wedge.
+		# The broadest silhouette in the table, which is the one that holds up
+		# best against a busy wall.
+		"outline": [
+			Vector2(0.0, -1.20),
+			Vector2(0.95, 0.70),
+			Vector2(-0.95, 0.70),
+		],
+	},
+	{
+		"id": "chevron",
+		"label": "CHEVRON",
+		# An open V: the arrow with its middle cut away. Lighter on screen, and
+		# it lets more of the floor grid through the marker -- the grid lines
+		# are the timing contract, so a mark that hides less of them is a real
+		# option rather than only a different look.
+		"outline": [
+			Vector2(0.0, -1.15),
+			Vector2(0.90, 0.62),
+			Vector2(0.44, 0.86),
+			Vector2(0.0, -0.30),
+			Vector2(-0.44, 0.86),
+			Vector2(-0.90, 0.62),
+		],
+	},
+	{
+		"id": "kite",
+		"label": "KITE",
+		# Longer ahead than behind, so it points by proportion rather than by a
+		# barb. The tail is a single vertex, which keeps the rear silhouette
+		# clean where the arrow's notch can read as noise at distance.
+		"outline": [
+			Vector2(0.0, -1.25),
+			Vector2(0.72, 0.05),
+			Vector2(0.0, 0.95),
+			Vector2(-0.72, 0.05),
+		],
+	},
+	{
+		"id": "cycle",
+		"label": "LIGHTCYCLE",
+		# The genre nod (Armagetron/Tron): a long hull with a drawn-out nose and
+		# a swept tail.
+		#
+		# The FIRST version was a near-rectangular slab with a merely cut nose,
+		# and it rendered as a symmetric DIAMOND from the trailing camera --
+		# pointing nowhere. It passed every headless assertion, because the
+		# outline genuinely is longer than it is wide; what defeated it was
+		# foreshortening, which turns a shallow taper into no taper at all at
+		# the angle the marker is actually seen from. Only a rendered frame
+		# showed it. The nose is now long and narrow enough to survive that
+		# compression, and the tail is notched so the two ends can never read
+		# alike.
+		"outline": [
+			Vector2(0.0, -1.35),
+			Vector2(0.20, -0.70),
+			Vector2(0.44, 0.35),
+			Vector2(0.36, 0.85),
+			Vector2(0.0, 0.55),
+			Vector2(-0.36, 0.85),
+			Vector2(-0.44, 0.35),
+			Vector2(-0.20, -0.70),
+		],
+	},
+]
+
+
+# The table entry for an id, falling back to the default rather than failing.
+#
+# A stored name that no longer exists is the ordinary consequence of a shape
+# being renamed or dropped between builds -- it must land the player on the
+# arrow, not crash their game or leave them with no marker at all.
+static func marker_shape(id: String) -> Dictionary:
+	for shape in MARKER_SHAPES:
+		if shape["id"] == id:
+			return shape
+	for shape in MARKER_SHAPES:
+		if shape["id"] == MARKER_SHAPE_DEFAULT:
+			return shape
+	return MARKER_SHAPES[0]
+
 
 # --- Landmarks (docs/specs/landmarks.md) -------------------------------------
 #
