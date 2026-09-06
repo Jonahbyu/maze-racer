@@ -202,8 +202,19 @@ def main():
         x, y = int(rx + rw * 0.12), int(ry + rh * 0.62)
         print("tap point     : %d,%d" % (x, y))
 
+        # A REALISTIC HOLD, not a flick.
+        #
+        # This was 0.12s, and that is what hid a live bug from its own
+        # instrument: the browser generates its synthesized mousedown from the
+        # LIFT, so a short tap puts the echo close to the press and a guard
+        # anchored on the press appears to work. At a real thumb's 0.45s the
+        # echo lands ~480ms after the press, which is where it escaped.
+        #
+        # Measured on production: touchstart@10834 touchend@11320
+        # mousedown@11321 -- the echo is one millisecond after the LIFT and
+        # half a second after the press.
         cdp.touch(x, y, True)
-        time.sleep(0.12)
+        time.sleep(0.45)
         cdp.touch(x, y, False)
         time.sleep(1.0)
 
