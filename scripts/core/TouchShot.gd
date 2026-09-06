@@ -74,8 +74,35 @@ func _on_frame() -> void:
 			_autopilot()
 			if _frame >= 400:
 				_capture("touch_03_running")
-				print("RESULT: PASS")
-				quit(0)
+				_frame = 0
+				_stage = 3
+		3:
+			# THE CARD SCREEN AT PHONE SIZE.
+			#
+			# The cards were sized in desktop pixels against a viewport that is
+			# ~2526 wide on a phone, so a 320px card rendered about 105 CSS
+			# pixels with its body text at 5.6 -- unreadable, and in a row using
+			# only 40% of the screen it had. Whether the fix reads is exactly
+			# the sort of thing no headless assertion can see, so it needs a
+			# frame at the size it actually breaks on.
+			#
+			# Forced open rather than waited for: a gate is far more than a few
+			# hundred frames of driving away, and this tool is already at the
+			# end of its budget.
+			var game = _shell._current
+			if game != null and game._upgrade_screen != null:
+				if not game._upgrade_screen.visible:
+					# The PHASE has to move too, not just the screen. Pad
+					# visibility is derived from it, so presenting the cards
+					# alone produces a frame that cannot show the pads standing
+					# down -- the tool would be reporting on a state the game
+					# never actually enters.
+					game.phase = game.Phase.UPGRADING
+					game._upgrade_screen.present(game.upgrades, 3)
+				elif _frame >= 6:
+					_capture("touch_04_cards")
+					print("RESULT: PASS")
+					quit(0)
 
 
 func _autopilot() -> void:

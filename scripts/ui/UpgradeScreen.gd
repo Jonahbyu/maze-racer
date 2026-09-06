@@ -24,7 +24,42 @@ const CARD_SEPARATION := 26.0
 #
 # A second row was rejected: a card screen is read fast under a stopped clock,
 # and 1-5 spread over two rows is a slower read than five in a line.
-const ROW_MAX_WIDTH := 1400.0
+# ...but never wider than this SHARE of the viewport, whatever its width.
+#
+# A flat 1400 was a desktop figure, and the viewport is not the screen:
+# stretch/mode is canvas_items with aspect=expand, so a phone whose canvas
+# measures 828x295 CSS pixels gets a ~2526x900 viewport and everything is drawn
+# at 0.33x. Measured there, a 320px card rendered 105 CSS pixels wide with its
+# body text at 5.6px -- unreadable -- while the row used only 40% of the screen
+# it had. The cards were both too small AND surrounded by empty space, which is
+# the tell that the constant was measured on the wrong surface.
+#
+# As a share, the row fills the same proportion of every screen, and the cards
+# grow on a phone rather than shrinking into the middle of it.
+const ROW_WIDTH_SHARE := 0.88
+
+# A floor, in viewport units, so a narrow window still gets a legible card.
+const ROW_MIN_WIDTH := 900.0
+
+# How much wider than its desktop size a card may grow. A phone's viewport is
+# ~1.6x a desktop's in width, so the cards need real headroom -- but not
+# unbounded, or a very wide window turns three cards into billboards.
+const CARD_MAX_GROWTH := 2.2
+
+# Body text is sized to land at CARD_FONT_GLASS_PX on the ACTUAL SCREEN.
+#
+# A fixed 17 was a desktop-pixel figure and rendered 5.6px on a phone. Scaling
+# it by the card's width does not fix it either, because the same card width
+# means different physical sizes on different screens -- the viewport is
+# stretched, and by a factor nothing about the card can see.
+#
+# get_stretch_transform() is that factor exactly: it is the viewport-to-screen
+# scale the engine itself applies. Dividing by it converts a screen pixel back
+# into the viewport units a font size is expressed in, so the text comes out
+# the same physical size on a desktop and on a phone.
+const CARD_FONT_GLASS_PX := 17.0
+const CARD_FONT_MIN := 15
+const CARD_FONT_MAX := 64
 
 var _cards: Array[Button] = []
 var _lines: Array[int] = []
@@ -150,10 +185,35 @@ func _present(title_text: String, upgrades: Upgrades) -> void:
 func _card_width(count: int) -> float:
 	if count <= 0:
 		return CARD_SIZE.x
-	var natural := count * CARD_SIZE.x + maxf(count - 1, 0) * CARD_SEPARATION
-	if natural <= ROW_MAX_WIDTH:
-		return CARD_SIZE.x
-	return (ROW_MAX_WIDTH - maxf(count - 1, 0) * CARD_SEPARATION) / float(count)
+	var gaps := maxf(count - 1, 0) * CARD_SEPARATION
+	var room := maxf(size.x * ROW_WIDTH_SHARE, ROW_MIN_WIDTH) - gaps
+	# The row FILLS its share of the viewport, growing as well as shrinking.
+	#
+	# Only shrinking was the original bug in a subtler form: on a phone the
+	# viewport is ~2526 wide, so a 320px card was never over budget and simply
+	# stayed at its desktop width -- 105 CSS pixels on the glass, in a row using
+	# 40% of the screen. The cards have to grow into the space that is there.
+	#
+	# Capped so a very wide viewport does not produce absurd slabs.
+	var per_card := room / float(count)
+	return clampf(per_card, 0.0, CARD_SIZE.x * CARD_MAX_GROWTH)
+
+
+# The font size, in viewport units, that renders CARD_FONT_GLASS_PX on screen.
+#
+# The stretch transform is the viewport-to-screen scale, so 1 screen pixel is
+# 1/scale viewport units. Guarded: the transform is degenerate before the tree
+# has laid out, and a harness's dummy viewport reports a tiny scale -- neither
+# should produce an absurd font.
+func _font_px() -> int:
+	var scale := 1.0
+	var vp := get_viewport()
+	if vp != null:
+		var sx: float = vp.get_stretch_transform().get_scale().x
+		if sx > 0.01:
+			scale = sx
+	return clampi(int(round(CARD_FONT_GLASS_PX / scale)),
+		CARD_FONT_MIN, CARD_FONT_MAX)
 
 
 func _make_card(upgrades: Upgrades, line: int, index: int, card_width: float = -1.0) -> Button:
@@ -173,7 +233,8 @@ func _make_card(upgrades: Upgrades, line: int, index: int, card_width: float = -
 		upgrades.next_rank_description(line),
 	]
 	button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	button.add_theme_font_size_override("font_size", 17)
+	# Sized for the glass, not for the viewport: see CARD_FONT_GLASS_PX.
+	button.add_theme_font_size_override("font_size", _font_px())
 	button.add_theme_color_override("font_color", Color.WHITE)
 	button.add_theme_color_override("font_hover_color", COL_ACCENT)
 	button.add_theme_color_override("font_focus_color", COL_ACCENT)

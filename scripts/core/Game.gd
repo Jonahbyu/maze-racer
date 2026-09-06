@@ -917,6 +917,28 @@ func _update_camera(delta: float) -> void:
 		# stopped clock, and not drawing it is the cheapest way to refuse that.
 		_rear_view.frozen = phase != Phase.RACING
 
+	# The steering pads hide whenever a modal owns the screen, derived off the
+	# PHASE for exactly the reason the mirror's freeze is: one place, so a phase
+	# added later cannot forget.
+	#
+	# They are added to UIRoot LAST so a tap reaches a pad rather than the world
+	# behind it -- which also puts them on top of the upgrade cards. A rendered
+	# frame at phone size showed the left pad drawn over the first card, with
+	# its arrow across the card's text and its rect swallowing taps meant for
+	# the card underneath. That is the section 9d collision list again, arriving
+	# through draw order instead of through layout.
+	#
+	# Hidden rather than merely made non-interactive: a transparent panel with a
+	# big arrow in it is still something the player has to read past, and a
+	# hidden Control takes no input in Godot, so this covers both at once.
+	# Pause keeps its pad, because unpausing has to be reachable from a phone.
+	if _touch != null and _touch.visible:
+		var driving := phase == Phase.RACING or phase == Phase.PAUSED
+		for key in ["left", "right"]:
+			var pad: Panel = _touch._pads.get(key)
+			if pad != null:
+				pad.visible = driving
+
 	# Flying Vision lifts the camera clear of the maze and looks straight down.
 	#
 	# This is the ONE place the section 12 rule "camera height stays below

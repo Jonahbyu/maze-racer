@@ -321,12 +321,18 @@ func _go() -> void:
 			# And a mouse tap on its own still works, because the pads are
 			# available on desktop for testing without a phone in hand.
 			#
-			# Driven on the RIGHT pad, which no touch above ever reached. The
-			# left pad is inside its echo window here, and suppressing a mouse
-			# event there is the correct behaviour rather than a bug -- a real
-			# desktop never emits InputEventScreenTouch at all, so its pads are
-			# never in an echo window in the first place.
+			# The echo window is checked GLOBALLY rather than per pad -- the
+			# browser delivers the synthesized mousedown at the position the
+			# finger lifted from, which is often a different pad (see the
+			# cross-pad check below). So modelling a desktop means modelling a
+			# machine that has sent no touch at all: the stamp is pushed back
+			# out of range rather than the tap being moved to another pad,
+			# which no longer escapes anything.
+			#
+			# On a real desktop no InputEventScreenTouch is ever emitted, so
+			# the window is never open in the first place.
 			pads.clear_held()
+			pads._touch_at_ms = -1000000
 			seen["turns"] = 0
 			pads._on_pad_input(pads._pads["right"], _mouse_event(true),
 				func() -> void: pads._steer(1), 1)
@@ -387,6 +393,95 @@ func _go() -> void:
 				"turns %d reverses %d" % [seen["turns"], seen["reverses"]])
 			pads.clear_held()
 
+			# A RELEASE THIS PAD NEVER SAW A PRESS FOR MUST DO NOTHING.
+			#
+			# This is the "phantom turn while driving straight" report, and it
+			# is a different bug from the double-tap one above. `released` is
+			# just `not event.pressed`, so ANY release-shaped event runs the
+			# release branch -- whether or not this pad was ever pressed. That
+			# branch emits held_direction_changed, and Game routes that into
+			# _set_held_direction, so an unmatched release reports a direction
+			# change the player never made.
+			#
+			# A phone delivers exactly this. clear_held() runs on every phase
+			# change (a gate, a pause), dropping _held_dirs while a finger is
+			# still resting on the screen -- so the eventual lift arrives as a
+			# release with no press behind it.
+			# Reconnect the edge counter: it was disconnected above, and an
+			# assertion counting a signal nothing listens to cannot fail.
+			pads.held_direction_changed.connect(counter)
+			pads.clear_held()
+			edges["n"] = 0
+			pads._on_pad_input(pads._pads["left"], _touch_event(false),
+				func() -> void: pass, -1)
+			check("an unmatched touch release emits no held change",
+				int(edges["n"]) == 0, "edges %d" % edges["n"])
+
+			# The same via the emulated mouse release, which is what actually
+			# arrives second on a phone.
+			pads.clear_held()
+			edges["n"] = 0
+			pads._on_pad_input(pads._pads["left"], _mouse_event(false),
+				func() -> void: pass, -1)
+			check("an unmatched mouse release emits no held change",
+				int(edges["n"]) == 0, "edges %d" % edges["n"])
+
+			# A DRAG IS NOT A TAP.
+			#
+			# A thumb resting on a pad is never perfectly still, so a phone
+			# raises InputEventScreenDrag continuously -- and Godot emulates an
+			# InputEventMouseMotion from each one. Neither is a press or a
+			# release, so neither may move the racer or the held state.
+			pads.clear_held()
+			seen["turns"] = 0
+			seen["reverses"] = 0
+			edges["n"] = 0
+			var drag := InputEventScreenDrag.new()
+			drag.index = 0
+			pads._on_pad_input(pads._pads["left"], drag,
+				func() -> void: pads._steer(-1), -1)
+			var motion := InputEventMouseMotion.new()
+			pads._on_pad_input(pads._pads["left"], motion,
+				func() -> void: pads._steer(-1), -1)
+			check("a drag across a pad is not a turn",
+				int(seen["turns"]) == 0 and int(edges["n"]) == 0,
+				"turns %d edges %d" % [seen["turns"], edges["n"]])
+
+			# THE ECHO IS NOT ALWAYS DELIVERED TO THE PAD THAT WAS TOUCHED.
+			#
+			# Measured on production, one finger raises these in this order:
+			#   touchstart@10963 touchend@11115 mousedown@11115 mouseup@11115
+			# The browser synthesizes its mousedown AFTER touchend -- 152ms
+			# later, at the position the finger LIFTED from. A thumb that
+			# lands on one pad and lifts a little to the side therefore sends
+			# the echo to a DIFFERENT pad, whose echo window no touch ever
+			# opened, so the guard passes it through as a genuine click.
+			#
+			# On a straight corridor that arms a turn with no opening to take,
+			# which expires into the -0.5x slowdown (section 5.2) a second or
+			# so later: a phantom penalty for an input the player never made,
+			# arriving well after the thumb left the glass.
+			#
+			# A per-pad stamp cannot see this, because the two events are on
+			# two different pads by construction.
+			pads.clear_held()
+			seen["turns"] = 0
+			seen["reverses"] = 0
+			pads._on_pad_input(pads._pads["left"], _touch_event(true),
+				func() -> void: pads._steer(-1), -1)
+			pads._on_pad_input(pads._pads["left"], _touch_event(false),
+				func() -> void: pass, -1)
+			pads._on_pad_input(pads._pads["right"], _mouse_event(true),
+				func() -> void: pads._steer(1), 1)
+			pads._on_pad_input(pads._pads["right"], _mouse_event(false),
+				func() -> void: pass, 1)
+			check("an echo landing on another pad is still one turn",
+				int(seen["turns"]) == 1 and int(seen["reverses"]) == 0,
+				"turns %d reverses %d" % [seen["turns"], seen["reverses"]])
+
+			pads.held_direction_changed.disconnect(counter)
+			pads.clear_held()
+
 		# Pads must SCALE with the screen, not sit at a fixed pixel size.
 		#
 		# They were a screen fraction capped at a pixel maximum, and the cap won
@@ -417,6 +512,57 @@ func _go() -> void:
 			# controls the player steers with.
 			check("the arrows are drawn, not lettered",
 				pads._pads["left"].get_node_or_null("icon/arrow") != null)
+
+			# THE PAUSE PAD MUST CLEAR THE SETTINGS COG.
+			#
+			# Both live in the top-right corner, and the cog is only visible
+			# while paused -- which is exactly when the pause pad is the thing
+			# the player is reaching for. Measured before this check existed,
+			# the cog's whole 52x52 rect sat INSIDE the pause pad at every
+			# viewport size, and the pads are added to UIRoot after the cog, so
+			# the pad swallowed every tap and the cog was unreachable on the one
+			# platform that has a pause pad at all.
+			#
+			# Checked at both sizes: the overlap was size-independent, so a
+			# single viewport would not have proved the clearance holds.
+			for vp in [Vector2(1600, 900), Vector2(2526, 900)]:
+				pads.size = vp
+				pads._layout()
+				var pause_pad: Panel = pads._pads["pause"]
+				var pause_r := Rect2(pause_pad.position, pause_pad.size)
+				# Game has no class_name, so its cog constants cannot be read
+				# from here. TouchControls.COG_BOTTOM is the shared statement of
+				# where the cog ends; the margin and size come from MainMenu,
+				# which does declare a class_name.
+				var cog_top: float = TouchControls.COG_BOTTOM - MainMenu.COG_SIZE
+				var cog_r := Rect2(
+					vp.x - MainMenu.COG_SIZE - MainMenu.COG_MARGIN, cog_top,
+					MainMenu.COG_SIZE, MainMenu.COG_SIZE)
+				check("the pause pad clears the settings cog at %.0f" % vp.x,
+					not pause_r.intersects(cog_r),
+					"pause %s cog %s" % [str(pause_r), str(cog_r)])
+
+			# And it has to be big enough to actually hit.
+			#
+			# The viewport is NOT the screen: stretch/mode is canvas_items with
+			# aspect=expand, so a phone whose canvas is 828x295 CSS pixels gets
+			# a ~2526x900 viewport and everything is drawn at 0.33x. At the old
+			# 0.13 fraction the pause pad came out 52x38 ON GLASS, under the
+			# 44x44 minimum Apple and Google both publish -- a button that is
+			# perfectly wired and cannot be pressed.
+			pads.size = Vector2(2526, 900)
+			pads._layout()
+			var phone_pause: Vector2 = pads._pads["pause"].size
+			# 828x295 canvas against a 2526x900 viewport.
+			var glass_scale := 295.0 / 900.0
+			var glass := phone_pause * glass_scale
+			check("the pause pad is big enough to tap on a phone",
+				glass.x >= TouchControls.MIN_TAP_CSS_PX
+					and glass.y >= TouchControls.MIN_TAP_CSS_PX,
+				"%.0fx%.0f CSS px, minimum %.0f"
+					% [glass.x, glass.y, TouchControls.MIN_TAP_CSS_PX])
+			pads.size = Vector2(1600, 900)
+			pads._layout()
 
 		# The chord is MOBILE ONLY. The keyboard keeps its own reverse key and
 		# must not acquire a left+right gesture along the way -- pressing both

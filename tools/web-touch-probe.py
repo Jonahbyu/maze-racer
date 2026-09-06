@@ -180,8 +180,15 @@ def main():
                 window.__probeErrors.push(String(e.message));
             });
             window.__ev = {touchstart:0, mousedown:0, touchend:0, mouseup:0};
+            // Timestamps too: the fix is a 250ms echo window, so the GAP
+            // between a touch and its synthesized mouse twin is what decides
+            // whether that window is wide enough. A count alone cannot say.
+            window.__t = [];
             ['touchstart','mousedown','touchend','mouseup'].forEach(function(n){
-                window.addEventListener(n, function(){ window.__ev[n]++; }, true);
+                window.addEventListener(n, function(){
+                    window.__ev[n]++;
+                    window.__t.push(n + '@' + Math.round(performance.now()));
+                }, true);
             });
         """)
 
@@ -201,6 +208,8 @@ def main():
         time.sleep(1.0)
 
         ev = cdp.eval("window.__ev") or {}
+        order = cdp.eval("window.__t.join(' ')")
+        print("event order   : %s" % order)
         errs = cdp.eval("window.__probeErrors")
         alive = cdp.eval(
             "(function(){var c=document.querySelector('canvas');"

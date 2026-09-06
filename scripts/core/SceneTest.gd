@@ -180,9 +180,33 @@ func _run() -> void:
 	var offered: Array = game._upgrade_screen._lines
 	check("cards were offered", offered.size() > 0, "got %d" % offered.size())
 
+	# THE STEERING PADS STAND DOWN WHILE A CARD SCREEN IS UP.
+	#
+	# TouchControls is added to UIRoot last, so a tap reaches a pad rather than
+	# the world -- which also draws the pads ON TOP of the upgrade cards. A
+	# rendered frame at phone size showed the left pad's arrow across the first
+	# card's text, with its rect over the card's own tap area.
+	#
+	# Only the steering pads: pause keeps its own, because unpausing has to stay
+	# reachable on a phone. Driven through _process because the visibility is
+	# derived from the phase in one place, the way the mirror's freeze is.
+	if game._touch != null:
+		game._touch.visible = true
+		game._process(0.016)
+		check("the steering pads hide during an upgrade pick",
+			not game._touch._pads["left"].visible
+				and not game._touch._pads["right"].visible)
+		check("the pause pad stays up during an upgrade pick",
+			game._touch._pads["pause"].visible)
+
 	if offered.size() > 0:
 		game._on_upgrade_chosen(offered[0])
 		check("choosing resumes racing", game.phase == 0)
+		if game._touch != null:
+			game._process(0.016)
+			check("the steering pads come back when racing resumes",
+				game._touch._pads["left"].visible)
+			game._touch.visible = false
 		check("minimap unblurs after the pick", not game._minimap.blurred)
 		check("upgrade was applied", game.upgrades.started_line_count() > before)
 

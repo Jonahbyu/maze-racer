@@ -2865,6 +2865,83 @@ adding one would put test scaffolding in shipping game code. The count is `Shell
 assertion; the probe's job is to show that the *delivery* the harness models is what a
 browser really sends.
 
+### The echo is not delivered to the pad that was touched
+
+The per-pad echo stamp above fixed the double turn and left a second bug behind it, which
+reads in play as **a turning slowdown on a straight corridor, for an input never made**.
+
+**Measured on the live page, the order is not what the fix assumed:**
+
+```
+touchstart@10963   touchend@11115   mousedown@11115   mouseup@11115
+```
+
+The browser's synthesized `mousedown` arrives **after `touchend`** — 152ms later, at the
+position the finger **lifted** from. A thumb that lands on one pad and lifts slightly to
+the side therefore sends its echo to a **different pad**, whose window no touch ever
+opened. The guard passes it through as a genuine click and the racer turns a second time.
+
+On a straight corridor that second turn finds no opening, so it arms the buffer and
+**expires into the −0.5x slowdown** (§5.2) a second or so later — a penalty arriving long
+after the thumb left the glass, with nothing on screen connecting the two. Reproduced
+headlessly: the same seed and 240 frames scores 1 slowdown after a tap and 0 without one.
+
+**So the stamp is one timestamp for the whole overlay, not one per pad.** A device
+delivering touches is not also being clicked by a mouse, so suppressing mouse input
+briefly across every pad costs nothing real.
+
+> **A "mouse-only still works" check can no longer escape the window by using another
+> pad**, which is what the previous version did. It models a desktop by pushing the stamp
+> out of range instead — a real desktop emits no `InputEventScreenTouch` at all, so the
+> window is never open in the first place.
+
+**A release must also verify the direction is actually held.** `released` is just
+`not event.pressed`, so any release-shaped event ran the release branch — including one
+whose press was never seen, which is routine: `clear_held()` runs on every phase change and
+drops `_held_dirs` while a finger is still on the glass, so the eventual lift arrives with
+nothing behind it. Emitting there reports a direction change the player never made, and
+`Game` feeds that into `_set_held_direction`, which cancels an Overclock.
+
+### The viewport is not the screen, and three bugs came out of that
+
+`stretch/mode` is `canvas_items` with `aspect="expand"`, so the viewport height is pinned at
+900 and the width stretches. **A phone whose canvas measures 828×295 CSS pixels gets a
+~2526×900 viewport**, and everything is drawn at **0.33x**. Every desktop pixel constant is
+therefore a third of its intended size on the one platform that most needs the room.
+
+| | desktop | measured phone |
+|---|---|---|
+| Pause pad | 158×117 | **52×38** (44×44 is the published minimum) |
+| Upgrade card | 320 wide, 17px text | **105 wide, 5.6px text** |
+| Card row | 63% of screen | **40% of screen** |
+
+- **The pause pad was unhittable, not unwired.** Every signal fired correctly in the
+  harness and on the probe; the target was simply below the minimum both Apple and Google
+  publish, and hard against the screen edge where the browser's own gestures compete. Now
+  0.18 of the short edge, which measures 72×53 on that phone.
+- **The settings cog sat entirely inside the pause pad** at every viewport size, and the
+  pads are added to `UIRoot` after the cog — so the pad swallowed every tap and the cog was
+  unreachable on the only platform with a pause pad. The pad now hangs below `COG_BOTTOM`.
+- **The cards were too small *and* surrounded by empty space**, which is the tell that a
+  constant was measured on the wrong surface. The row is now a share of the viewport and
+  the cards **grow** as well as shrink; only shrinking left them at their desktop width,
+  since 320px was never over budget in a 2526px viewport.
+
+**Card text is sized from `get_stretch_transform()`**, which is the viewport-to-screen
+scale the engine itself applies. Scaling the font by the card's *width* does not work — the
+same card width is a different physical size on different screens, by a factor nothing
+about the card can see.
+
+> **A rendered frame caught what no assertion could: the steering pads were drawn over the
+> upgrade cards**, arrow across the first card's text, rect over its tap area. They are
+> added last so a tap reaches a pad rather than the world, and that puts them above the
+> modal too. They now stand down off the **phase**, in one place, the way the mirror's
+> freeze is derived — pause keeps its pad, since unpausing must stay reachable.
+>
+> The tool had to set the phase as well as present the screen. Forcing the cards open alone
+> produced a frame that could not show the pads standing down, so the instrument was
+> reporting on a state the game never enters.
+
 **The pads report HELD direction, not only presses.** Deep Breath and Overclock (§7) both
 need a key to still be *down* rather than merely to have been pressed, which the keyboard gets
 from key-release events. The pads already tracked exactly this in `_held_dirs` for the reverse
@@ -3554,9 +3631,9 @@ Six harnesses, each answering a different question:
 | Harness | Question it answers |
 |---|---|
 | `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count, and the marker shape table -- that every entry points forward and is longer than it is wide, that ids are unique, that an unknown id falls back to the arrow, and that the choice never moves the racer. 544 assertions. |
-| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording, and that every marker shape builds a closed, outward-wound solid inside its ring. 206 assertions. |
+| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording, and that every marker shape builds a closed, outward-wound solid inside its ring, and that the steering pads stand down while an upgrade pick is open while the pause pad stays up. 209 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide, and that one real touch tap -- driven with the emulated mouse event a phone sends after it -- is exactly one turn and one held-direction change per edge. 89 assertions. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide, and that one real touch tap -- driven with the emulated mouse event a phone sends after it -- is exactly one turn and one held-direction change per edge -- including when that echo lands on a DIFFERENT pad, which is what a browser really sends -- that an unmatched release emits nothing, and that the pause pad clears the settings cog at two viewport sizes and stays above the 44px tap minimum on a phone. 96 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 22 assertions. |
 | `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 105 assertions. |
 

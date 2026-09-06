@@ -46,6 +46,12 @@ const COL_GLYPH := Color(0.85, 0.95, 1.0, 0.92)
 const HUD_BOTTOM_BAND := 120.0   # barrier + integrity, bottom-left
 const HUD_TOP_BAND := 70.0       # speed / maze / timer row
 
+# The settings cog's bottom edge: Game.COG_TOP (76) + MainMenu.COG_SIZE (52).
+# Stated here for the same reason the HUD bands are -- the cog builds its own
+# layout from literals, and a queried rect is only correct after a frame has
+# been laid out. If the cog moves, this moves. They are one screen.
+const COG_BOTTOM := 128.0
+
 # ...but never more than this share of a short screen.
 #
 # Those two are desktop pixel measurements, and on a 390px-tall phone the
@@ -78,9 +84,27 @@ const PAD_MIN := Vector2(120.0, 100.0)
 # Pause is the one control that is NOT a driving input (section 2), so it stays
 # deliberately smaller than the steering pads -- but it still scales, because a
 # fixed 70px box is a smudge on a phone.
-const PAUSE_SHORT_FRACTION := 0.13
+#
+# 0.13 was too small to hit, and the reason is that the VIEWPORT IS NOT THE
+# SCREEN. stretch/mode is canvas_items with aspect=expand, so a phone whose
+# canvas measures 828x295 CSS pixels gets a 2526x900 viewport -- everything is
+# then drawn at 0.33x. Measured on the live page, 0.13 of the short edge came
+# out as a 52x38 tap target ON GLASS, under the 44x44 minimum both Apple and
+# Google publish, and hard against the screen edge where the browser's own
+# gestures compete. That is a pause button that "does not work" on a phone
+# while being perfectly wired: every signal fires, nothing lands on it.
+#
+# At 0.18 the same phone gets 72x53, which clears the minimum with margin.
+# _min_tap_px is what keeps this honest as screens change.
+const PAUSE_SHORT_FRACTION := 0.18
 const PAUSE_ASPECT := 1.35
 const PAUSE_MIN := Vector2(70.0, 52.0)
+
+# The smallest a tap target may be ON THE GLASS, in CSS pixels -- the figure
+# Apple and Google both publish. Checked against the live scale rather than
+# against viewport units, because a viewport pixel is not a screen pixel and
+# the gap between them is 3x on a phone.
+const MIN_TAP_CSS_PX := 44.0
 
 # The pause bars, as a fraction of the pad that holds them, for the same reason
 # the pad itself is not in pixels.
@@ -111,13 +135,28 @@ var _pads: Dictionary = {}
 # events rather than inferred from any single one.
 var _held_dirs: Dictionary = {}
 
-# When each pad was last touched by a real finger, in milliseconds.
+# When a real finger last touched ANY pad, in milliseconds.
 #
 # Godot synthesizes a mouse event from every touch
-# (input_devices/pointing/emulate_mouse_from_touch defaults to TRUE), so a
-# phone delivers each tap twice. This is how the echo is told from a genuine
-# click. Keyed by pad, because two thumbs are two independent gestures.
-var _touch_at: Dictionary = {}
+# (input_devices/pointing/emulate_mouse_from_touch defaults to TRUE), and the
+# browser does the same on top of it, so a phone delivers each tap twice. This
+# is how the echo is told from a genuine click.
+#
+# ONE STAMP FOR THE WHOLE OVERLAY, not one per pad, and the difference is the
+# whole bug. Measured on production, a single finger raises:
+#     touchstart@10963  touchend@11115  mousedown@11115  mouseup@11115
+# -- the synthesized mousedown arrives AFTER touchend, at the position the
+# finger LIFTED from. A thumb that lands on one pad and lifts slightly to the
+# side sends its echo to a DIFFERENT pad, and a per-pad stamp cannot recognise
+# it there: that pad was never touched, so its window was never open. The echo
+# was passed through as a genuine click and turned the racer a second time --
+# which on a straight corridor arms a turn with no opening to take and expires
+# into the -0.5x slowdown (section 5.2) a second later. A phantom penalty,
+# arriving well after the thumb left the glass.
+#
+# A device delivering touches is not also being clicked by a mouse, so
+# suppressing mouse input briefly across the whole overlay costs nothing real.
+var _touch_at_ms: int = -1000000
 
 
 func _ready() -> void:
@@ -160,7 +199,7 @@ func clear_held() -> void:
 
 func _release_all() -> void:
 	_held_dirs.clear()
-	# _touch_at is deliberately NOT cleared here. It is a timestamp used to
+	# _touch_at_ms is deliberately NOT cleared here. It is a timestamp used to
 	# spot an emulated echo, not a gesture in progress -- and the echo of a
 	# touch that happened just before a gate opened can still be in flight.
 	# It expires on its own after ECHO_WINDOW_MS.
@@ -386,13 +425,14 @@ func _on_pad_input(pad: Panel, event: InputEvent, handler: Callable,
 		# without a phone in hand. The echo is generated from the touch during
 		# the same input flush, so it is always within a few ms; a genuine
 		# human click never lands that close to a finger press on the same pad.
-		_touch_at[pad] = Time.get_ticks_msec()
+		_touch_at_ms = Time.get_ticks_msec()
 	elif event is InputEventMouseButton \
 			and event.button_index == MOUSE_BUTTON_LEFT:
-		# Within the echo window of a touch on this pad, so this is that
-		# touch's synthesized twin rather than a click.
-		var touched_at: int = int(_touch_at.get(pad, -ECHO_WINDOW_MS - 1))
-		if Time.get_ticks_msec() - touched_at <= ECHO_WINDOW_MS:
+		# Within the echo window of a touch ANYWHERE on the overlay, so this is
+		# that touch's synthesized twin rather than a click. Checked globally
+		# because the echo is delivered at the position the finger LIFTED from,
+		# which is not necessarily the pad it landed on.
+		if Time.get_ticks_msec() - _touch_at_ms <= ECHO_WINDOW_MS:
 			accept_event()
 			return
 		pressed = event.pressed
@@ -407,7 +447,16 @@ func _on_pad_input(pad: Panel, event: InputEvent, handler: Callable,
 		# Must happen, or the first chord latches both directions forever and
 		# every later tap reads as a reverse. A touch that leaves the pad still
 		# delivers its release here, so this is not only the lift-in-place case.
-		if direction != 0:
+		#
+		# A release is only meaningful if this direction is actually held.
+		# `released` is just `not event.pressed`, so ANY release-shaped event
+		# reaches here -- including one whose press was never seen, which is
+		# routine: clear_held() runs on every phase change (a gate, a pause)
+		# and drops _held_dirs while a finger is still on the glass, so the
+		# eventual lift arrives with nothing behind it. Emitting there reports
+		# a direction change the player never made, and Game feeds that
+		# straight into _set_held_direction -- which cancels an Overclock.
+		if direction != 0 and _held_dirs.has(direction):
 			_held_dirs.erase(direction)
 			# Report whatever is STILL held rather than a bare 0: lifting one
 			# finger of a chord leaves the other down, and saying "nothing held"
@@ -460,11 +509,19 @@ func _layout() -> void:
 	# top row and its width changes as the run passes a minute, so anything
 	# sharing that line eventually collides with it -- which the first rendered
 	# frame showed happening.
+	#
+	# And below the SETTINGS COG, which lives in this same corner. The cog is
+	# only visible while paused, so it is easy to miss: measured, its whole
+	# 52x52 rect sat INSIDE the pause pad at every viewport size. The pads are
+	# added to UIRoot after the cog, so the pad won every tap and the cog was
+	# unreachable on a phone -- the only platform where the pause pad exists.
+	# Clearing it costs nothing, since the corner below is empty.
 	var top_band: float = min(HUD_TOP_BAND, view.y * MAX_BAND_SHARE)
 	var pause_h: float = max(short_edge * PAUSE_SHORT_FRACTION, PAUSE_MIN.y)
 	var pause := Vector2(max(pause_h * PAUSE_ASPECT, PAUSE_MIN.x), pause_h)
+	var pause_top: float = maxf(top_band, COG_BOTTOM) + MARGIN
 	_place(_pads.get("pause"), Rect2(
-		view.x - pause.x - MARGIN, top_band + MARGIN, pause.x, pause.y))
+		view.x - pause.x - MARGIN, pause_top, pause.x, pause.y))
 	_size_pause_bars(pause)
 
 
