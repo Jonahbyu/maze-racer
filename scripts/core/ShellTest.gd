@@ -284,6 +284,109 @@ func _go() -> void:
 			check("hiding the pads releases the held direction",
 				int(held["last"]) == 0, "reported %d" % held["last"])
 
+			# ONE TAP IS ONE TURN, and the tap has to be driven as a real touch
+			# event rather than through _steer.
+			#
+			# Godot's `emulate_mouse_from_touch` defaults to TRUE, so a phone
+			# delivers every tap twice: the InputEventScreenTouch first, then a
+			# synthesized InputEventMouseButton from the same finger. This handler
+			# accepted both, so one thumb press turned the racer twice -- the
+			# phantom second turn "a second later" that made the game unplayable on
+			# a phone. On desktop there is no touch device, so the mouse branch
+			# fires alone and nothing looks wrong.
+			#
+			# Every other pad check above calls _steer directly and so cannot see
+			# this: the bug lives in the event DISPATCH, not in the chord logic.
+			pads.clear_held()
+			seen["turns"] = 0
+			seen["reverses"] = 0
+			pads._on_pad_input(pads._pads["left"], _touch_event(true),
+				func() -> void: pads._steer(-1), -1)
+			pads._on_pad_input(pads._pads["left"], _mouse_event(true),
+				func() -> void: pads._steer(-1), -1)
+			check("one tap is one turn",
+				int(seen["turns"]) == 1 and int(seen["reverses"]) == 0,
+				"turns %d reverses %d" % [seen["turns"], seen["reverses"]])
+
+			# The release pair must not latch either: a touch release followed by
+			# its emulated mouse release must leave nothing held, or the next tap
+			# reads as a chord.
+			pads._on_pad_input(pads._pads["left"], _touch_event(false),
+				func() -> void: pass, -1)
+			pads._on_pad_input(pads._pads["left"], _mouse_event(false),
+				func() -> void: pass, -1)
+			check("a tap release leaves nothing held",
+				pads._held_dirs.is_empty(), str(pads._held_dirs))
+
+			# And a mouse tap on its own still works, because the pads are
+			# available on desktop for testing without a phone in hand.
+			#
+			# Driven on the RIGHT pad, which no touch above ever reached. The
+			# left pad is inside its echo window here, and suppressing a mouse
+			# event there is the correct behaviour rather than a bug -- a real
+			# desktop never emits InputEventScreenTouch at all, so its pads are
+			# never in an echo window in the first place.
+			pads.clear_held()
+			seen["turns"] = 0
+			pads._on_pad_input(pads._pads["right"], _mouse_event(true),
+				func() -> void: pads._steer(1), 1)
+			check("a mouse-only tap still turns", int(seen["turns"]) == 1,
+				"turns %d" % seen["turns"])
+			pads.clear_held()
+
+			# A tap must emit exactly ONE held-direction change per edge.
+			#
+			# The press half is covered above, but the RELEASE half has its own
+			# ordering trap: the touch release erases the pad's finger claim, so
+			# the emulated mouse release that follows is no longer recognised as
+			# an echo and runs the release branch a second time. _held_dirs makes
+			# that harmless -- erase is idempotent -- but the signal is not, and
+			# Deep Breath and Overclock both listen to it. A duplicate 0 there is
+			# a held direction dropped twice, which is the phantom input again
+			# wearing different clothes.
+			pads.clear_held()
+			var edges := {"n": 0}
+			var counter := func(_d: int) -> void:
+				edges["n"] = int(edges["n"]) + 1
+			pads.held_direction_changed.connect(counter)
+
+			pads._on_pad_input(pads._pads["left"], _touch_event(true),
+				func() -> void: pads._steer(-1), -1)
+			pads._on_pad_input(pads._pads["left"], _mouse_event(true),
+				func() -> void: pads._steer(-1), -1)
+			check("a tap press emits one held change", int(edges["n"]) == 1,
+				"emitted %d" % edges["n"])
+
+			edges["n"] = 0
+			pads._on_pad_input(pads._pads["left"], _touch_event(false),
+				func() -> void: pass, -1)
+			pads._on_pad_input(pads._pads["left"], _mouse_event(false),
+				func() -> void: pass, -1)
+			check("a tap release emits one held change", int(edges["n"]) == 1,
+				"emitted %d" % edges["n"])
+
+			pads.held_direction_changed.disconnect(counter)
+			pads.clear_held()
+
+			# And a tap AFTER a gesture reset is still one turn.
+			#
+			# clear_held runs whenever the overlay hides -- a gate, a pause, the
+			# setting going off -- so if that also forgot the pad was
+			# touch-driven, the first tap after every upgrade pick would
+			# double-fire again. Which pad is a finger's is a fact about the
+			# DEVICE, not about the gesture, so it has to outlive the reset.
+			pads.clear_held()
+			seen["turns"] = 0
+			seen["reverses"] = 0
+			pads._on_pad_input(pads._pads["left"], _touch_event(true),
+				func() -> void: pads._steer(-1), -1)
+			pads._on_pad_input(pads._pads["left"], _mouse_event(true),
+				func() -> void: pads._steer(-1), -1)
+			check("a tap after a reset is still one turn",
+				int(seen["turns"]) == 1 and int(seen["reverses"]) == 0,
+				"turns %d reverses %d" % [seen["turns"], seen["reverses"]])
+			pads.clear_held()
+
 		# Pads must SCALE with the screen, not sit at a fixed pixel size.
 		#
 		# They were a screen fraction capped at a pixel maximum, and the cap won
@@ -597,4 +700,24 @@ func _release_event() -> InputEventMouseButton:
 	var ev := InputEventMouseButton.new()
 	ev.button_index = MOUSE_BUTTON_LEFT
 	ev.pressed = false
+	return ev
+
+
+# A real finger. Godot synthesizes a mouse event from each of these when
+# `emulate_mouse_from_touch` is on, which is the default -- so a phone sends
+# BOTH, and a handler that accepts both fires twice per tap.
+func _touch_event(pressed: bool) -> InputEventScreenTouch:
+	var ev := InputEventScreenTouch.new()
+	ev.pressed = pressed
+	ev.index = 0
+	return ev
+
+
+# The emulated mouse event that follows a touch, and also a genuine desktop
+# click -- the two are indistinguishable to a handler, which is the whole
+# reason the touch branch has to claim the tap first.
+func _mouse_event(pressed: bool) -> InputEventMouseButton:
+	var ev := InputEventMouseButton.new()
+	ev.button_index = MOUSE_BUTTON_LEFT
+	ev.pressed = pressed
 	return ev

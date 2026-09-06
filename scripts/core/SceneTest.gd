@@ -869,6 +869,20 @@ func _check_crash_camera(game) -> void:
 	# wall instead of crashing into it. Hold it on cooldown so the racer is
 	# actually testing what this check is named for.
 	racer.legendary_cooldown = 999.0
+	# SECOND WIND is the same trap one line further on, and it made this check
+	# fail about one run in six.
+	#
+	# _press_into_wall tries Wall Smasher, then Second Wind, and only then
+	# crashes -- so a banked charge ABSORBS the crash and the racer never parks.
+	# Taking every upgrade line banks the full complement, so the racer has to
+	# burn them all before the assertion can see a park, and whether 400 frames
+	# is enough depends on the maze this seed drew. That is an intermittent
+	# failure whose message points at the crash path, which is not where the
+	# problem is.
+	#
+	# Emptied rather than the budget being raised: the check is named for the
+	# crash, and a racer spending saves is exercising Second Wind instead.
+	racer.second_wind = 0
 
 	var before_height: float = game._camera.position.y
 	var crashed := false

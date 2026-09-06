@@ -94,12 +94,30 @@ const ARROW_H_FRAC := 0.44
 
 const MARGIN := 18.0
 
+# How long after a real touch a mouse event on the same pad is treated as
+# that touch's emulated echo rather than a click.
+#
+# The echo is generated during the same input flush as the touch, so it is
+# always a few milliseconds at most. This is wide enough to be safe on a slow
+# frame and far too short for a human to produce a genuine click on the same
+# pad in that time -- and on a desktop, where no touch ever arrives, the
+# window is never open at all.
+const ECHO_WINDOW_MS := 250
+
 var _pads: Dictionary = {}
 
 # Which steering pads are currently held, by direction (-1 left, +1 right).
 # A chord is both of them down at once, so this has to be tracked across
 # events rather than inferred from any single one.
 var _held_dirs: Dictionary = {}
+
+# When each pad was last touched by a real finger, in milliseconds.
+#
+# Godot synthesizes a mouse event from every touch
+# (input_devices/pointing/emulate_mouse_from_touch defaults to TRUE), so a
+# phone delivers each tap twice. This is how the echo is told from a genuine
+# click. Keyed by pad, because two thumbs are two independent gestures.
+var _touch_at: Dictionary = {}
 
 
 func _ready() -> void:
@@ -142,6 +160,10 @@ func clear_held() -> void:
 
 func _release_all() -> void:
 	_held_dirs.clear()
+	# _touch_at is deliberately NOT cleared here. It is a timestamp used to
+	# spot an emulated echo, not a gesture in progress -- and the echo of a
+	# touch that happened just before a gate opened can still be in flight.
+	# It expires on its own after ECHO_WINDOW_MS.
 	# Hiding the overlay must release the held direction too, or a Deep Breath
 	# extension bought on the way out lasts forever -- the same latch the chord
 	# comment below is about, reaching a second consumer.
@@ -322,6 +344,25 @@ func _steer(direction: int) -> void:
 
 # Fires on press, for both a finger and a mouse, and never on release.
 #
+# ONE TAP MUST BE ONE TURN, and that needs saying because a phone does not
+# send one event per tap. `input_devices/pointing/emulate_mouse_from_touch`
+# defaults to TRUE, so every finger press arrives TWICE: the
+# InputEventScreenTouch, then a synthesized InputEventMouseButton from the
+# same finger. Accepting both fired the handler twice, which on a phone read
+# as the racer turning when the thumb landed and AGAIN a moment later -- a
+# phantom input that made the game unplayable on the one platform these pads
+# exist for.
+#
+# `accept_event()` does not prevent it: the emulated event is GENERATED from
+# the touch rather than propagated from it, so it arrives regardless of what
+# this handler does with the first one.
+#
+# So a pad remembers whether a finger is on it and ignores mouse events while
+# one is. It cannot just ignore mouse events outright -- the pads must stay
+# clickable on desktop -- and it must not switch on is_touchscreen_available()
+# either, since a laptop with a touchscreen would then lose the mouse. The
+# STATE decides, not the device.
+#
 # Both device types are handled because the toggle is available on desktop --
 # a tester with a mouse must be able to drive the same pads, or the setting
 # cannot be checked without a phone in hand.
@@ -333,8 +374,27 @@ func _on_pad_input(pad: Panel, event: InputEvent, handler: Callable,
 	if event is InputEventScreenTouch:
 		pressed = event.pressed
 		released = not event.pressed
+		# Stamp this pad as just-touched, so the mouse event Godot synthesizes
+		# from this very touch is recognised as an echo below and dropped.
+		#
+		# A TIMESTAMP rather than a sticky flag, and both simpler schemes were
+		# tried and are wrong. Clearing the flag on the touch release lets the
+		# emulated mouse RELEASE -- which arrives after it -- run the release
+		# branch a second time and emit held_direction_changed twice. Never
+		# clearing it makes the pad permanently deaf to a real mouse, which
+		# breaks the pads on desktop, where they are the only way to test this
+		# without a phone in hand. The echo is generated from the touch during
+		# the same input flush, so it is always within a few ms; a genuine
+		# human click never lands that close to a finger press on the same pad.
+		_touch_at[pad] = Time.get_ticks_msec()
 	elif event is InputEventMouseButton \
 			and event.button_index == MOUSE_BUTTON_LEFT:
+		# Within the echo window of a touch on this pad, so this is that
+		# touch's synthesized twin rather than a click.
+		var touched_at: int = int(_touch_at.get(pad, -ECHO_WINDOW_MS - 1))
+		if Time.get_ticks_msec() - touched_at <= ECHO_WINDOW_MS:
+			accept_event()
+			return
 		pressed = event.pressed
 		released = not event.pressed
 

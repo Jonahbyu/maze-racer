@@ -1744,6 +1744,20 @@ the first.
   exists.** `SceneTest` takes every upgrade line before its crash check, so the racer
   correctly broke through instead. The check now puts the legendary on cooldown — the same
   shape as the §12 note about a harness inheriting the previous test's state.
+- **The same check broke again the same way one line further on, and Second Wind is the
+  second save.** `_press_into_wall` tries Wall Smasher, then Second Wind, and only then
+  crashes — so a banked charge **absorbs the crash and the racer never parks**. Taking every
+  upgrade line banks the full complement, so the racer has to burn them all before the
+  assertion can see a park, and whether the 400-frame budget covers that depends on the maze
+  the seed drew. **Measured at roughly 1 failure in 6 runs.** Fixed by emptying the charges
+  rather than raising the budget: the check is named for the crash, and a racer spending
+  saves is exercising Second Wind instead. Verified both ways — 10 consecutive clean runs
+  emptied, and the failure returning at 2 in 6 with the charges re-armed.
+
+  **An intermittent failure whose message names the wrong system is the expensive part.**
+  "driving into a wall crashes" points at the crash path, which was correct throughout. When
+  a check that takes *every* upgrade line starts flaking, suspect the lines that change the
+  outcome it asserts before suspecting the outcome.
 - **`UpgradeScreen` only ever hid itself on a card press.** Any other route out of a pick
   left the cards rendering over live gameplay, because the screen is a `Control` that knows
   nothing about the phase machine. It now has a `dismiss()` that every exit calls.
@@ -2587,6 +2601,13 @@ reads the board back. Curl against the same endpoints proves the *service*; only
 the *page* — the identical gap that let a silent web build pass every check. It runs headless
 so it never opens a window.
 
+`tools/web-touch-probe.py` is the touch equivalent, and it answers the one question no
+headless harness can: what a browser actually DELIVERS for a single tap. Measured
+against production, one finger raises **1 `touchstart` and 1 `mousedown`** -- the double
+delivery behind the phantom-turn bug (§9d). It does not count turns; that is
+`ShellTest`'s assertion, and exposing a counter to JS would put test scaffolding in
+shipping code.
+
 `LeaderboardProbe.gd` is the instrument, and it is not a test: it drives the real REST backend
 against the live project and reports sign-in, the post state, the board and the history. It
 exists for the same reason `MusicProbe` does — every harness runs headless with REST disabled,
@@ -2770,6 +2791,79 @@ gesture lives entirely in `TouchControls`, which does not exist when the pads ar
 off, and the keyboard reaches `_on_reverse_input` directly. `ShellTest` asserts it
 with the pads switched off, since a later refactor that moved chord handling up
 into `Game` would break it silently.
+
+**One tap must be ONE turn, and a phone does not send one event per tap.**
+`input_devices/pointing/emulate_mouse_from_touch` defaults to **true**, so every finger
+press arrives twice: the `InputEventScreenTouch`, then an `InputEventMouseButton` Godot
+synthesizes from that same finger. `_on_pad_input` accepted both, so a single thumb press
+fired the handler **twice** — the racer turned when the thumb landed and again a moment
+later. In play that is a phantom input on every single turn, which makes the game
+unplayable on the one platform the pads exist for.
+
+**`accept_event()` does not stop it.** The emulated event is *generated from* the touch
+rather than propagated from it, so it arrives however the first one was handled. This is
+not an event-consumption problem; the two events have to be told apart.
+
+**Every simpler fix is wrong, and both were tried and measured:**
+
+- **Ignore mouse events outright** — kills the pads on desktop, where they are the only
+  way to check this without a phone in hand.
+- **Switch on `is_touchscreen_available()`** — a laptop with a touchscreen then loses its
+  mouse. The device does not decide; a *specific event* being an echo does.
+- **A sticky per-pad "a finger owns this" flag, cleared on the touch release** — the
+  emulated mouse *release* arrives **after** the touch release, so the pad no longer
+  recognises it and runs the release branch a second time, emitting
+  `held_direction_changed` twice. `_held_dirs` survives that (erase is idempotent) but the
+  signal does not, and Deep Breath and Overclock both listen to it. **A direction dropped
+  twice is the same phantom input in different clothes.**
+- **The same flag, never cleared** — the pad goes permanently deaf to a real mouse.
+
+**So the guard is a timestamp, not a flag.** A touch stamps its pad; a mouse event on that
+pad within `ECHO_WINDOW_MS` (250ms) is its echo and is dropped. The echo is generated in
+the same input flush as the touch, so it is always a few milliseconds away, and no human
+produces a genuine click that close to a finger press on the same pad. On a desktop no
+touch ever arrives, so the window is never open and the mouse path is untouched.
+
+**The timestamp deliberately outlives `clear_held()`.** That runs whenever the overlay
+hides — a gate, a pause, the setting going off — and it clears *gestures*. An echo still in
+flight is not a gesture, so clearing the stamp there would let the first tap after every
+upgrade pick double-fire again.
+
+> **Every pad test drove `_steer()` or a synthetic MOUSE event, so none of them could see
+> this** — the bug lives in the event *dispatch*, not in the chord logic, and no harness
+> had ever sent an `InputEventScreenTouch` at all. That is why a bug on every turn survived
+> 83 passing assertions about the pads. `ShellTest` now drives a real touch **followed by
+> its emulated mouse twin**, which is what a phone actually sends, and asserts one turn and
+> exactly one held-direction change per edge. Verified by disabling the guard: four
+> assertions fail, including `turns 2` from one tap.
+
+> **A "mouse-only still works" check has to use a pad no touch has reached.** Tapping the
+> pad the touch test just used lands inside its echo window, where suppression is correct
+> behaviour rather than a bug — and reading that as a regression sends you at the fix
+> instead of at the test.
+
+**Measured on the live page, not inferred.** `tools/web-touch-probe.py` drives the hosted
+build in headless Chrome over CDP, dispatches one real touch, and counts the DOM events
+that result. Against production: **1 `touchstart` and 1 `mousedown` for a single finger**,
+and the same pair on release. The browser synthesizes the mouse event itself, on top of
+what Godot does internally — so the double delivery is real at both layers, and the
+harness's hand-built event pair is a faithful model of it rather than a guess.
+
+> Two things that made the probe report nothing while the events were flowing, both worth
+> knowing before writing another one. **The touch events land on `window` and `document`,
+> never on the `canvas` element** — a canvas-scoped listener counts zero. And **the tap
+> point has to come from the canvas's `getBoundingClientRect()`**, in CSS pixels, not from
+> `clientWidth`. Its first version got both wrong and printed `touchstart: 0`, which reads
+> exactly like touch emulation being off.
+>
+> It says `INCONCLUSIVE` rather than `PASS` when it sees no touch at all, which is the only
+> reason that was caught rather than banked as a green run — the CI-gate lesson (§12)
+> applied to an instrument instead of a workflow.
+
+**What the probe does NOT do is count turns.** Godot exposes no such counter to JS, and
+adding one would put test scaffolding in shipping game code. The count is `ShellTest`'s
+assertion; the probe's job is to show that the *delivery* the harness models is what a
+browser really sends.
 
 **The pads report HELD direction, not only presses.** Deep Breath and Overclock (§7) both
 need a key to still be *down* rather than merely to have been pressed, which the keyboard gets
@@ -3462,7 +3556,7 @@ Six harnesses, each answering a different question:
 | `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count, and the marker shape table -- that every entry points forward and is longer than it is wide, that ids are unique, that an unknown id falls back to the arrow, and that the choice never moves the racer. 544 assertions. |
 | `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording, and that every marker shape builds a closed, outward-wound solid inside its ring. 206 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide. 83 assertions. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide, and that one real touch tap -- driven with the emulated mouse event a phone sends after it -- is exactly one turn and one held-direction change per edge. 89 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 22 assertions. |
 | `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 105 assertions. |
 
