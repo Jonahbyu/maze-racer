@@ -32,9 +32,20 @@ Leaderboard="*res://scripts/core/Leaderboard.gd"
 
 [debug]
 
-file_logging/log_path="res://logs/godot.log"
+; The GUI build used by play.ps1 detaches from the console and produces no
+; capturable stdout, so a real play session used to leave NO error record at all
+; -- while logs/errors.log kept showing whatever a past dev run put there. That
+; combination is worse than no log: it reads as "clean" when nothing was
+; actually checked. File logging is independent of the console, so it captures
+; play sessions too.
+;
+; The path is user://, NOT res://. logs/ is gitignored, so res://logs does not
+; exist in a fresh clone -- and the engine CRASHES (signal 11) on startup when it
+; cannot create the log directory, before any script runs. That took down every
+; harness in CI. res:// is also read-only in an exported build.
+file_logging/enable_file_logging=true
+file_logging/log_path="user://logs/godot.log"
 file_logging/max_log_files=10
-cleanwhennothingwas#actuallychecked.Fileloggingisindependentoftheconsole,soitcaptures#playsessionstoo.file_logging/enable_file_logging=true
 
 [display]
 

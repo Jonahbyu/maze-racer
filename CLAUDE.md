@@ -3400,6 +3400,28 @@ the restored harness exits 0 at 544 passed.
 > run.** This is the same failure as the stale-log trap below and the `build_type` note
 > above: the signal looked right and was measuring nothing.
 
+**The crash underneath it was `file_logging/log_path` pointing into `res://`.** `logs/` is
+gitignored, so **a fresh clone has no `res://logs`** — and the engine creates the log
+directory during startup, before any script runs. When it cannot, it dies with signal 11.
+So the harnesses never executed a single assertion, in CI or in any new checkout. `res://`
+is read-only in an exported build as well, which is the same bug waiting on a second path.
+
+Fixed by pointing it at **`user://logs/godot.log`**, which is always writable and always
+exists. This does not affect `logs/errors.log`: `launch.ps1` creates `logs/` itself and
+captures stdout separately, so the primary feedback channel is unchanged.
+
+**Reproduce this class of failure by cloning the repo to a temp directory**, not by
+re-running in the working copy — the working copy has `logs/` sitting there from every
+previous run, which is exactly what hides it. Verified: the fresh clone crashed at signal
+11, and passes 544/544 after the fix.
+
+**The same line was also corrupted in the file.** `enable_file_logging=true` had been
+mashed into a comment with every space and newline stripped —
+`cleanwhennothingwas#actuallychecked.…file_logging/enable_file_logging=true` — which is a
+garbage key the engine ignores, so file logging was silently off. It entered in `e115e29`
+and shipped in every build since. Restored, and the comment now uses `;` (the ini comment
+character `project.godot` actually uses) rather than `#`.
+
 The repo is **public**, and that is a hosting requirement rather than a preference: Pages
 on a private repo needs a paid plan, and the API rejects it on Free with *"Your current
 plan does not support GitHub Pages for this repository."* Going public also lifted a
