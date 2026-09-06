@@ -3368,8 +3368,37 @@ shortcut via `tools/MazeRacer.vbs`, which starts it with no console flash.
 ### The web build and GitHub Pages
 
 The game is published at **https://jonahbyu.github.io/maze-racer/**, built and deployed by
-`.github/workflows/deploy.yml` on every push to `main`. The workflow runs `RulesTest` and
-`SceneTest` first, so a red harness blocks the deploy rather than shipping over it.
+`.github/workflows/deploy.yml` on every push to `main`. The workflow runs all four
+harnesses first, so a red harness blocks the deploy rather than shipping over it.
+
+**That gate was inert from the first CI run until it was fixed, and both halves of why are
+worth keeping.** Measured on the deployed workflow: every harness step ran in ~0.3s against
+the ~50s `RulesTest` takes locally, and printed no test output at all.
+
+- **Godot links `libfontconfig` even under `--headless`, and the CI image does not ship
+  it.** The engine died on startup with `libfontconfig.so.1: cannot open shared object
+  file`, then signal 11, **before any harness ran**. The image having the engine and the
+  export templates pre-installed is exactly what made this easy to miss — the one thing it
+  lacks is a library the engine loads on a path nothing else in the build touches.
+- **The steps then greped for failure in a crash log and found none.** `grep -qiE
+  '(^| )FAIL|assertion failed' rules.log && exit 1 || true` — a crashed run writes no
+  `FAIL`, so the grep matched nothing, `|| true` swallowed the non-match, and the step went
+  green. **Every deploy since the first one shipped untested.**
+
+The grep was independently wrong in the *other* direction too, which is what makes it the
+wrong instrument rather than a broken one: a **passing** run prints `passed: 544   failed:
+0`, and ` failed: 0` matches `(^| )FAIL` case-insensitively. So the check would have failed
+a green run and passed a crashed one — backwards on both ends.
+
+**Use the harness's exit code, not its output.** Every harness already ends
+`quit(1 if _failed > 0 else 0)`, which is the authoritative answer and cannot be confused
+by a summary line that contains the word "failed". Verified in both directions, because a
+gate that cannot fail is not evidence (§12): a deliberately broken assertion exits 1, and
+the restored harness exits 0 at 544 passed.
+
+> **A green checkmark is not a passing test — check that the step took long enough to have
+> run.** This is the same failure as the stale-log trap below and the `build_type` note
+> above: the signal looked right and was measuring nothing.
 
 The repo is **public**, and that is a hosting requirement rather than a preference: Pages
 on a private repo needs a paid plan, and the API rejects it on Free with *"Your current

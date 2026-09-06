@@ -29,36 +29,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Godot links libfontconfig even with --headless, and the CI image does
+      # not ship it: without this the engine dies on startup with
+      # "libfontconfig.so.1: cannot open shared object file" and then signal 11,
+      # BEFORE any harness runs. Every step below then greps an empty crash log,
+      # finds no "FAIL", and passes -- so the whole gate was silently inert.
+      - name: Install engine runtime deps
+        run: apt-get update && apt-get install -y libfontconfig1
+
       # A fresh clone has no .godot/ class cache, so every class_name fails to
       # resolve until the project is imported once. Same trap as launch.ps1.
       - name: Import project
         run: godot --headless --import || true
 
       - name: Rules harness
-        run: |
-          godot --headless --script res://scripts/core/RulesTest.gd 2>&1 | tee rules.log
-          grep -qiE '(^| )FAIL|assertion failed' rules.log && exit 1 || true
+        run: godot --headless --script res://scripts/core/RulesTest.gd
 
       - name: Scene harness
-        run: |
-          godot --headless --script res://scripts/core/SceneTest.gd 2>&1 | tee scene.log
-          grep -qiE '(^| )FAIL|assertion failed' scene.log && exit 1 || true
+        run: godot --headless --script res://scripts/core/SceneTest.gd
 
       # Catches a track named but never shipped: the web export would build
       # fine and be silent in the browser, which nothing else here notices.
       - name: Music harness
-        run: |
-          godot --headless --script res://scripts/core/MusicTest.gd 2>&1 | tee music.log
-          grep -qiE '(^| )FAIL|assertion failed' music.log && exit 1 || true
+        run: godot --headless --script res://scripts/core/MusicTest.gd
 
       # The menu is the only way into the game, and the web build is the one
       # players actually reach -- a break here ships a title screen that goes
       # nowhere, which no other harness notices because they all load
       # Game.tscn directly.
       - name: Shell harness
-        run: |
-          godot --headless --script res://scripts/core/ShellTest.gd 2>&1 | tee shell.log
-          grep -qiE '(^| )FAIL|assertion failed' shell.log && exit 1 || true
+        run: godot --headless --script res://scripts/core/ShellTest.gd
 
   build:
     needs: test
@@ -67,6 +67,10 @@ jobs:
       image: barichello/godot-ci:4.7
     steps:
       - uses: actions/checkout@v4
+
+      # Same missing library as the test job -- the export runs the engine too.
+      - name: Install engine runtime deps
+        run: apt-get update && apt-get install -y libfontconfig1
 
       - name: Install export templates
         run: |
