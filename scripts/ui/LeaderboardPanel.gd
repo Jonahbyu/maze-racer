@@ -28,6 +28,18 @@ const COL_TAB_OFF := Color(0.35, 0.42, 0.54)
 const COL_ME := Color(1.0, 0.82, 0.35)
 
 const PANEL_WIDTH := 460.0
+
+# How much to scale this panel's own text and rows by.
+#
+# 1.0 in the desktop mount, where the panel sits beside the menu at its natural
+# size. The PHONE mount sets it above 1.0, because the viewport is not the
+# screen (section 9d): the same 13px row is 13 CSS px on a desktop and about 4
+# on a handset. Set BEFORE the panel builds -- rows are laid out in _ready.
+#
+# One panel scaled, rather than a second panel written for phones: two boards
+# showing one set of scores is the parallel-array trap (section 6), and the one
+# not on screen is the one that would rot.
+var text_scale: float = 1.0
 const ROW_HEIGHT := 26.0
 
 # The three boards plus the player's own runs. History is a FOURTH view rather
@@ -60,6 +72,26 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_build()
 	_connect_board()
+	refresh()
+
+
+# Rebuild at a new text scale.
+#
+# The phone mount cannot know the scale until it is on screen, and the rows are
+# laid out in _build -- so changing text_scale afterwards has no effect without
+# this. Everything the panel shows comes back through refresh(), so nothing is
+# lost: the rows are re-read from the board rather than being reformatted in
+# place.
+func rescale(scale: float) -> void:
+	if is_equal_approx(scale, text_scale):
+		return
+	text_scale = scale
+	for child in get_children():
+		remove_child(child)
+		child.queue_free()
+	_tabs.clear()
+	_sort_buttons.clear()
+	_build()
 	refresh()
 
 
@@ -289,7 +321,8 @@ func _tab_label(view: int) -> String:
 func _label(text: String, size: int, colour: Color) -> Label:
 	var l := Label.new()
 	l.text = text
-	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_font_size_override("font_size",
+		int(round(float(size) * text_scale)))
 	l.add_theme_color_override("font_color", colour)
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return l
@@ -298,11 +331,12 @@ func _label(text: String, size: int, colour: Color) -> Label:
 # Fixed column widths so the numbers stack down the panel; Labels sized to their
 # own text leave every row ragged.
 func _row(cells: Array, size: int, colour: Color) -> HBoxContainer:
-	var widths := [34.0, 170.0, 118.0, 70.0]
+	var widths := [34.0 * text_scale, 170.0 * text_scale,
+		118.0 * text_scale, 70.0 * text_scale]
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 0)
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.custom_minimum_size = Vector2(0, ROW_HEIGHT)
+	row.custom_minimum_size = Vector2(0, ROW_HEIGHT * text_scale)
 	for i in cells.size():
 		var l := _label(String(cells[i]), size, colour)
 		l.custom_minimum_size = Vector2(float(widths[i]), 0)
@@ -319,8 +353,9 @@ func _make_small_button(text: String, handler: Callable) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.focus_mode = Control.FOCUS_NONE
-	b.add_theme_font_size_override("font_size", 13)
-	b.custom_minimum_size = Vector2(0, 26)
+	b.add_theme_font_size_override("font_size",
+		int(round(13.0 * text_scale)))
+	b.custom_minimum_size = Vector2(0, 26.0 * text_scale)
 	var flat := StyleBoxFlat.new()
 	flat.bg_color = Color(0.06, 0.09, 0.14, 0.9)
 	flat.set_corner_radius_all(4)

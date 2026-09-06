@@ -18,21 +18,126 @@ extends Control
 
 signal closed()
 
-const PANEL_SIZE := Vector2(520, 330)
+# Leave the run and go back to the title screen.
+#
+# The panel does NOT act on this itself. It is mounted in two places, and only
+# one of them has a run to leave -- so the mount decides what quitting means and
+# the panel only reports the press, the same division `closed` already uses.
+signal quit_to_menu()
+
+# Height is derived from the rows the panel actually builds, not a band picked
+# to fit the ones it had -- the section 12 hard-coded-layout trap, which the
+# menu's button stack and the summary panel have both already paid for. QUIT TO
+# MENU is a conditional row, so the height genuinely varies by mount.
+const PANEL_WIDTH := 520.0
+const PANEL_BASE_HEIGHT := 330.0
 const ROW_HEIGHT := 44.0
+
+# The heading and the padding the card puts around and between its rows. Named
+# because _row_height has to subtract them to find the space the rows may use.
+# MEASURED, not estimated: a card of 5 rows at 101.5 units laid out 783 tall,
+# so everything that is not a row -- the heading, the card's content margins and
+# the separations between rows -- comes to 275. A guess at this number is what
+# let the panel overrun the screen while the arithmetic said it fitted.
+# MEASURED, not estimated. A card of 5 rows at 101.5 units laid out 783 tall,
+# broken down as: heading 95, three spacers 14, the rows themselves, and 164 of
+# card margins. So everything that is not a row comes to 273.
+#
+# Guessing this number is what let the panel overrun the screen while the
+# arithmetic said it fitted -- the offset asked for 676 and the card laid out at
+# 783, because a PanelContainer sizes to its CONTENTS and simply ignores an
+# offset smaller than they need.
+const CARD_FIXED := 273.0
 
 # How far above screen centre the card sits. See _build_panel.
 const PANEL_RISE := 20.0
+
+# Breathing room between the card and the screen edge, so a full-height panel
+# does not sit flush against it.
+const EDGE_MARGIN := 12.0
 
 const COL_ACCENT := MainMenu.COL_ACCENT
 const COL_DIM := MainMenu.COL_DIM
 const COL_CARD := MainMenu.COL_CARD
 const COL_CARD_HOVER := MainMenu.COL_CARD_HOVER
 
+# Whether this mount has a run to leave. Set by the mount BEFORE add_child,
+# because _ready builds the rows -- the same ordering Game.board needs, and for
+# the same reason: a flag set afterwards arrives one build too late.
+var allow_quit: bool = false
+
 var _slider: HSlider = null
 var _mute_button: Button = null
 var _touch_button: Button = null
 var _volume_label: Label = null
+
+
+# The viewport-to-screen scale, guarded exactly as MainMenu's is.
+#
+# The panel is the pause screen on a phone now, so its rows are tap targets
+# rather than merely readable -- and at a flat 44 units a row is 14 CSS px on a
+# handset. Below a viewport size no real display has, 1.0 is the honest answer:
+# a headless run reports a 0.04 scale on a 64x64 dummy, which is finite,
+# meaningless, and would inflate every row 25x.
+func _view_scale() -> float:
+	var vp := get_viewport()
+	if vp == null:
+		return 1.0
+	var view := vp.get_visible_rect().size
+	if view.x < 320.0 or view.y < 240.0:
+		return 1.0
+	var sx: float = vp.get_stretch_transform().get_scale().x
+	# A LOWER BOUND ON THE SCALE ITSELF, not only on the viewport.
+	#
+	# Guarding the viewport size is not enough, and trusting it produced 1100
+	# unit buttons in the harness: a Window reports a plausible 1600x900 visible
+	# rect while its stretch transform is still the dummy's, so the size check
+	# passes and the scale is fiction. 0.15 is below any real device -- the
+	# tightest measured phone is 0.328 -- and far above the 0.04 a headless run
+	# reports, so it separates the two without touching anything real.
+	if sx < 0.15 or sx > 8.0:
+		return 1.0
+	return sx
+
+
+# A row's height in viewport units, so it measures at least the published tap
+# minimum on the glass.
+func _row_height() -> float:
+	var want: float = maxf(ROW_HEIGHT, 44.0 / _view_scale())
+	# ...but never more than the rows can actually fit into.
+	#
+	# A PanelContainer grows to its CONTENTS, so a row height that does not fit
+	# does not clip -- it pushes the card off the bottom of the screen, taking
+	# CLOSE with it. That is the summary panel's hard-coded-band failure exactly
+	# (section 8c): the best-looking rows in the game, with no visible way out.
+	#
+	# So the height is bounded by the space there is. The row count is read from
+	# what this panel actually builds rather than restated, since allow_quit
+	# changes it -- restating it is the section 12 trap one step along.
+	var rows: float = float(_row_count())
+	var view_h: float = float(get_viewport_rect().size.y)
+	# A PanelContainer sizes itself to its CONTENTS and ignores any offset
+	# smaller than they need, so panel_h below is a request the card is free to
+	# refuse -- which is exactly what it did: the computed height said 676 and
+	# the card laid out at 783, running 15 units off the bottom of the screen
+	# with CLOSE on the far side of the edge.
+	#
+	# So the ROWS have to fit, because they are what the card is measuring. The
+	# card is centred and then lifted by PANEL_RISE, which costs it twice at the
+	# bottom, and CARD_OVERHEAD is everything in the card that is not a row.
+	var usable: float = view_h - EDGE_MARGIN * 2.0 - CARD_FIXED
+	var room: float = usable / maxf(rows, 1.0)
+	return clampf(want, ROW_HEIGHT, maxf(room, ROW_HEIGHT))
+
+
+# The rows this panel builds: music, mute, mobile controls, close, and the quit
+# row when the mount has a run to leave.
+func _row_count() -> int:
+	return 5 if allow_quit else 4
+
+
+func _font_px(base: float) -> int:
+	return clampi(int(round(base / _view_scale())), int(base), 96)
 
 
 func _ready() -> void:
@@ -64,18 +169,46 @@ func _build_scrim() -> void:
 
 
 func _build_panel() -> void:
+	# Sized BEFORE the card is laid out, because both offsets read them. The
+	# height is derived from the rows this panel actually builds, at the height
+	# those rows actually get -- a band sized for desktop rows clips every one
+	# of them once the rows grow for a phone.
+	var row_h: float = _row_height()
+	# Built from what the card actually contains, measured rather than guessed:
+	# CARD_FIXED is the heading, the spacers and the card's own margins, and the
+	# rest is one row per control. An estimate here is what let the offset and
+	# the laid-out card disagree by 100 units.
+	var panel_h: float = CARD_FIXED + row_h * float(_row_count())
+	var panel_w: float = clampf(PANEL_WIDTH / _view_scale(), PANEL_WIDTH,
+		maxf(float(get_viewport_rect().size.x) - 80.0, PANEL_WIDTH))
+
 	var card := PanelContainer.new()
 	card.anchor_left = 0.5
 	card.anchor_right = 0.5
 	card.anchor_top = 0.5
 	card.anchor_bottom = 0.5
-	card.offset_left = -PANEL_SIZE.x * 0.5
-	card.offset_right = PANEL_SIZE.x * 0.5
+	card.offset_left = -panel_w * 0.5
+	card.offset_right = panel_w * 0.5
 	# Lifted slightly above dead centre: the title sits above and the menu hint
 	# below, and a panel centred exactly split the difference badly, overlapping
 	# both. Only a rendered frame shows this.
-	card.offset_top = -PANEL_SIZE.y * 0.5 + PANEL_RISE
-	card.offset_bottom = PANEL_SIZE.y * 0.5 + PANEL_RISE
+	# The RISE gives way before the screen edge does.
+	#
+	# PANEL_RISE lifts the card off dead centre so the menu's title and hint are
+	# not split by it, which is a desktop nicety. On a phone the card is nearly
+	# as tall as the viewport, and the same lift pushes CLOSE off the bottom --
+	# measured, the card ran to 915 against a 900-tall viewport, which is the
+	# summary panel's overrun (section 8c) in a second place. A control the
+	# player cannot reach beats a slightly off-centre card every time, so the
+	# rise is taken back exactly as far as the overflow requires and no further.
+	var view_h: float = float(get_viewport_rect().size.y)
+	var half: float = panel_h * 0.5
+	var rise: float = PANEL_RISE
+	var overflow: float = (view_h * 0.5 + half + rise) - (view_h - EDGE_MARGIN)
+	if overflow > 0.0:
+		rise = maxf(rise - overflow, 0.0)
+	card.offset_top = -half + rise
+	card.offset_bottom = half + rise
 
 	var style := StyleBoxFlat.new()
 	style.bg_color = COL_CARD
@@ -96,7 +229,7 @@ func _build_panel() -> void:
 	# --- Music volume ---
 	var music_row := HBoxContainer.new()
 	music_row.add_theme_constant_override("separation", 14)
-	music_row.custom_minimum_size = Vector2(0, ROW_HEIGHT)
+	music_row.custom_minimum_size = Vector2(0, _row_height())
 	rows.add_child(music_row)
 
 	music_row.add_child(_row_label("MUSIC"))
@@ -105,7 +238,7 @@ func _build_panel() -> void:
 	_slider.min_value = 0.0
 	_slider.max_value = 1.0
 	_slider.step = 0.01
-	_slider.custom_minimum_size = Vector2(220, ROW_HEIGHT)
+	_slider.custom_minimum_size = Vector2(220, _row_height())
 	_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_slider.focus_mode = Control.FOCUS_ALL
@@ -118,7 +251,7 @@ func _build_panel() -> void:
 	# The number is the readout, so the slider does not have to be eyeballed
 	# against its own track. Fixed width, or the row reflows as digits change.
 	_volume_label = _row_label("100%")
-	_volume_label.custom_minimum_size = Vector2(64, ROW_HEIGHT)
+	_volume_label.custom_minimum_size = Vector2(64, _row_height())
 	_volume_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	music_row.add_child(_volume_label)
 
@@ -133,6 +266,23 @@ func _build_panel() -> void:
 	# for the same category of thing.
 	_touch_button = _make_button("", _on_toggle_touch)
 	rows.add_child(_touch_button)
+
+	# --- Quit to menu ---
+	#
+	# Only on the mount that has a run to leave. On the title screen there is
+	# nothing to quit TO, so the row would be a button that either does nothing
+	# or re-enters the screen the player is already looking at.
+	#
+	# It sits above CLOSE rather than below because CLOSE is the way out of the
+	# panel and wants to stay the last thing in the stack -- and because a
+	# destructive action directly under the thumb's resting position, where
+	# CLOSE is expected, is the one place it should not be.
+	if allow_quit:
+		rows.add_child(_spacer(4))
+		var quit_button := _make_button("QUIT TO MENU", _on_quit_to_menu)
+		quit_button.add_theme_color_override("font_color",
+			Color(1.0, 0.72, 0.60))
+		rows.add_child(quit_button)
 
 	rows.add_child(_spacer(4))
 	rows.add_child(_make_button("CLOSE", _on_close))
@@ -164,19 +314,24 @@ func _style_slider(slider: HSlider) -> void:
 func _heading(text: String) -> Label:
 	var label := Label.new()
 	label.text = text
-	label.add_theme_font_size_override("font_size", 30)
+	label.add_theme_font_size_override("font_size", _font_px(30.0))
 	label.add_theme_color_override("font_color", COL_ACCENT)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	return label
 
 
+# Reported, never acted on -- the mount owns what leaving a run means.
+func _on_quit_to_menu() -> void:
+	emit_signal("quit_to_menu")
+
+
 func _row_label(text: String) -> Label:
 	var label := Label.new()
 	label.text = text
-	label.add_theme_font_size_override("font_size", 20)
+	label.add_theme_font_size_override("font_size", _font_px(20.0))
 	label.add_theme_color_override("font_color", COL_DIM)
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	label.custom_minimum_size = Vector2(110, ROW_HEIGHT)
+	label.custom_minimum_size = Vector2(110, _row_height())
 	return label
 
 
@@ -190,9 +345,9 @@ func _spacer(height: float) -> Control:
 func _make_button(text: String, handler: Callable) -> Button:
 	var button := Button.new()
 	button.text = text
-	button.custom_minimum_size = Vector2(0, ROW_HEIGHT)
+	button.custom_minimum_size = Vector2(0, _row_height())
 	button.focus_mode = Control.FOCUS_ALL
-	button.add_theme_font_size_override("font_size", 20)
+	button.add_theme_font_size_override("font_size", _font_px(20.0))
 	button.add_theme_color_override("font_color", Color.WHITE)
 	button.add_theme_color_override("font_hover_color", COL_ACCENT)
 	button.add_theme_color_override("font_focus_color", COL_ACCENT)

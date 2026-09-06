@@ -2902,6 +2902,114 @@ drops `_held_dirs` while a finger is still on the glass, so the eventual lift ar
 nothing behind it. Emitting there reports a direction change the player never made, and
 `Game` feeds that into `_set_held_direction`, which cancels an Overclock.
 
+#### The echo is generated from the LIFT, so a held tap escaped the window
+
+The overlay-wide stamp above fixed the cross-pad case and left a third bug behind it: the
+double turn came back, along with phantom slowdowns and *"I have to press pause twice"*.
+
+**One cause, and it is a timing gap rather than a routing one.** The stamp was taken on the
+touch **press**, and the window was 250ms. Measured on the live page with a realistic 450ms
+thumb rest:
+
+```
+touchstart@10388   touchend@10871   mousedown@10871
+```
+
+The browser generates its echo from the **lift**, so it arrives **483ms after the press** —
+outside any press-anchored window still short enough to be safe. **Every press held longer
+than `ECHO_WINDOW_MS` therefore escaped the guard entirely** and was taken for a genuine
+click. That is the double turn, the phantom slowdown it expires into on a straight corridor
+(§5.2), and the pause that toggles straight back off, all from one gap.
+
+**The earlier fix appeared to work only because the probe held for 120ms.** A tap that brief
+is not what a thumb does, and the instrument's unrealistic hold is what hid the bug from its
+own measurement — the tool agreeing with the code because both were wrong about the same
+thing.
+
+**So the stamp is refreshed by every touch event, press and release alike.** What the window
+must then cover is only the gap from the lift, which is a few milliseconds however long the
+finger stayed down; the hold's length stops mattering, which is the property being bought.
+`ECHO_WINDOW_MS` is 600 rather than something tight against the measurement, because the
+cost is asymmetric: too short and a real tap fires twice, too long and a genuine mouse click
+is ignored for a fraction of a second *on a device that has just delivered a touch*.
+
+> **`ShellTest`'s first version of this assertion could not fail**, which is the same trap
+> §9d already records one paragraph up. It aged the stamp *after* the release — but the
+> release re-stamps, so the echo landed inside the window however the window was measured,
+> and the check passed against the very bug it was named for. The hold has to be modelled
+> between the press and the release. Verified by restoring the press-only stamp: it fails at
+> `turns 2`, which is the bug exactly.
+
+### Pause and settings are one control
+
+They were two, and on a phone that is a **17 CSS px cog beside a 72px pad** — the cog also
+still carrying the gear *character* that `MainMenu` had already abandoned for drawn polygons,
+so it rendered as a tofu box. Two targets in one corner, one of them unhittable and the other
+doing half the job. Worse, the cog's whole rect sat **inside the pause pad**, which is added
+later and won every tap.
+
+**Pausing now opens the settings panel.** The game is held, and the things a held game is for
+— volume, controls, leaving — are on it. CLOSE resumes, which is the one press it always was.
+It costs desktop nothing, since `ESC` already reaches the same method, and it removes the only
+reason the in-game cog existed on a phone; the cog stays for a mouse and stands down whenever
+the pads are up.
+
+**QUIT TO MENU lives there too**, and it is the panel's first conditional row — the title
+screen's mount has no run to leave, so the row would be a button that either does nothing or
+re-enters the screen the player is already on. The panel **reports** the press through
+`quit_to_menu` and `Game` re-emits `run_dismissed`, the same signal the end-of-run summary
+uses, because owning the mode swap is `Shell`'s job.
+
+### The menu's buttons were sized for a desktop too
+
+The third feature caught by the viewport not being the screen. Measured on the 828x295 phone,
+the six-button stack rendered **118 x 18 CSS px with 7.9px labels** — under half the 44px
+minimum, on the platform where the menu is hardest to use.
+
+**One column cannot be rescued by tuning, and the arithmetic is not close:** six buttons at
+44px need **895 of the viewport's 900 units**. No separation tweak and no dropped hint fits
+them. What a phone actually has is *width* — 2526 units against 900 — and a single column
+spends none of it.
+
+So the row is a **grid** that wraps into as many columns as the band needs, and the phone
+shows a **reduced set**: the three ways to start a run plus the board. `MARKER` is a cosmetic
+choice made once, `WATCH TRAILER` is a reel nobody opens on a phone they came to play on, and
+`QUIT` does nothing meaningful in a browser tab. They are named rather than counted, so adding
+a button later cannot silently push a different one off.
+
+**The leaderboards were unreachable on a phone, not merely hidden.** Below
+`TWO_COLUMN_MIN_WINDOW_WIDTH` the panel is switched off with no other way in. A `LEADERBOARD`
+button now opens the **same panel** re-parented into a scrim — not a second board, which would
+be the parallel-array trap (§6) with the off-screen copy the one that rots. It is rebuilt at
+the screen's scale on the way in and back at 1.0 on the way out.
+
+> **Rescale only while the panel is IN the tree.** The rebuild refreshes its rows, which reads
+> the `Leaderboard` autoload through `get_node_or_null` — an *error* on a detached node rather
+> than a null, which would put a red line in `logs/errors.log` on every open.
+
+**A `PanelContainer` sizes to its CONTENTS and ignores an offset smaller than they need.** The
+settings card's computed height said 676 and it laid out at **783**, running off the bottom
+with CLOSE past the screen edge — the §8c overrun in a second place. The fix is to size the
+*rows*, from a **measured** fixed cost (275, broken down as heading 95, spacers 14 and card
+margins 164) rather than an estimated one, and to give the decorative `PANEL_RISE` back
+exactly as far as any remaining overflow requires.
+
+> **Guarding a degenerate viewport is not enough; guard the SCALE.** A headless run reports a
+> stretch scale of **0.04 on a 64x64 dummy** — finite, comfortably above any near-zero check,
+> and meaningless. Worse, a `Window` reports a plausible 1600x900 visible rect while its
+> transform is still the dummy's, so a size check passes and the scale is fiction: measured,
+> that produced **1100-unit buttons** in the harness while every assertion still read as
+> plausible. The bound is on the scale itself (0.15–8.0), below any real device and far above
+> the dummy.
+
+> **A harness cannot change the window width**, so which buttons a phone hides is not
+> assertable headlessly (`window_set_size` is ignored by the dummy `DisplayServer`, §12) —
+> `MenuShot`'s phone frame covers it. What *is* asserted is the sizing, driven through the
+> menu's own path with the scale forced: **recomputing the numbers in the test asserts the
+> arithmetic against itself** and passes even when the constants are wrong. Verified by
+> reverting to the flat desktop sizing, where the checks fail at `20.3 CSS px` and
+> `7.9 CSS px` — the measurements that started this.
+
 ### The viewport is not the screen, and three bugs came out of that
 
 `stretch/mode` is `canvas_items` with `aspect="expand"`, so the viewport height is pinned at
@@ -3631,9 +3739,9 @@ Six harnesses, each answering a different question:
 | Harness | Question it answers |
 |---|---|
 | `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count, and the marker shape table -- that every entry points forward and is longer than it is wide, that ids are unique, that an unknown id falls back to the arrow, and that the choice never moves the racer. 544 assertions. |
-| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording, and that every marker shape builds a closed, outward-wound solid inside its ring, and that the steering pads stand down while an upgrade pick is open while the pause pad stays up. 209 assertions. |
+| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording, and that every marker shape builds a closed, outward-wound solid inside its ring, that the steering pads stand down while an upgrade pick is open while the pause pad stays up, and that a pause press both pauses AND opens the settings panel, that closing it resumes, that the cog stands down while the pads are up, and that QUIT TO MENU reports run_dismissed rather than tearing the run down itself. 215 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide, and that one real touch tap -- driven with the emulated mouse event a phone sends after it -- is exactly one turn and one held-direction change per edge -- including when that echo lands on a DIFFERENT pad, which is what a browser really sends -- that an unmatched release emits nothing, and that the pause pad clears the settings cog at two viewport sizes and stays above the 44px tap minimum on a phone. 96 assertions. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide, and that one real touch tap -- driven with the emulated mouse event a phone sends after it -- is exactly one turn and one held-direction change per edge -- including when that echo lands on a DIFFERENT pad, which is what a browser really sends -- that an unmatched release emits nothing, that a HELD tap -- the case a press-anchored echo window could not survive -- is still one turn, that the pause pad clears the settings cog at two viewport sizes and stays above the 44px tap minimum on a phone, and that the menu's own buttons and labels clear that minimum on glass. 104 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 22 assertions. |
 | `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 105 assertions. |
 

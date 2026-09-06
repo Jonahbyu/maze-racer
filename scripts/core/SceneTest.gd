@@ -736,9 +736,42 @@ func _check_pause(game) -> void:
 
 	# The settings cog is a PAUSE-screen control: on a live corridor it would be
 	# a mouse target sitting over the thing the player is steering through.
+	# Shown only when the PADS ARE NOT UP -- on a phone the pause pad opens the
+	# panel itself, and the cog measured 17 CSS px in the corner that pad owns.
 	check("paused: the settings cog is shown",
 		game._settings_cog != null and game._settings_cog.visible)
 
+	# PAUSE AND SETTINGS ARE ONE CONTROL.
+	#
+	# A pause press opens the panel, because on a phone there is no cog to
+	# reach afterwards -- it was a 17px tofu box inside the pause pad's own
+	# rect. Asserted through _on_pause_input, which is what BOTH the key and
+	# the pad call, so the two cannot diverge on it.
+	game._set_paused(false)
+	game._close_settings()
+	game._on_pause_input()
+	check("a pause press pauses AND opens the panel",
+		game.phase == game.Phase.PAUSED and game.settings_open(),
+		"phase %d panel %s" % [game.phase, str(game.settings_open())])
+
+	# CLOSE has to resume, or the player is left on a held corridor with the
+	# panel gone and nothing offering a way back.
+	game._resume_from_settings()
+	check("closing the panel resumes the run",
+		game.phase == game.Phase.RACING and not game.settings_open(),
+		"phase %d panel %s" % [game.phase, str(game.settings_open())])
+
+	# The cog stands down when the pads are up, since pause now does its job.
+	if game._touch != null:
+		var was: bool = game._touch.visible
+		game._touch.visible = true
+		game._set_paused(true)
+		check("the cog stands down while the pads are up",
+			game._settings_cog != null and not game._settings_cog.visible)
+		game._set_paused(false)
+		game._touch.visible = was
+
+	game._set_paused(true)
 	_check_pause_settings(game)
 
 	game._set_paused(false)
@@ -788,6 +821,24 @@ func _check_pause_settings(game) -> void:
 	check("a pause press closes the panel first", not game.settings_open())
 	check("...and does NOT resume the game",
 		game.phase == game.Phase.PAUSED, str(game.phase))
+
+	# QUIT TO MENU reports to Shell rather than tearing the run down here --
+	# the same run_dismissed the end-of-run summary uses, because owning the
+	# mode swap is Shell's job and a Game that freed itself mid-signal is the
+	# ordering that goes wrong. A harness loading Game.tscn bare never connects
+	# it, which is exactly why this must be a signal and not a call.
+	game._open_settings()
+	var quit_panel = game._settings_panel
+	check("the in-game panel offers a way out",
+		quit_panel != null and bool(quit_panel.allow_quit))
+	var dismissed := {"n": 0}
+	var on_dismiss := func() -> void: dismissed["n"] += 1
+	game.run_dismissed.connect(on_dismiss)
+	game._on_quit_to_menu()
+	check("quit to menu reports run_dismissed", int(dismissed["n"]) == 1,
+		"emitted %d" % dismissed["n"])
+	check("quit to menu closes the panel", not game.settings_open())
+	game.run_dismissed.disconnect(on_dismiss)
 
 	# Still paused, so the next press is the ordinary resume.
 	game._open_settings()

@@ -9,6 +9,17 @@ var _passed := 0
 var _failed := 0
 
 
+# How long a modelled thumb rests on a pad before lifting, in ms. Comfortably
+# longer than TouchControls.ECHO_WINDOW_MS, because the whole point is that the
+# hold's LENGTH must not matter.
+const ECHO_HOLD_MS := 1500
+
+# The gap between the touch RELEASE and the browser's synthesized mousedown.
+# Measured on production as the same millisecond; a few ms here keeps the check
+# honest about jitter without pretending the gap is large.
+const ECHO_LIFT_GAP_MS := 12
+
+
 func _init() -> void:
 	print("=== ShellTest ===")
 	_go.call_deferred()
@@ -479,6 +490,56 @@ func _go() -> void:
 				int(seen["turns"]) == 1 and int(seen["reverses"]) == 0,
 				"turns %d reverses %d" % [seen["turns"], seen["reverses"]])
 
+			# A HELD TAP, which is what a thumb actually does.
+			#
+			# This is the case every earlier assertion here missed, and the
+			# miss shipped: they fire touchstart and the echo back to back, so
+			# the echo always landed inside the window no matter how the window
+			# was measured. A real press RESTS on the pad first.
+			#
+			# Measured on the live page with a realistic 450ms hold:
+			#   touchstart@10388  touchend@10871  mousedown@10871
+			# The echo arrives 483ms after the press, because the browser
+			# generates it from the LIFT. A window measured from the press has
+			# to cover the whole hold, and no window short enough to be safe
+			# can -- so every press held longer than it escaped the guard and
+			# was taken for a genuine click. That is the double turn, the
+			# phantom slowdown behind it, and the pause that toggles straight
+			# back off, all from one cause.
+			#
+			# The stamp is refreshed by the touch RELEASE, so what the window
+			# must cover is only the gap from the lift. Held time is then
+			# irrelevant, which is what this asserts: the hold below is far
+			# longer than ECHO_WINDOW_MS.
+			pads.clear_held()
+			seen["turns"] = 0
+			seen["reverses"] = 0
+			pads._on_pad_input(pads._pads["left"], _touch_event(true),
+				func() -> void: pads._steer(-1), -1)
+			# The thumb RESTS, then lifts, and only then does the echo arrive.
+			#
+			# The hold is modelled by ageing the stamp between the press and
+			# the release, which is what a long press does to it. It must be
+			# aged HERE and not after the release: the release re-stamps, so
+			# winding the clock back afterwards puts the echo inside the window
+			# no matter how the window is measured -- and an assertion written
+			# that way passes against the very bug it is named for. Verified by
+			# restoring ECHO_WINDOW_MS to 250, where this check must fail.
+			pads._touch_at_ms -= ECHO_HOLD_MS
+			pads._on_pad_input(pads._pads["left"], _touch_event(false),
+				func() -> void: pass, -1)
+			# The release re-stamped from `now`, so age it again by the gap the
+			# browser actually leaves between the lift and its synthesized
+			# mousedown. Measured on production: the same millisecond. A guard
+			# that covers this passes; the 250ms press-stamped window did not.
+			pads._touch_at_ms -= ECHO_LIFT_GAP_MS
+			pads._on_pad_input(pads._pads["left"], _mouse_event(true),
+				func() -> void: pads._steer(-1), -1)
+			pads._on_pad_input(pads._pads["left"], _mouse_event(false),
+				func() -> void: pass, -1)
+			check("a HELD tap is still one turn",
+				int(seen["turns"]) == 1 and int(seen["reverses"]) == 0,
+				"turns %d reverses %d" % [seen["turns"], seen["reverses"]])
 			pads.held_direction_changed.disconnect(counter)
 			pads.clear_held()
 
@@ -613,6 +674,7 @@ func _go() -> void:
 		int(shell.mode) == Shell.Mode.MENU, "mode %d" % int(shell.mode))
 
 	_check_leaderboard_panel(shell)
+	_check_menu_buttons(shell)
 	_check_name_prompt(shell)
 
 	_finish()
@@ -633,6 +695,111 @@ func _go() -> void:
 # A gate that fired without a board to post to would make the desktop build
 # unplayable for a feature it does not have -- and it would fire in every
 # harness, so this is asserted rather than assumed.
+# The menu's buttons must be reachable with a THUMB, not merely present.
+#
+# The viewport is not the screen (section 9d), and this is the third feature
+# caught by it. Measured before the fix, the six-button stack rendered
+# 118 x 18 CSS px with 7.9px labels on an 828x295 phone -- under half the 44px
+# both Apple and Google publish, on the one platform the menu is hardest to use.
+#
+# Driven through _size_buttons at two viewport sizes, because the wide case
+# passes trivially: on a desktop the scale is 1.0 and every derived number
+# reduces to the constant it always was, so a broken derivation would be
+# invisible if only one size were tested. Same reason the minimap and the
+# mirror are both asserted at two sizes.
+func _check_menu_buttons(shell) -> void:
+	shell.show_menu()
+	var menu = shell._current
+	if menu == null:
+		check("the menu exists for the button-size check", false)
+		return
+
+	# A desktop window: one column, the sizes this menu has always drawn.
+	#
+	# Note this reads the HEADLESS viewport, whose stretch scale is meaningless
+	# -- a 64x64 dummy reporting 0.04. _view_scale is guarded against exactly
+	# that and returns 1.0, so what this asserts is that the guard HOLDS: a
+	# harness must get desktop numbers, not numbers inflated 25x. That guard is
+	# not a detail. Without it every size on this screen is derived from a
+	# fiction, and the assertions would still look plausible.
+	menu.size = Vector2(1600, 900)
+	menu._size_buttons()
+	var wide: Vector2 = menu._buttons[0].custom_minimum_size
+	# At scale 1.0 a button is BUTTON_GLASS_PX tall, since a viewport unit and a
+	# screen pixel are the same thing there. It must still clear the tap
+	# minimum, which is the property that actually matters on every platform.
+	check("a desktop button clears the tap minimum",
+		wide.y >= MainMenu.MIN_TAP_CSS_PX,
+		"%.1f, minimum %.1f" % [wide.y, MainMenu.MIN_TAP_CSS_PX])
+	check("a dummy viewport does not inflate the buttons",
+		wide.y <= MainMenu.BUTTON_HEIGHT_MAX,
+		"%.1f, max %.1f" % [wide.y, MainMenu.BUTTON_HEIGHT_MAX])
+
+	# Every button that is SHOWN has to clear the tap minimum once the viewport
+	# scale is applied. The grid is what the player presses; a button hidden on
+	# a phone is not a target and is excluded rather than being sized for one.
+	var grid: GridContainer = menu._button_grid
+	check("the menu lays its buttons out in a grid", grid != null)
+
+	var shown := 0
+	for button in menu._buttons:
+		if button.visible:
+			shown += 1
+	check("the menu shows buttons at all", shown > 0, "shown %d" % shown)
+
+	# THE PHONE CASE, which is the one that broke.
+	#
+	# Driven through the menu's OWN sizing path with the scale forced, never by
+	# recomputing the numbers here. A recomputation asserts the arithmetic
+	# against itself: zeroing MIN_TAP_CSS_PX moves both sides of the comparison
+	# together and the check still passes, which is exactly what it did before
+	# this was rewritten. Reading back what the menu actually produced is the
+	# only version that fails when the sizing is wrong.
+	#
+	# The desktop case above passes trivially -- at scale 1.0 every derived
+	# number equals the constant it came from -- so this is the half that has to
+	# be driven at a real phone's scale.
+	var phone_scale := 0.328   # measured: an 828x295 canvas
+	menu.scale_override = phone_scale
+	menu._size_buttons()
+	var tall: Vector2 = menu._buttons[0].custom_minimum_size
+	check("a phone button clears the tap minimum ON GLASS",
+		tall.y * phone_scale >= MainMenu.MIN_TAP_CSS_PX - 0.01,
+		"%.1f CSS px, minimum %.1f" % [tall.y * phone_scale,
+			MainMenu.MIN_TAP_CSS_PX])
+
+	# ...and the label with it: 24 units was 7.9 CSS px on that same screen.
+	var label_px: float = float(menu._buttons[0].get_theme_font_size("font_size"))
+	check("a phone button label is readable ON GLASS",
+		label_px * phone_scale >= 12.0,
+		"%.1f CSS px" % (label_px * phone_scale))
+
+	# NOT asserted here: that a phone shows the reduced button set. That rule
+	# keys off the WINDOW's width, which a headless harness cannot change --
+	# window_set_size is ignored by the dummy DisplayServer (section 12) -- so
+	# any check of it would compare a number against itself and pass whatever
+	# the code did. MenuShot's phone frame is what covers it, and it is a
+	# rendered frame precisely because this is not reachable from here.
+
+	menu.scale_override = -1.0
+	menu._size_buttons()
+
+	# The grid must not run off the bottom of the viewport, which is the failure
+	# the summary panel already records: the best-looking layout in the game
+	# with its last row past the screen edge.
+	#
+	# Bounded against the height the buttons ACTUALLY got rather than against
+	# ROW_BOTTOM_LIMIT, which is a desktop band: on a real phone the tap floor
+	# deliberately wins over the band, because a stack that runs slightly long
+	# is recoverable where a row of 18px targets is not pressable at all. What
+	# must always hold is that the grid fits the rows it chose.
+	if grid != null:
+		var rows_fit: float = MainMenu.ROW_TOP + wide.y * float(shown) 			+ MainMenu.SEPARATION * float(max(shown - 1, 0))
+		check("the menu button grid is no taller than its rows",
+			grid.offset_bottom <= rows_fit + 1.0,
+			"ends %.0f, rows need %.0f" % [grid.offset_bottom, rows_fit])
+
+
 func _check_name_prompt(shell) -> void:
 	shell.show_menu()
 	var menu = shell._current

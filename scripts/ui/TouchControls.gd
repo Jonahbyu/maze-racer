@@ -118,15 +118,23 @@ const ARROW_H_FRAC := 0.44
 
 const MARGIN := 18.0
 
-# How long after a real touch a mouse event on the same pad is treated as
-# that touch's emulated echo rather than a click.
+# How long after a real touch a mouse event is treated as that touch's
+# emulated echo rather than a genuine click.
 #
-# The echo is generated during the same input flush as the touch, so it is
-# always a few milliseconds at most. This is wide enough to be safe on a slow
-# frame and far too short for a human to produce a genuine click on the same
-# pad in that time -- and on a desktop, where no touch ever arrives, the
-# window is never open at all.
-const ECHO_WINDOW_MS := 250
+# Measured on the live page, the browser emits its synthesized mousedown in the
+# same millisecond as touchend -- but the stamp is refreshed by BOTH touch
+# events, so what this window has to cover is only the gap from the lift, not
+# from the press. That gap is a few milliseconds.
+#
+# 600 rather than something tight against the measurement, because the cost is
+# asymmetric and both directions were checked. Too SHORT and a real tap fires
+# twice, which is the bug this exists to stop -- a second turn, or a pause that
+# toggles straight back off. Too LONG and a genuine mouse click is ignored for
+# an extra fraction of a second, but only on a device that has just delivered a
+# touch, where a mouse click within 600ms of a finger lift is not a thing that
+# happens. On a desktop no touch ever arrives, so the window is never open and
+# the mouse path is untouched.
+const ECHO_WINDOW_MS := 600
 
 var _pads: Dictionary = {}
 
@@ -413,8 +421,28 @@ func _on_pad_input(pad: Panel, event: InputEvent, handler: Callable,
 	if event is InputEventScreenTouch:
 		pressed = event.pressed
 		released = not event.pressed
-		# Stamp this pad as just-touched, so the mouse event Godot synthesizes
-		# from this very touch is recognised as an echo below and dropped.
+		# Stamp on EVERY touch event, press and release alike, so the mouse
+		# event synthesized from this touch is recognised as an echo below.
+		#
+		# Stamping only the PRESS is what made this fail, and it failed in
+		# proportion to how long the player held the pad. Measured on the live
+		# page with a realistic 450ms thumb rest:
+		#
+		#   touchstart@10388   touchend@10871   mousedown@10871
+		#
+		# The browser emits the echo from the LIFT, so it lands 483ms after the
+		# press -- outside any window measured from the press that is still
+		# short enough to be safe. Every hold longer than ECHO_WINDOW_MS
+		# therefore escaped the guard entirely and was taken for a real click:
+		# a second turn on every deliberate press, and a pause that toggled
+		# straight back off, which reads as "I have to press pause twice".
+		#
+		# The earlier fix appeared to work only because the probe held for
+		# 120ms. A tap that brief is not what a thumb does.
+		#
+		# Stamped from the release, the window measures the gap the echo
+		# actually has to cross, which is a few milliseconds however long the
+		# finger stayed down.
 		#
 		# A TIMESTAMP rather than a sticky flag, and both simpler schemes were
 		# tried and are wrong. Clearing the flag on the touch release lets the
@@ -422,9 +450,7 @@ func _on_pad_input(pad: Panel, event: InputEvent, handler: Callable,
 		# branch a second time and emit held_direction_changed twice. Never
 		# clearing it makes the pad permanently deaf to a real mouse, which
 		# breaks the pads on desktop, where they are the only way to test this
-		# without a phone in hand. The echo is generated from the touch during
-		# the same input flush, so it is always within a few ms; a genuine
-		# human click never lands that close to a finger press on the same pad.
+		# without a phone in hand.
 		_touch_at_ms = Time.get_ticks_msec()
 	elif event is InputEventMouseButton \
 			and event.button_index == MOUSE_BUTTON_LEFT:

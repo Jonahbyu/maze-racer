@@ -101,6 +101,28 @@ func _on_frame() -> void:
 					game._upgrade_screen.present(game.upgrades, 3)
 				elif _frame >= 6:
 					_capture("touch_04_cards")
+					_frame = 0
+					_stage = 4
+		4:
+			# THE PAUSE SCREEN AT PHONE SIZE.
+			#
+			# Pause and settings are ONE control now (section 9d): the pause pad
+			# opens the panel, because the in-game cog was a 17 CSS px tofu box
+			# sitting inside that pad's own rect. This frame is the only way to
+			# see whether the panel that replaced it is actually usable on a
+			# handset -- its rows, its text and the QUIT TO MENU it now carries
+			# are all sized for a desktop mount by default.
+			var g2 = _shell._current
+			if g2 != null:
+				if not g2.settings_open():
+					g2._upgrade_screen.dismiss()
+					g2.phase = g2.Phase.RACING
+					# Through the real input path, so this shoots what a thumb
+					# on the pad actually produces rather than a state built by
+					# hand for the camera.
+					g2._on_pause_input()
+				elif _frame >= 6:
+					_capture("touch_05_paused")
 					print("RESULT: PASS")
 					quit(0)
 

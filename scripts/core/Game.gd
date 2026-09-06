@@ -313,6 +313,8 @@ func _build_ui() -> void:
 	# would be a mouse target over the thing the player is steering through.
 	_settings_cog = _make_settings_cog()
 	ui_root.add_child(_settings_cog)
+	# After add_child, so the icon inherits the button's final rect.
+	_build_cog_icon(_settings_cog)
 
 	# Added LAST so the pads sit above the HUD and the upgrade cards in draw
 	# order. They are transparent panels over a corner each, so what matters is
@@ -878,6 +880,19 @@ func _on_pause_input() -> void:
 		return
 	if phase == Phase.RACING:
 		_set_paused(true)
+		# PAUSE AND SETTINGS ARE ONE CONTROL, not two.
+		#
+		# They were two, and on a phone that is a 17px cog beside a 72px pad --
+		# the cog rendering as a tofu box, which is what "the settings button is
+		# way too small" was actually describing. Two targets in one corner, one
+		# of them unhittable and the other doing half the job.
+		#
+		# Merging them costs nothing on desktop, where ESC already both pauses
+		# and reaches this, and it removes the only reason the in-game cog
+		# existed. Pausing IS opening the panel now: the game is held, and the
+		# things a held game is for -- volume, controls, leaving -- are on it.
+		# CLOSE resumes, which is the one press it always was.
+		_open_settings()
 	elif phase == Phase.PAUSED:
 		_set_paused(false)
 
@@ -1332,14 +1347,17 @@ func _yaw_for(direction: int) -> float:
 func _make_settings_cog() -> Button:
 	var cog := Button.new()
 	cog.name = "SettingsCog"
-	cog.text = "⚙"
+	# NO TEXT. This was the GEAR character, which renders as a tofu box in the
+	# web build -- the failure section 9d records for the touch pads, arriving
+	# by the same route: a character is only as reliable as the font behind it,
+	# and the web export falls back to whatever the device ships. MainMenu's cog
+	# was converted to drawn polygons for exactly this and this one was missed,
+	# so the door to every setting looked broken on the one platform that cannot
+	# be checked from here.
 	cog.tooltip_text = "Settings"
 	cog.visible = false
 	cog.focus_mode = Control.FOCUS_NONE
 	cog.custom_minimum_size = Vector2(MainMenu.COG_SIZE, MainMenu.COG_SIZE)
-	cog.add_theme_font_size_override("font_size", 30)
-	cog.add_theme_color_override("font_color", MainMenu.COL_DIM)
-	cog.add_theme_color_override("font_hover_color", MainMenu.COL_ACCENT)
 
 	for state in ["normal", "hover", "pressed", "focus", "disabled"]:
 		var style := StyleBoxFlat.new()
@@ -1368,6 +1386,50 @@ func _make_settings_cog() -> Button:
 	return cog
 
 
+# The gear icon, drawn rather than typed -- see _make_settings_cog.
+#
+# Geometry is derived from COG_SIZE so the icon tracks the button at any size;
+# a hard-coded span is the section 12 layout-band trap. This mirrors
+# MainMenu._build_cog_icon deliberately: one affordance, one look, in both the
+# places the player meets it.
+func _build_cog_icon(cog: Button) -> void:
+	var icon := Control.new()
+	icon.name = "CogIcon"
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	cog.add_child(icon)
+
+	var mid: float = MainMenu.COG_SIZE * 0.5
+	var r_out: float = MainMenu.COG_SIZE * 0.30
+	var r_in: float = MainMenu.COG_SIZE * 0.21
+	var teeth := 8
+
+	var ring := PackedVector2Array()
+	for i in teeth * 4:
+		var seg := i % 4
+		var r: float = r_out if (seg == 1 or seg == 2) else r_in
+		var a: float = TAU * (float(i / 4) + MainMenu._COG_STEP[seg]) / float(teeth)
+		ring.append(Vector2(mid + cos(a) * r, mid + sin(a) * r))
+
+	var body := Polygon2D.new()
+	body.name = "CogBody"
+	body.polygon = ring
+	body.color = MainMenu.COL_DIM
+	icon.add_child(body)
+
+	var hub := PackedVector2Array()
+	for i in 16:
+		var a := TAU * float(i) / 16.0
+		hub.append(Vector2(mid + cos(a) * MainMenu.COG_SIZE * 0.105,
+			mid + sin(a) * MainMenu.COG_SIZE * 0.105))
+
+	var hole := Polygon2D.new()
+	hole.name = "CogHub"
+	hole.polygon = hub
+	hole.color = MainMenu.COL_CARD
+	icon.add_child(hole)
+
+
 func _open_settings() -> void:
 	if _settings_panel != null:
 		return
@@ -1376,10 +1438,38 @@ func _open_settings() -> void:
 		return
 	var panel := SettingsPanel.new()
 	panel.name = "SettingsPanel"
-	panel.closed.connect(_close_settings)
+	# This mount HAS a run to leave, so it gets the quit row. Set before
+	# add_child -- _ready builds the rows from it.
+	panel.allow_quit = true
+	# CLOSE resumes rather than merely closing, because the panel IS the pause
+	# screen now -- closing it and leaving the game frozen would strand the
+	# player on a held corridor with nothing on screen offering a way back.
+	panel.closed.connect(_resume_from_settings)
+	panel.quit_to_menu.connect(_on_quit_to_menu)
 	_settings_panel = panel
 	ui_root.add_child(panel)
 	panel.focus_first()
+
+
+# Leave the run and return to the title screen.
+#
+# Reported to Shell rather than torn down here, through the SAME signal the
+# end-of-run summary already uses: owning the mode swap is Shell's whole job,
+# and Game freeing itself mid-frame while its own panel is still emitting is
+# exactly the ordering that goes wrong. A harness that loads Game.tscn bare
+# simply never connects it, which is why this cannot be a direct call.
+func _on_quit_to_menu() -> void:
+	_close_settings()
+	emit_signal("run_dismissed")
+
+
+# Close the panel AND resume. Only for the panel's own CLOSE button -- the
+# internal _close_settings is still the plain teardown, which _set_paused needs
+# on the way out or the two would call each other.
+func _resume_from_settings() -> void:
+	_close_settings()
+	if phase == Phase.PAUSED:
+		_set_paused(false)
 
 
 func _close_settings() -> void:
@@ -1405,12 +1495,22 @@ func _set_paused(on: bool) -> void:
 	if on:
 		phase = Phase.PAUSED
 		_minimap.blurred = true
+		# The cog stands down when the pads are up.
+		#
+		# On a phone it measured 17 CSS px -- a third of its 52px rect, because
+		# the viewport is not the screen (section 9d) -- and it rendered as a
+		# tofu box, since this one was never converted from the glyph the menu's
+		# cog abandoned. It also sat in the corner the pause pad owns. Pause now
+		# opens the panel itself, so the cog is redundant exactly where it was
+		# broken, and stays useful on desktop where a mouse wants a target.
 		if _settings_cog != null:
-			_settings_cog.visible = true
+			_settings_cog.visible = not (_touch != null and _touch.visible)
 		# Ducked, not stopped. Music continuing quietly is what says the game is
 		# held rather than gone, and a volume change keeps the track's position.
 		_music_duck(true)
-		_hud.show_message("PAUSED  -  press ESC or P to resume", Color(0.7, 0.85, 1.0), true)
+		# The panel now carries the way out, so the message no longer names a
+		# key -- on the platform that most needs this there is no ESC to press.
+		_hud.show_message("PAUSED", Color(0.7, 0.85, 1.0), true)
 	else:
 		phase = Phase.RACING
 		_minimap.blurred = false
