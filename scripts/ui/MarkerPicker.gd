@@ -18,6 +18,11 @@
 class_name MarkerPicker
 extends Control
 
+# Preloaded rather than reached through the autoload, because this screen is
+# instantiated by harnesses that have none. The EARNED SET still comes from the
+# autoload when there is one -- see _unlocked().
+const UnlocksScript := preload("res://scripts/core/Unlocks.gd")
+
 signal closed()
 
 const COL_ACCENT := MainMenu.COL_ACCENT
@@ -65,24 +70,13 @@ const PANEL_SIZE := Vector2(760, 830)
 # asked for, and hiding the colours that make it visible would be pretending to
 # offer a choice while quietly removing its consequences. The preview shows the
 # state colours instead, so the cost is visible before it is paid.
-# Named so a tool or a test can ask for a specific swatch without restating its
-# value. MarkerPickerShot did restate one, got it wrong, and shot a white marker
-# while reporting success.
-const SWATCH_WHITE := Color(1.0, 1.0, 1.0)
-const SWATCH_LIME := Color(0.55, 0.95, 0.45)
-
-const COLOUR_SWATCHES: Array[Color] = [
-	SWATCH_WHITE,                # the default, first
-	Color(0.30, 0.85, 1.0),      # ice
-	Color(0.25, 0.55, 1.0),      # cobalt
-	Color(0.65, 0.45, 1.0),      # violet
-	Color(1.0, 0.40, 0.85),      # magenta
-	Color(1.0, 0.45, 0.35),      # coral
-	Color(1.0, 0.80, 0.30),      # gold
-	SWATCH_LIME,                 # lime -- maze 3's wall colour
-	Color(0.20, 0.85, 0.65),     # jade
-	Color(0.75, 0.78, 0.85),     # steel
-]
+# The palette itself lives in Tuning.MARKER_COLOURS.
+#
+# It moved there when colours became UNLOCKABLE: Unlocks and RulesTest both read
+# it, and a table living inside a screen would make the rules depend on the UI.
+# It was duplicated here as a bare Array[Color] with no ids, which a tool then
+# had to address by restating a literal -- MarkerPickerShot did exactly that,
+# got the value wrong, and shot a white marker while reporting success.
 
 const SWATCH_SIZE := Vector2(52, 40)
 
@@ -112,6 +106,10 @@ var _colour: Color = PlayerMarker.COL_ARROW
 var _state_clock := 0.0
 var _state_label: Label = null
 var _preview_state: Racer = null
+# Seconds left showing a locked entry's requirement. While this is running the
+# state label is given over to it, because a player who just pressed a locked
+# button wants to know why far more than they want the scrape demo.
+var _locked_hold := 0.0
 
 
 func _ready() -> void:
@@ -277,18 +275,18 @@ func _build_decal_grid() -> Control:
 # the colour itself.
 func _build_swatches() -> Control:
 	var grid := GridContainer.new()
-	grid.columns = min(10, max(COLOUR_SWATCHES.size(), 1))
+	grid.columns = min(10, max(Tuning.MARKER_COLOURS.size(), 1))
 	grid.add_theme_constant_override("h_separation", 8)
 	grid.add_theme_constant_override("v_separation", 8)
 
-	for i in COLOUR_SWATCHES.size():
+	for i in Tuning.MARKER_COLOURS.size():
 		var button := Button.new()
 		button.custom_minimum_size = SWATCH_SIZE
 		button.focus_mode = Control.FOCUS_ALL
 		button.tooltip_text = "Marker colour"
 		for state in ["normal", "hover", "pressed", "focus", "disabled"]:
 			var style := StyleBoxFlat.new()
-			style.bg_color = COLOUR_SWATCHES[i]
+			style.bg_color = _swatch(i)
 			style.set_corner_radius_all(6)
 			style.set_border_width_all(3)
 			style.border_color = Color(0.2, 0.3, 0.45)
@@ -327,6 +325,11 @@ func _process(delta: float) -> void:
 # actually draws.
 func _advance_state_preview(delta: float) -> void:
 	if _marker == null:
+		return
+
+	# A locked message owns the label while it lasts.
+	if _locked_hold > 0.0:
+		_locked_hold -= delta
 		return
 	_state_clock = fmod(_state_clock + delta, STATE_CYCLE_SECONDS * 3.0)
 	var phase := int(_state_clock / STATE_CYCLE_SECONDS)
@@ -465,18 +468,27 @@ func _show_shape() -> void:
 # live rather than leaving that to the label above it alone.
 func _refresh_buttons() -> void:
 	for i in _buttons.size():
-		_mark_selected(_buttons[i], i == _index)
+		_mark_selected(_buttons[i], i == _index, _shape_locked(i))
 
 	for i in _decal_buttons.size():
-		_mark_selected(_decal_buttons[i], i == _decal_index)
+		_mark_selected(_decal_buttons[i], i == _decal_index, _decal_locked(i))
 
 	# The live swatch is marked by its BORDER, never by its fill -- the fill is
 	# the colour being offered, so changing it would misreport the choice.
 	for i in _swatches.size():
-		var slit: bool = COLOUR_SWATCHES[i].is_equal_approx(_colour)
+		var slit: bool = _swatch(i).is_equal_approx(_colour)
+		var slocked: bool = _colour_locked(i)
 		for state in ["normal", "hover", "pressed", "focus", "disabled"]:
 			var sstyle := _swatches[i].get_theme_stylebox(state) as StyleBoxFlat
-			if sstyle != null:
+			if sstyle == null:
+				continue
+			if slocked:
+				# A dark face with the colour as its OUTLINE: the goal is
+				# visible without the swatch reading as available.
+				sstyle.bg_color = Color(0.05, 0.06, 0.09)
+				sstyle.border_color = _swatch(i).darkened(0.45)
+			else:
+				sstyle.bg_color = _swatch(i)
 				sstyle.border_color = Color.WHITE if slit 					else Color(0.2, 0.3, 0.45)
 
 
@@ -491,7 +503,21 @@ func _refresh_buttons() -> void:
 # Selected keeps the accent border in every state; unselected is dim in its
 # resting states and still brightens on hover and focus, so keyboard navigation
 # stays visible without claiming to be a choice.
-func _mark_selected(button: Button, selected: bool) -> void:
+func _mark_selected(button: Button, selected: bool,
+		locked: bool = false) -> void:
+	# Locked entries are SHOWN, dimmed, rather than hidden -- the picker is a
+	# goal list, and a hidden entry gives the player nothing to aim at. The
+	# label stays legible because it names the thing being worked toward.
+	button.add_theme_color_override("font_color",
+		Color(0.42, 0.47, 0.58) if locked else COL_DIM)
+	if locked:
+		for state in ["normal", "hover", "pressed", "focus", "disabled"]:
+			var s2 := button.get_theme_stylebox(state) as StyleBoxFlat
+			if s2 != null:
+				s2.border_color = Color(0.18, 0.22, 0.30)
+				s2.bg_color = Color(0.04, 0.05, 0.08)
+		return
+
 	for state in ["normal", "hover", "pressed", "focus", "disabled"]:
 		var style := button.get_theme_stylebox(state) as StyleBoxFlat
 		if style == null:
@@ -547,6 +573,51 @@ func _make_button(text: String, handler: Callable) -> Button:
 	return button
 
 
+# The colour a swatch offers.
+func _swatch(index: int) -> Color:
+	return Tuning.MARKER_COLOURS[index]["colour"]
+
+
+# Has the player earned this cosmetic?
+#
+# Guarded on the autoload, like every Settings read here: a harness that builds
+# this screen bare has none, and everything must be OFFERED in that case rather
+# than locked -- a missing autoload must never be what stops a tool or a test
+# selecting a shape.
+func _unlocked(id: String) -> bool:
+	var node := get_node_or_null("/root/Unlocks")
+	if node == null:
+		return true
+	return node.is_unlocked(id)
+
+
+func _shape_locked(index: int) -> bool:
+	return not _unlocked(UnlocksScript.id_for(UnlocksScript.KIND_SHAPE,
+		String(Tuning.MARKER_SHAPES[index]["id"])))
+
+
+func _decal_locked(index: int) -> bool:
+	return not _unlocked(UnlocksScript.id_for(UnlocksScript.KIND_DECAL,
+		String(Tuning.MARKER_DECALS[index]["id"])))
+
+
+func _colour_locked(index: int) -> bool:
+	return not _unlocked(UnlocksScript.id_for(UnlocksScript.KIND_COLOUR,
+		String(Tuning.MARKER_COLOURS[index]["id"])))
+
+
+# What a locked entry asks for, printed under the preview.
+#
+# Only for the entry the player is ON, not on every locked button at once:
+# eighteen requirement lines would not fit the card, and the one being
+# considered is the one worth reading.
+func _requirement_for(id: String) -> String:
+	var entry: Dictionary = UnlocksScript.achievement_for(id)
+	if entry.is_empty():
+		return ""
+	return "LOCKED  -  %s" % String(entry.get("requirement", ""))
+
+
 # --- Handlers ----------------------------------------------------------------
 
 # Picking writes immediately rather than on close. There is nothing destructive
@@ -554,6 +625,14 @@ func _make_button(text: String, handler: Callable) -> Button:
 # button plus a discard path for a purely cosmetic choice.
 func _on_pick(index: int) -> void:
 	if index < 0 or index >= Tuning.MARKER_SHAPES.size():
+		return
+	# Refused HERE rather than by disabling the button, because a disabled
+	# button is not the only route in: the picker also restores a SAVED choice
+	# on open, and a save naming a since-locked item must land on the default
+	# rather than on something unearned.
+	if _shape_locked(index):
+		_show_locked(UnlocksScript.id_for(UnlocksScript.KIND_SHAPE,
+			String(Tuning.MARKER_SHAPES[index]["id"])))
 		return
 	_index = index
 	_show_shape()
@@ -565,6 +644,10 @@ func _on_pick(index: int) -> void:
 func _on_pick_decal(index: int) -> void:
 	if index < 0 or index >= Tuning.MARKER_DECALS.size():
 		return
+	if _decal_locked(index):
+		_show_locked(UnlocksScript.id_for(UnlocksScript.KIND_DECAL,
+			String(Tuning.MARKER_DECALS[index]["id"])))
+		return
 	_decal_index = index
 	# Rebuilt rather than mutated, for the reason a shape change is: the decal
 	# is baked into a mesh at build time.
@@ -575,13 +658,30 @@ func _on_pick_decal(index: int) -> void:
 
 
 func _on_pick_colour(index: int) -> void:
-	if index < 0 or index >= COLOUR_SWATCHES.size():
+	if index < 0 or index >= Tuning.MARKER_COLOURS.size():
 		return
-	_colour = COLOUR_SWATCHES[index]
+	if _colour_locked(index):
+		_show_locked(UnlocksScript.id_for(UnlocksScript.KIND_COLOUR,
+			String(Tuning.MARKER_COLOURS[index]["id"])))
+		return
+	_colour = _swatch(index)
 	_show_shape()
 	var settings := _settings()
 	if settings != null:
 		settings.set_marker_colour(_colour)
+
+
+# Tell the player why a press did nothing.
+#
+# A locked button that simply ignores the press reads as a broken button, which
+# is worse than a locked one -- the whole point of showing locked entries is
+# that they are goals rather than absences.
+func _show_locked(id: String) -> void:
+	if _state_label == null:
+		return
+	_state_label.text = _requirement_for(id)
+	_state_label.add_theme_color_override("font_color", Color(1.0, 0.72, 0.25))
+	_locked_hold = 2.5
 
 
 func _on_close() -> void:

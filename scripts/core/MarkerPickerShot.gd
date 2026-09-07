@@ -88,7 +88,7 @@ func _on_frame() -> void:
 			# 0.45) -- so the lookup matched nothing, returned silently, and
 			# the frame came back white while reporting PASS. A literal here is
 			# a transcription of the table, and it went stale immediately.
-			_pick_colour(MarkerPicker.SWATCH_LIME)
+			_pick_colour("lime")
 			_stage = 4
 		4:
 			_capture("04_colour")
@@ -127,18 +127,21 @@ func _pick_decal(id: String) -> void:
 			return
 
 
-func _pick_colour(colour: Color) -> void:
+func _pick_colour(id: String) -> void:
 	if _picker == null:
 		return
-	# Through the picker's own handler, by INDEX, so the tool exercises the
-	# same path a click does rather than writing the setting behind it.
-	for i in MarkerPicker.COLOUR_SWATCHES.size():
-		if MarkerPicker.COLOUR_SWATCHES[i].is_equal_approx(colour):
+	# By ID through the picker's own handler, so the tool exercises the same
+	# path a click does rather than writing the setting behind it -- and names
+	# the swatch rather than restating its value. An earlier version passed a
+	# Color literal that was not in the table at all, matched nothing, returned
+	# silently, and shot a white marker while reporting PASS.
+	for i in Tuning.MARKER_COLOURS.size():
+		if String(Tuning.MARKER_COLOURS[i]["id"]) == id:
 			_picker._on_pick_colour(i)
 			return
 	# A no-match must be LOUD. Returning quietly is what produced a white frame
 	# under a PASS -- the tool agreeing with itself about a colour it never set.
-	push_error("MarkerPickerShot: no swatch matches %s" % colour)
+	push_error("MarkerPickerShot: no swatch named %s" % id)
 
 
 func _remember() -> void:
