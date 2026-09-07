@@ -29,6 +29,7 @@ var _saved := ""
 var _saved_decal := ""
 var _saved_colour := Color.WHITE
 var _remembered := false
+var _saved_earned := {}
 
 # Long enough for the panel to lay out and for the preview's turntable to swing
 # off its start angle, so the shot shows the shape at an angle rather than
@@ -42,6 +43,15 @@ func _init() -> void:
 
 func _setup() -> void:
 	_remember()
+	# The shot must show LOCKED entries AND the unlocked look, and a real
+	# profile is one or the other. Everything is granted for the duration and
+	# _restore puts the earned set back -- a tool must not write the state it is
+	# inspecting (section 12).
+	var unlocks := root.get_node_or_null("Unlocks")
+	if unlocks != null:
+		_saved_earned = unlocks.earned.duplicate()
+		for id in unlocks.lockable_ids():
+			unlocks.earned[id] = true
 	_menu = MainMenu.new()
 	root.add_child(_menu)
 	process_frame.connect(_on_frame)
@@ -92,6 +102,12 @@ func _on_frame() -> void:
 			_stage = 4
 		4:
 			_capture("04_colour")
+			# The SECOND colour, which is the whole point of the two-tone
+			# marker: a fill that is not the mark's own colour.
+			_pick_colour_2("magenta")
+			_stage = 5
+		5:
+			_capture("05_colour_2")
 			_restore()
 			print("RESULT: PASS")
 			quit(0)
@@ -127,6 +143,16 @@ func _pick_decal(id: String) -> void:
 			return
 
 
+func _pick_colour_2(id: String) -> void:
+	if _picker == null:
+		return
+	for i in Tuning.MARKER_COLOURS.size():
+		if String(Tuning.MARKER_COLOURS[i]["id"]) == id:
+			_picker._on_pick_colour_2(i)
+			return
+	push_error("MarkerPickerShot: no swatch named %s" % id)
+
+
 func _pick_colour(id: String) -> void:
 	if _picker == null:
 		return
@@ -154,6 +180,9 @@ func _remember() -> void:
 
 
 func _restore() -> void:
+	var unlocks := root.get_node_or_null("Unlocks")
+	if unlocks != null and _remembered:
+		unlocks.earned = _saved_earned
 	var settings := root.get_node_or_null("/root/Settings")
 	if settings == null or not _remembered:
 		return

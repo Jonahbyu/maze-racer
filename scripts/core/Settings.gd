@@ -18,6 +18,7 @@ signal music_changed(volume: float, muted: bool)
 signal marker_shape_changed(id: String)
 signal marker_decal_changed(id: String)
 signal marker_colour_changed(colour: Color)
+signal marker_colour_2_changed(colour: Color)
 
 const CONFIG_PATH := "user://settings.cfg"
 const SECTION := "controls"
@@ -81,6 +82,11 @@ var marker_decal := Tuning.MARKER_DECAL_DEFAULT
 # Near-white by default: a player who never opens the picker gets exactly the
 # marker the game had before it existed.
 var marker_colour := PlayerMarker.COL_ARROW
+
+# The second marker colour: what fills the decal's cuts. Only visible when a
+# decal other than PLAIN is chosen, since a plain mark has nothing to fill.
+var marker_colour_2: Color = Tuning.marker_colour(
+	Tuning.MARKER_COLOUR_2_DEFAULT)["colour"]
 
 
 func _ready() -> void:
@@ -153,6 +159,15 @@ func set_marker_decal(id: String) -> void:
 	emit_signal("marker_decal_changed", marker_decal)
 
 
+func set_marker_colour_2(colour: Color) -> void:
+	var opaque2 := Color(colour.r, colour.g, colour.b, 1.0)
+	if opaque2.is_equal_approx(marker_colour_2):
+		return
+	marker_colour_2 = opaque2
+	_save()
+	emit_signal("marker_colour_2_changed", marker_colour_2)
+
+
 func set_marker_colour(colour: Color) -> void:
 	# Alpha is not offered: a translucent marker is a marker that is harder to
 	# see, which is the one thing this file must never let a player choose.
@@ -189,6 +204,11 @@ func _load() -> void:
 		PlayerMarker.COL_ARROW.to_html(false)))
 	marker_colour = Color.from_string(hex, PlayerMarker.COL_ARROW)
 	marker_colour.a = 1.0
+	var fallback2: Color = Tuning.marker_colour(
+		Tuning.MARKER_COLOUR_2_DEFAULT)["colour"]
+	marker_colour_2 = Color.from_string(String(config.get_value(
+		SECTION_LOOK, "marker_colour_2", fallback2.to_html(false))), fallback2)
+	marker_colour_2.a = 1.0
 
 
 func _save() -> void:
@@ -200,4 +220,6 @@ func _save() -> void:
 	config.set_value(SECTION_LOOK, "marker_shape", marker_shape)
 	config.set_value(SECTION_LOOK, "marker_decal", marker_decal)
 	config.set_value(SECTION_LOOK, "marker_colour", marker_colour.to_html(false))
+	config.set_value(SECTION_LOOK, "marker_colour_2",
+		marker_colour_2.to_html(false))
 	config.save(CONFIG_PATH)

@@ -1262,6 +1262,11 @@ static func marker_shape(id: String) -> Dictionary:
 # colours instead, so the cost is visible before it is paid.
 const MARKER_COLOUR_DEFAULT := "white"
 
+# Colour 2's default is COBALT rather than white: the two defaults must differ,
+# or a player who unlocks their first decal sees a white pattern on a white mark
+# and concludes the decal is broken. Both are unlocked from the start.
+const MARKER_COLOUR_2_DEFAULT := "cobalt"
+
 const MARKER_COLOURS := [
 	{"id": "white", "label": "WHITE", "colour": Color(1.0, 1.0, 1.0)},
 	{"id": "ice", "label": "ICE", "colour": Color(0.30, 0.85, 1.0)},

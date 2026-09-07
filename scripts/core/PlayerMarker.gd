@@ -34,6 +34,26 @@ const COL_ARROW := Color(1.0, 1.0, 1.0)
 const COL_CRASH := Color(1.0, 0.25, 0.20)
 const COL_SCRAPE := Color(1.0, 0.72, 0.15)
 
+# The inlay's emission, well under the mark's 3.0.
+#
+# The mark is SHADING_MODE_UNSHADED, so what renders is albedo + emission x
+# energy and anything at the mark's own energy saturates to white -- which is
+# exactly why a decal drawn ON the mark was invisible and had to become a hole.
+# A fill has to sit under that ceiling to read as a second colour rather than as
+# more of the first.
+const INLAY_ENERGY := 1.5
+
+# How far the inlay sits below the mark's top face, and how far its edge is
+# inset from the cut.
+#
+# Both leave a DARK SEAM around every inlay piece. The seam is what makes the
+# pattern legible at any pair of colours -- without it, two bright choices merge
+# into one shape and the decal disappears for the same reason the original patch
+# did. Cheaper and more reliable than trying to guarantee contrast between two
+# colours the player picked independently.
+const INLAY_DROP := 0.012
+const INLAY_INSET := 0.008
+
 # Which shape the inner mark is drawn as, by Tuning.MARKER_SHAPES id.
 #
 # Empty means "ask Settings" -- which is what the game does. It is settable so
@@ -70,10 +90,24 @@ var decal_id := ""
 # existed.
 var player_colour := COL_ARROW
 
+# The SECOND colour: what fills the decal's cuts.
+#
+# The decal used to be a bare hole showing the floor, which is why it could not
+# be washed out by the mark's saturation. Filling it puts that problem back --
+# an inlay at the mark's own emission would blow out to the same white -- so the
+# inlay is drawn DIMMER (INLAY_ENERGY) and the cut is kept slightly wider than
+# the fill, leaving a dark seam between the two. The seam is what guarantees the
+# pattern reads at any pair of colours, including two bright ones.
+#
+# Ignored while the plain decal is selected, since there is nothing to fill.
+var player_colour_2 := Color(0.25, 0.55, 1.0)
+
 var _ring: MeshInstance3D
 var _arrow: MeshInstance3D
 var _ring_material: StandardMaterial3D
 var _arrow_material: StandardMaterial3D
+var _inlay: MeshInstance3D
+var _inlay_material: StandardMaterial3D
 
 # Bobs gently so the marker reads as alive rather than pasted on the floor.
 var _bob := 0.0
@@ -100,6 +134,7 @@ func _resolve_colour() -> void:
 	var settings := get_node_or_null("/root/Settings")
 	if settings != null:
 		player_colour = settings.marker_colour
+		player_colour_2 = settings.marker_colour_2
 
 
 # A flat annulus on the floor. Drawn as a triangle strip between an inner and
@@ -236,6 +271,68 @@ func _build_shape() -> void:
 	_arrow.material_override = _arrow_material
 	_arrow.position.y = 0.06
 	add_child(_arrow)
+
+	_build_inlay(flat, min_z, span, h)
+
+
+# The decal's cuts, filled in the SECOND colour.
+#
+# Built from the same cutters _cut_decal subtracts, intersected with the outline
+# instead -- so the fill is exactly the shape of the hole by construction, and
+# the two can never disagree about where the pattern is.
+#
+# Inset and dropped, leaving a dark seam around every piece. The seam is not
+# decoration: the mark is unshaded and saturates, so two bright colours meeting
+# edge to edge merge into one shape and the pattern vanishes -- the failure that
+# forced the decal to become a hole in the first place. A seam guarantees the
+# read at any pair of colours the player picks, which no contrast rule between
+# two independent choices can.
+func _build_inlay(flat: PackedVector2Array, min_z: float, span: float,
+		h: float) -> void:
+	var id := _decal_id()
+	if id == Tuning.MARKER_DECAL_DEFAULT:
+		return
+
+	var outline: Array = []
+	for v in flat:
+		outline.append(v)
+	var cuts: Array = Tuning.decal_polygons(id, outline)
+	if cuts.is_empty():
+		return
+
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var emitted := 0
+
+	for cut in cuts:
+		# The part of the cutter that actually lies INSIDE the mark. A cutter
+		# spans the shape (it has to, to cut through it), so using it raw would
+		# draw a bar sticking out both sides.
+		for piece in Geometry2D.intersect_polygons(PackedVector2Array(cut),
+				flat):
+			if piece.size() < 3:
+				continue
+			# Shrunk, to leave the seam. A piece too thin to survive the inset
+			# is dropped rather than drawn as a sliver.
+			for inner in Geometry2D.offset_polygon(piece, -INLAY_INSET):
+				if inner.size() < 3:
+					continue
+				_extrude(st, inner, min_z, span, h - INLAY_DROP)
+				emitted += 1
+
+	if emitted == 0:
+		return
+
+	st.generate_normals()
+	_inlay_material = _make_material(player_colour_2, INLAY_ENERGY)
+
+	_inlay = MeshInstance3D.new()
+	_arrow.add_child(_inlay)
+	# Named AFTER add_child: a name set before entry to the tree is overwritten
+	# by a generated one (section 12, the gate markers).
+	_inlay.name = "Inlay"
+	_inlay.mesh = st.commit()
+	_inlay.material_override = _inlay_material
 
 
 
@@ -445,7 +542,17 @@ func update_state(racer: Racer, delta: float) -> void:
 	if _arrow_material != null:
 		_arrow_material.albedo_color = mark_colour
 		_arrow_material.emission = mark_colour
-	# The decal needs no colour update: it is a HOLE in the mark (see
-	# _cut_decal), so it shows the floor rather than a colour of its own. That
-	# is what makes it hold at every state colour without a second material to
-	# keep in step.
+	# The INLAY follows the state too. It is a real surface now rather than a
+	# hole, so leaving it alone would keep the pattern in its resting colour on a
+	# marker that has gone crash-red -- reading as a stuck patch rather than as
+	# one object changing state. It keeps its own dimmer energy, so the seam
+	# survives.
+	if _inlay_material != null:
+		var inlay_colour := player_colour_2
+		if racer.state == Racer.State.PARKED or racer.scraping:
+			# Deliberately DARKER than the mark rather than the same: two
+			# surfaces at one colour merge, and the shape would lose its pattern
+			# exactly when the player most needs to recognise their own marker.
+			inlay_colour = mark_colour.darkened(0.45)
+		_inlay_material.albedo_color = inlay_colour
+		_inlay_material.emission = inlay_colour

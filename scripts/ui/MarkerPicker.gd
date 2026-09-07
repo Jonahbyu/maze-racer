@@ -101,8 +101,10 @@ var _index := 0
 var _buttons: Array[Button] = []
 var _decal_buttons: Array[Button] = []
 var _swatches: Array[Button] = []
+var _swatches_2: Array[Button] = []
 var _decal_index := 0
 var _colour: Color = PlayerMarker.COL_ARROW
+var _colour_2: Color = PlayerMarker.COL_ARROW
 var _state_clock := 0.0
 var _state_label: Label = null
 var _preview_state: Racer = null
@@ -110,6 +112,8 @@ var _preview_state: Racer = null
 # state label is given over to it, because a player who just pressed a locked
 # button wants to know why far more than they want the scrape demo.
 var _locked_hold := 0.0
+var _colour_2_label: Label = null
+var _colour_2_row: Control = null
 
 
 func _ready() -> void:
@@ -123,6 +127,7 @@ func _ready() -> void:
 	_index = _current_index()
 	_decal_index = _current_decal_index()
 	_colour = _current_colour()
+	_colour_2 = _current_colour_2()
 	_build_scrim()
 	_build_panel()
 	_show_shape()
@@ -179,7 +184,13 @@ func _build_panel() -> void:
 	rows.add_child(_label_row("PATTERN"))
 	rows.add_child(_build_decal_grid())
 	rows.add_child(_label_row("COLOUR"))
-	rows.add_child(_build_swatches())
+	rows.add_child(_build_swatches(1))
+	# The second row is built always but SHOWN only when a decal is chosen: a
+	# plain mark has no cuts to fill, so offering a fill colour for it would be
+	# a control that changes nothing.
+	_colour_2_label = _label_row("PATTERN COLOUR")
+	rows.add_child(_colour_2_label)
+	rows.add_child(_build_swatches(2))
 	rows.add_child(_make_button("CLOSE", _on_close))
 
 
@@ -273,7 +284,7 @@ func _build_decal_grid() -> Control:
 # The colour swatches. Each draws its own colour as its face rather than naming
 # it, because a colour name is a worse answer to "what will this look like" than
 # the colour itself.
-func _build_swatches() -> Control:
+func _build_swatches(which: int) -> Control:
 	var grid := GridContainer.new()
 	grid.columns = min(10, max(Tuning.MARKER_COLOURS.size(), 1))
 	grid.add_theme_constant_override("h_separation", 8)
@@ -291,10 +302,16 @@ func _build_swatches() -> Control:
 			style.set_border_width_all(3)
 			style.border_color = Color(0.2, 0.3, 0.45)
 			button.add_theme_stylebox_override(state, style)
-		button.pressed.connect(_on_pick_colour.bind(i))
-		_swatches.append(button)
+		if which == 2:
+			button.pressed.connect(_on_pick_colour_2.bind(i))
+			_swatches_2.append(button)
+		else:
+			button.pressed.connect(_on_pick_colour.bind(i))
+			_swatches.append(button)
 		grid.add_child(button)
 
+	if which == 2:
+		_colour_2_row = grid
 	return grid
 
 
@@ -420,6 +437,13 @@ func _current_decal_index() -> int:
 	return 0
 
 
+func _current_colour_2() -> Color:
+	var settings := _settings()
+	if settings != null:
+		return settings.marker_colour_2
+	return Tuning.marker_colour(Tuning.MARKER_COLOUR_2_DEFAULT)["colour"]
+
+
 func _current_colour() -> Color:
 	var settings := _settings()
 	if settings != null:
@@ -456,6 +480,7 @@ func _show_shape() -> void:
 	_marker.shape_id = String(shape["id"])
 	_marker.decal_id = String(Tuning.MARKER_DECALS[_decal_index]["id"])
 	_marker.player_colour = _colour
+	_marker.player_colour_2 = _colour_2
 	_pivot.add_child(_marker)
 
 	if _name_label != null:
@@ -472,6 +497,27 @@ func _refresh_buttons() -> void:
 
 	for i in _decal_buttons.size():
 		_mark_selected(_decal_buttons[i], i == _decal_index, _decal_locked(i))
+
+	# The pattern row is only meaningful once there are cuts to fill.
+	var has_decal: bool = String(Tuning.MARKER_DECALS[_decal_index]["id"]) 		!= Tuning.MARKER_DECAL_DEFAULT
+	if _colour_2_label != null:
+		_colour_2_label.visible = has_decal
+	if _colour_2_row != null:
+		_colour_2_row.visible = has_decal
+
+	for i in _swatches_2.size():
+		var lit2: bool = _swatch(i).is_equal_approx(_colour_2)
+		var locked2: bool = _colour_locked(i)
+		for state in ["normal", "hover", "pressed", "focus", "disabled"]:
+			var st2 := _swatches_2[i].get_theme_stylebox(state) as StyleBoxFlat
+			if st2 == null:
+				continue
+			if locked2:
+				st2.bg_color = Color(0.05, 0.06, 0.09)
+				st2.border_color = _swatch(i).darkened(0.45)
+			else:
+				st2.bg_color = _swatch(i)
+				st2.border_color = Color.WHITE if lit2 					else Color(0.2, 0.3, 0.45)
 
 	# The live swatch is marked by its BORDER, never by its fill -- the fill is
 	# the colour being offered, so changing it would misreport the choice.
@@ -655,6 +701,20 @@ func _on_pick_decal(index: int) -> void:
 	var settings := _settings()
 	if settings != null:
 		settings.set_marker_decal(String(Tuning.MARKER_DECALS[index]["id"]))
+
+
+func _on_pick_colour_2(index: int) -> void:
+	if index < 0 or index >= Tuning.MARKER_COLOURS.size():
+		return
+	if _colour_locked(index):
+		_show_locked(UnlocksScript.id_for(UnlocksScript.KIND_COLOUR,
+			String(Tuning.MARKER_COLOURS[index]["id"])))
+		return
+	_colour_2 = _swatch(index)
+	_show_shape()
+	var settings := _settings()
+	if settings != null:
+		settings.set_marker_colour_2(_colour_2)
 
 
 func _on_pick_colour(index: int) -> void:
