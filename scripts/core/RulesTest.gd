@@ -5,6 +5,10 @@
 # test, the rule is in the wrong place (CLAUDE.md section 12).
 extends SceneTree
 
+# Preloaded rather than referenced by class_name: Unlocks is an autoload, so it
+# deliberately has none (see the note in that file).
+const UnlocksScript := preload("res://scripts/core/Unlocks.gd")
+
 var _passed := 0
 var _failed := 0
 
@@ -267,40 +271,40 @@ func _test_marker_decals() -> void:
 # nothing offers is a goal with no reward. Both fail SILENTLY -- the picker just
 # shows a locked square forever -- and neither is visible in a rendered frame.
 func _test_unlocks() -> void:
-	for id in Unlocks.ACHIEVEMENTS:
-		var entry: Dictionary = Unlocks.ACHIEVEMENTS[id]
+	for id in UnlocksScript.ACHIEVEMENTS:
+		var entry: Dictionary = UnlocksScript.ACHIEVEMENTS[id]
 		check("achievement %s has a label" % id,
 			String(entry.get("label", "")) != "")
 		check("achievement %s has a requirement line" % id,
 			String(entry.get("requirement", "")) != "")
 		check("achievement %s grants a real cosmetic" % id,
-			Unlocks.cosmetic_exists(String(entry.get("grants", ""))))
+			UnlocksScript.cosmetic_exists(String(entry.get("grants", ""))))
 
-	for id in Unlocks.lockable_ids():
+	for id in UnlocksScript.lockable_ids():
 		var granting := 0
-		for aid in Unlocks.ACHIEVEMENTS:
-			if String(Unlocks.ACHIEVEMENTS[aid]["grants"]) == id:
+		for aid in UnlocksScript.ACHIEVEMENTS:
+			if String(UnlocksScript.ACHIEVEMENTS[aid]["grants"]) == id:
 				granting += 1
 		check("%s is unlockable at all" % id, granting >= 1)
 		# Two routes to one item makes the picker's requirement line a lie: it
 		# can only name one of them.
 		check("%s has exactly one achievement" % id, granting <= 1)
 
-	var fresh := Unlocks.new()
+	var fresh := UnlocksScript.new()
 
 	# THE DEFAULTS ARE NEVER LOCKED. A saved name that no longer resolves falls
 	# back to these (section 12), so a locked default strands the player with no
 	# marker at all.
 	check("the default shape starts unlocked", fresh.is_unlocked(
-		Unlocks.id_for(Unlocks.KIND_SHAPE, Tuning.MARKER_SHAPE_DEFAULT)))
+		UnlocksScript.id_for(UnlocksScript.KIND_SHAPE, Tuning.MARKER_SHAPE_DEFAULT)))
 	check("the default decal starts unlocked", fresh.is_unlocked(
-		Unlocks.id_for(Unlocks.KIND_DECAL, Tuning.MARKER_DECAL_DEFAULT)))
+		UnlocksScript.id_for(UnlocksScript.KIND_DECAL, Tuning.MARKER_DECAL_DEFAULT)))
 	check("the default colour starts unlocked", fresh.is_unlocked(
-		Unlocks.id_for(Unlocks.KIND_COLOUR, Tuning.MARKER_COLOUR_DEFAULT)))
+		UnlocksScript.id_for(UnlocksScript.KIND_COLOUR, Tuning.MARKER_COLOUR_DEFAULT)))
 
 	# And everything else starts LOCKED. A table that defaulted to unlocked
 	# would make the whole feature invisible while every other check passed.
-	for id in Unlocks.lockable_ids():
+	for id in UnlocksScript.lockable_ids():
 		check("%s starts locked" % id, not fresh.is_unlocked(id))
 
 
@@ -322,7 +326,7 @@ func _test_peak_speed() -> void:
 
 # Achievements are awarded from a finished run.
 func _test_achievement_evaluation() -> void:
-	var u := Unlocks.new()
+	var u := UnlocksScript.new()
 
 	# A run that banked a maze grants the entry-level achievement.
 	var weak := Score.new()
@@ -346,7 +350,7 @@ func _test_achievement_evaluation() -> void:
 
 	# A run that did nothing must not satisfy the "without X" achievements by
 	# vacuous truth -- zero crashes because zero driving.
-	var nothing := Unlocks.new()
+	var nothing := UnlocksScript.new()
 	nothing.evaluate(Score.new(), Upgrades.new(1), 0, 50, false)
 	check("an empty run grants no clean-driving achievement",
 		not nothing.is_unlocked("colour:jade"))
@@ -354,7 +358,7 @@ func _test_achievement_evaluation() -> void:
 		not nothing.is_unlocked("shape:dart"))
 
 	# A locked item is genuinely locked until earned.
-	var fresh := Unlocks.new()
+	var fresh := UnlocksScript.new()
 	check("violet starts locked", not fresh.is_unlocked("colour:violet"))
 	var rich := Score.new()
 	rich.bank_maze(0, "The Grid")

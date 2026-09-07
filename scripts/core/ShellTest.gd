@@ -5,6 +5,10 @@
 # would notice because they all instantiate Game.tscn directly.
 extends SceneTree
 
+# Preloaded rather than referenced by class_name: Unlocks is an autoload, so it
+# deliberately has none (see the note in that file).
+const UnlocksScript := preload("res://scripts/core/Unlocks.gd")
+
 var _passed := 0
 var _failed := 0
 
@@ -660,6 +664,7 @@ func _go() -> void:
 	_check_leaderboard_panel(shell)
 	_check_menu_buttons(shell)
 	_check_name_prompt(shell)
+	_check_unlocks_autoload()
 
 	_finish()
 
@@ -826,6 +831,26 @@ func _check_name_prompt(shell) -> void:
 
 
 # Depth-first search for a button by its label.
+# The Unlocks autoload is REGISTERED and reachable.
+#
+# Leaderboard shipped INERT in every build for weeks because it was never added
+# to project.godot -- `git log -S "Leaderboard="` found it in no commit -- and
+# nothing looked broken, because the panel drew its offline state correctly
+# (section 9b-2).
+#
+# Unlocks fails the same silent way and worse: unlocks would simply never save,
+# which is indistinguishable from not having earned anything. A player could
+# grind for a colour forever.
+func _check_unlocks_autoload() -> void:
+	# Through the ROOT: this harness extends SceneTree, which has no node
+	# lookups of its own.
+	var node: Node = root.get_node_or_null("Unlocks")
+	check("Unlocks is registered as an autoload", node != null)
+	if node != null:
+		check("Unlocks carries its table",
+			node.ACHIEVEMENTS.size() > 0)
+
+
 func _find_button(node: Node, text: String) -> Button:
 	for child in node.get_children():
 		var b := child as Button

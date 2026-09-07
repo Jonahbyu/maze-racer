@@ -30,6 +30,12 @@ Settings="*res://scripts/core/Settings.gd"
 ; docs/plans/leaderboards.md
 Leaderboard="*res://scripts/core/Leaderboard.gd"
 
+; Unlocks outlives Shell's scene swaps for the reason the other three do: it is
+; written by the game (a finished run awards achievements) and read by the menu
+; (the picker decides what to offer), and Shell frees the game on the way back.
+; docs/plans/cosmetic-unlocks.md
+Unlocks="*res://scripts/core/Unlocks.gd"
+
 [debug]
 
 ; The GUI build used by play.ps1 detaches from the console and produces no

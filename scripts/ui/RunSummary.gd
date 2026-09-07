@@ -15,6 +15,10 @@
 class_name RunSummary
 extends Control
 
+# Preloaded rather than reached through the autoload: this screen is built by
+# harnesses that have none, and it only ever reads the table.
+const UnlocksScript := preload("res://scripts/core/Unlocks.gd")
+
 signal dismissed()
 
 # The player named themselves after the run was already posted, so it needs
@@ -72,7 +76,8 @@ func _ready() -> void:
 # screen that reports what those numbers finally came to. Two contradictory
 # accounts of the same run, one of them stale.
 func present(score: Score, upgrades: Upgrades, elapsed: float,
-		died_on: int = -1, hide_while_shown: Array = []) -> void:
+		died_on: int = -1, hide_while_shown: Array = [],
+		new_unlocks: Array = []) -> void:
 	_clear()
 
 	_hidden = []
@@ -163,6 +168,23 @@ func present(score: Score, upgrades: Upgrades, elapsed: float,
 	panel.add_child(_stat("Repeated cells", "%d      -%s" % [
 		score.repeat_cells, format_score(repeat_cost)
 	], COL_BAD if score.repeat_cells > 0 else COL_TEXT))
+
+	# What this run EARNED, shown only when it earned something.
+	#
+	# It belongs here for the reason section 8c gives for showing the
+	# repeat-cell cost: a rule the player cannot see the effect of is a mystery,
+	# not a rule. An unlock announced nowhere is one they find by accident weeks
+	# later, if at all.
+	if not new_unlocks.is_empty():
+		panel.add_child(_spacer(14))
+		panel.add_child(_line("UNLOCKED", 15, Color(1.0, 0.82, 0.3)))
+		panel.add_child(_rule())
+		for aid in new_unlocks:
+			var entry: Dictionary = UnlocksScript.ACHIEVEMENTS.get(aid, {})
+			if entry.is_empty():
+				continue
+			panel.add_child(_stat(String(entry.get("label", "")),
+				String(entry.get("requirement", ""))))
 
 	panel.add_child(_spacer(14))
 

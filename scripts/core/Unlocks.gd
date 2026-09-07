@@ -14,7 +14,13 @@
 # (section 6), music (9c), touch controls (9d) and the marker picker have -- it
 # is absent in every harness that instantiates Game.tscn bare, so every read is
 # guarded rather than assumed.
-class_name Unlocks
+# NO class_name, deliberately. A script whose class_name matches its autoload
+# name fails to parse -- "Class X hides an autoload singleton" -- and the
+# autoload then never loads at all, which reads exactly like forgetting to
+# register it. Music, Settings and Leaderboard all omit it for the same reason.
+#
+# Callers reach the table through the autoload (`Unlocks.ACHIEVEMENTS`) or, in a
+# harness with no autoloads, by preloading this script.
 extends Node
 
 signal unlocked(ids: Array)

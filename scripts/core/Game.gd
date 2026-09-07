@@ -73,6 +73,10 @@ var _minimap: Minimap
 var _rear_view: RearView
 var _quadrant_box: QuadrantBox
 var _upgrade_screen: UpgradeScreen
+# Achievement ids earned by THIS run, for the summary to report. Cleared at
+# every evaluation so a second run cannot inherit the first one's list.
+var _new_unlocks: Array = []
+
 var _run_summary: RunSummary
 var _touch: TouchControls
 
@@ -1655,7 +1659,8 @@ func _on_died() -> void:
 	_hud.clear_message()
 	_upgrade_screen.dismiss()
 	_post_run(true)
-	_run_summary.present(score, upgrades, elapsed, maze_index, _covered_hud())
+	_run_summary.present(score, upgrades, elapsed, maze_index,
+		_covered_hud(), _new_unlocks)
 
 
 func _on_exit_reached() -> void:
@@ -1674,7 +1679,8 @@ func _on_exit_reached() -> void:
 		_hud.clear_message()
 		_upgrade_screen.dismiss()
 		_post_run(false)
-		_run_summary.present(score, upgrades, elapsed, -1, _covered_hud())
+		_run_summary.present(score, upgrades, elapsed, -1,
+			_covered_hud(), _new_unlocks)
 
 
 # Send the finished run to the leaderboard.
@@ -1693,6 +1699,23 @@ func _on_exit_reached() -> void:
 func _post_run(died: bool) -> void:
 	if trailer_seed != 0:
 		return
+
+	# Achievements are awarded HERE and nowhere else, for the reason this
+	# function exists: it is the only point at which a run is genuinely over and
+	# its figures final. Not during play -- an unlock popup over a corridor at 8x
+	# is a distraction placed exactly where section 11.3 says the player has no
+	# attention to spare.
+	#
+	# BEFORE the leaderboard guard, deliberately. That guard returns early when
+	# the autoload is absent, which is every harness and every offline desktop
+	# run -- awarding after it would make unlocks depend on the network being
+	# reachable, which has nothing to do with how the player drove.
+	_new_unlocks.clear()
+	var unlocks := get_node_or_null("/root/Unlocks")
+	if unlocks != null:
+		_new_unlocks = unlocks.evaluate(score, upgrades, maze_index,
+			racer.hp if racer != null else 0, not died)
+
 	var lb := get_node_or_null("/root/Leaderboard")
 	if lb == null:
 		return
