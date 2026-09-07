@@ -3597,6 +3597,74 @@ the ring, so a scrape left the inner mark pure white and a frame with the barrie
 half-drained was pixel-identical to a clean one — on the larger of the two surfaces, and the
 one the trailing camera actually sees. The colour feature and that fix are the same change.
 
+#### Two colours: the mark, and what fills the decal's cuts
+
+**The player picks two colours.** The first is the mark; the second fills the decal's cuts.
+The pattern row is hidden when `PLAIN` is selected, since a plain mark has no cuts to fill.
+
+**A dark seam separates them, and it is the mechanism rather than decoration.** The inlay is
+drawn dimmer than the mark (`INLAY_ENERGY`) and inset from the cut, so a gap of unlit surface
+runs around every piece. Without it, two bright colours meeting edge to edge merge into one
+shape on an unshaded surface — the same saturation failure that forced the decal to become a
+hole. **No contrast rule between two independently chosen colours can prevent that**; a seam
+guarantees the read at any pair.
+
+**The fill is built from the same cutters `_cut_decal` subtracts**, intersected with the
+outline rather than removed from it — so it is exactly the shape of the hole by construction,
+and the two can never disagree about where the pattern is.
+
+**The inlay follows the state colours, darkened rather than matched.** Leaving it alone would
+keep the pattern in its resting colour on a marker that has gone crash-red, reading as a
+stuck patch; matching it would merge the two surfaces exactly when the player most needs to
+recognise their own marker.
+
+**The two defaults differ** — white and cobalt — because identical defaults would draw a
+white pattern on a white mark and read as a broken decal. Both are therefore unlocked from
+the start, and **both must be excluded from the lockable set**: `RulesTest` caught the
+contradiction the moment only one was.
+
+### Maze palettes are the player's to assign, one per maze
+
+**Unlock a colourway by reaching the maze that wears it, then assign any unlocked palette to
+any maze slot.** `MAZE COLOURS` on the menu.
+
+**Whole palettes, never a single hue, and that is the whole safety argument.** A palette is
+six interlocking colours — wall, grid, floor, ambient, fog, emission — and §8 records two
+separate bugs from mixing them wrong: maze 3's green ambient lighting every wall face in the
+same hue as its own neon, and ember's yellow grid driving ambient warm until every wall
+turned milky brown with the floor grid washed out against it. **Both came from DERIVING the
+rest of the palette from one colour**, which is exactly what a per-hue picker would have to
+do. Every entry offered is authored and tuned as a set, so no assignment a player can make
+reproduces either failure.
+
+**Maze 1's palette is never lockable.** A profile with nothing unlocked could otherwise
+assign nothing at all. Every maze also defaults to *its own* authored colourway, so a fresh
+profile sees exactly the game as written — the identity §8 tuned, with braid factor rising as
+the hues get colder.
+
+**`Game` resolves the assignment once**, where `palette_index` is set, so the mesh, the
+environment and the HUD banner all read one answer. Three separate lookups would be three
+chances for the world and the banner to disagree about what colour a maze is.
+
+**The trailer is excluded**, gated on `trailer_seed` like the HUD banner and the loadout
+pick: the reel is a fixed shop window of the game as authored, and a player's colour choices
+must not restyle it.
+
+`RulesTest` asserts the choice **moves nothing** — two racers on one seed, driven
+identically — for the reason the marker shape gets the same check: the palette is reachable
+from every node in the tree even though no movement rule may read it. `MazeColoursShot.gd` is
+the picture half, shooting a fresh profile and an assigned one, because whether a locked chip
+reads as locked is not something an assertion can judge.
+
+> **A lost line continuation made `_is_default` return true for everything**, so nothing was
+> ever locked — and the screen looked plausible, because every chip simply rendered as
+> available. §12's leading-operator trap arriving through a dropped backslash rather than a
+> leading `+`. Found by asking the autoload directly rather than by reading the frame again.
+
+> **An achievement can grant something already unlocked**, which is a goal that pays nothing.
+> The pairing check ran lockable → achievement only, and missed it when colour 2's default
+> moved to cobalt. It now asserts the reverse direction too.
+
 #### A decal is a hole cut in the mark, never a patch drawn on it
 
 **Decals are generated from the outline**, not authored per shape. One drawing per
@@ -3962,7 +4030,7 @@ Six harnesses, each answering a different question:
 
 | Harness | Question it answers |
 |---|---|
-| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count, and the marker shape table -- that every entry points forward and is longer than it is wide, that ids are unique, that an unknown id falls back to the arrow, and that the choice never moves the racer, the marker decal table -- every decal generated from the outline it decorates, asserted across the WHOLE cross product of shapes and decals so a shape added later is decorated by construction, and the cut RESULT bounded rather than the cutter, the cosmetic unlock tables -- paired in both directions, since a cosmetic no achievement grants is unreachable and an achievement granting a typo is a goal with no reward, that the three defaults are never lockable, that a run which drove nowhere earns nothing by vacuous truth, and peak speed surviving a maze bank, and the compendium's demo table, covering every upgrade line in both directions. 1134 assertions. |
+| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count, and the marker shape table -- that every entry points forward and is longer than it is wide, that ids are unique, that an unknown id falls back to the arrow, and that the choice never moves the racer, the marker decal table -- every decal generated from the outline it decorates, asserted across the WHOLE cross product of shapes and decals so a shape added later is decorated by construction, and the cut RESULT bounded rather than the cutter, the cosmetic unlock tables -- paired in both directions, since a cosmetic no achievement grants is unreachable and an achievement granting a typo is a goal with no reward, that the three defaults are never lockable, that a run which drove nowhere earns nothing by vacuous truth, and peak speed surviving a maze bank, and the compendium's demo table, covering every upgrade line in both directions. and the maze palettes -- stable ids, each maze defaulting to its own authored colourway, and the assignment moving nothing about the racer, and that no achievement grants something a fresh profile already has, which is the reverse of the pairing check and the direction it missed. 1207 assertions. |
 | `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording, and that every marker shape builds a closed, outward-wound solid inside its ring, that the steering pads stand down while an upgrade pick is open while the pause pad stays up, and that a pause press both pauses AND opens the settings panel, that closing it resumes, that the cog stands down while the pads are up, and that QUIT TO MENU reports run_dismissed rather than tearing the run down itself, that every marker shape builds with every decal and stays a closed solid once cut, and that scrape-amber and crash-red override a player-chosen colour on BOTH surfaces -- asserted with a colour that is not itself a state colour, since an earlier version used crash red and so passed against the exact regression it was named for. 337 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
 | `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide, and that one real touch tap -- driven with the emulated mouse event a phone sends after it -- is exactly one turn and one held-direction change per edge -- including when that echo lands on a DIFFERENT pad, which is what a browser really sends -- that an unmatched release emits nothing, that a held tap whose emulated echo arrives LATE -- the case no time window can survive, since the echo is synthesized inside the engine and delivered on whatever frame it reaches -- is still one turn, that the pause pad clears the settings cog at two viewport sizes and stays above the 44px tap minimum on a phone, and that the menu's own buttons and labels clear that minimum on glass, that the Unlocks autoload is REGISTERED -- the hole Leaderboard shipped inert through for weeks -- and that the UPGRADES button opens the compendium, lists every line, and keeps its bubble inside the panel at BOTH ends of the list, since the top passes trivially. 118 assertions. |
@@ -4067,6 +4135,12 @@ assertion can see a row overflowing or text clipped from a narrowed card.
 > marker, which shows the marker's colour and nothing whatever about its height. It also
 > dismisses any upgrade pick immediately: the first run let a card screen open over the gate and
 > produced a frame of the card row where the marker should have been.
+
+`MazeColoursShot.gd` is the picture half of the maze-colour screen: a fresh profile (four
+palettes locked, which is what a new player sees) and an assigned one. The chips are drawn in
+their own palette's colours, so whether a locked chip reads as locked -- and whether a dark
+palette's chip is visible against the card at all -- are rendered-frame questions. It restores
+BOTH the earned set and every slot assignment on the way out.
 
 `CompendiumShot.gd` is the picture half of the upgrade compendium: one frame per demo KIND
 rather than per line -- five kinds is what the drawing code has, and 28 frames of which a
