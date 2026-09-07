@@ -3253,9 +3253,57 @@ maze itself hostile*, not a health-bar enemy:
 - **Damaging walls** — scale wall damage past 1 so HP becomes a real constraint. The
   simplest lever, and probably the first to turn on when death is enabled.
 
-### Meta-progression
-Persistent unlocks across runs — new upgrade lines, starting bonuses, maze modifiers. Out
-of scope for v1; v1 is a single self-contained run.
+### Meta-progression — NARROWED, not deferred outright
+
+**Cosmetic unlocks are IN. Everything else stays deferred.**
+
+Marker shapes, colours and decals start locked and are earned by achievements, Geometry
+Dash style — every one visible from the first run with its requirement named, so the picker
+is a goal list rather than a menu.
+
+**The rule was narrowed rather than broken, and the distinction is the whole argument.**
+Every example this section originally named — *new upgrade lines, starting bonuses, maze
+modifiers* — changes how a run **plays**, which is what "v1 is a single self-contained run"
+protects. A marker shape changes nothing: §12 already asserts the simulation cannot read the
+choice, by driving two racers side by side on one seed.
+
+**The line to hold, forever: if an unlock would change a number the racer reads, it does not
+belong in this system.** Persistent upgrade lines, starting bonuses and maze modifiers all
+still fail that test and all stay out.
+
+**A bare starting loadout**, deliberately: arrow, white, plain, and nothing else. A
+first-time player has no cosmetic choice at all, which is the cost, and it buys the thing
+the feature exists for — every other entry in the picker is something to earn.
+
+**The three defaults can never be locked.** A saved name that no longer resolves falls back
+to them (§12), so a locked default would strand a player with no marker. `RulesTest` asserts
+it.
+
+**The achievement table and the cosmetic tables are asserted paired in BOTH directions.** A
+cosmetic no achievement grants is unreachable forever; an achievement granting a typo is a
+goal with no reward. Both fail silently and neither shows in a rendered frame — the picker
+simply displays a locked square for good. Verified by pointing one grant at a colour that
+does not exist: two failures from the one typo, one from each direction.
+
+**Requirements read data the game already keeps** — `Score`'s tallies and per-maze results,
+and the finishing `Upgrades`. Peak speed is the one addition and the only change this
+feature makes to a file the simulation touches. The gate achievement reads `progress` off a
+banked maze, which §8b already defines as gates taken over gates available, rather than
+growing `Score` a field to suit it. **Do not add a field to `Score` to satisfy an
+achievement** — pick a requirement the existing data supports.
+
+**Evaluated at `_post_run` and nowhere else**, whose own comment already calls it the only
+point at which a run is genuinely over. Not during play: an unlock popup over a corridor at
+8x is a distraction placed exactly where §11.3 says the player has no attention to spare.
+It sits **before** the leaderboard guard, which returns early when that autoload is absent —
+awarding after it would make unlocks depend on the network being reachable.
+
+> **A script whose `class_name` matches its autoload name fails to parse** — *"Class Unlocks
+> hides an autoload singleton"* — and the autoload then never loads at all, which reads
+> exactly like forgetting to register it. `Music`, `Settings` and `Leaderboard` all omit
+> `class_name` for the same reason. `ShellTest` asserts the registration, and caught this
+> immediately: §9b-2 records `Leaderboard` shipping **inert in every build for weeks**
+> through the same hole.
 
 ### Daily run
 Fixed seed per day, shared leaderboard. The Phase 3 seeding work makes this nearly free.
@@ -3516,20 +3564,84 @@ the existing clipping loop rather than a second one, since a separate pass would
 harness runtime to assert over identical play. It caught a real residual case at the
 pull-in floor, which is what the last-resort branch exists for.
 
-### The marker's shape is the player's to pick — its colour is not
+### The marker is the player's to pick — shape, colour AND pattern
 
-**A picker on the main menu offers several inner shapes for the marker: the arrow and a
-handful of alternatives.** Purely cosmetic, chosen once and remembered.
+**A picker on the main menu offers the inner shape, a colour and a decal.** Purely cosmetic,
+chosen once and remembered, and all three are unlocked by achievements (§10).
 
-**Shape is the only axis it touches, and that division is not arbitrary.** The three rules
-above are all rules about *colour and visibility*, and the picker is built to leave every
-one of them untouched:
+**This section previously read "its colour is not", and that has been reversed.** The
+reasoning below is kept because it explains the constraint the new design works within — the
+history is what a future reader needs, not a deleted paragraph.
 
-- **Near-white stays mandatory.** The marker went white because maze 3's palette turned the
-  walls green and the thing the player steers with matched the scenery it has to be picked
-  out from. A colour picker would hand that failure straight back — and worse, it would hand
-  it back *chosen*, so the player who picked deep violet would be the one who could not see
-  themselves in The Vault. Every shape draws in the same near-white.
+- **Near-white was mandatory, and is now only the default.** The marker went white because
+  maze 3's palette turned the walls green and the thing the player steers with matched the
+  scenery it has to be picked out from. A free colour picker hands that failure back
+  *chosen* — a player who picks lime is harder to see in The Vault. **Jonah asked for the
+  free picker after that objection was put**, so it is a decision rather than an oversight,
+  and the cost is real and stays the player's. The palettes are deliberately **not** excluded
+  from the swatches: hiding the colours that cause the problem would be pretending to offer a
+  choice while removing its consequences. The picker previews the state colours instead, so
+  the cost is visible before it is paid.
+
+**What is NOT given away is the state read, and that is what makes the free choice safe.**
+The colour goes on the **inner mark**; the **ring stays the state channel** and is never
+player-coloured. Scrape-amber and crash-red override **both** surfaces, so the read is a
+**transition rather than a hue** — a player who picks crash red still sees their marker
+change on a scrape. `SceneTest` asserts exactly that, and asserts it with a non-state colour:
+an earlier version set the player colour *to* crash red, which made the correct code and the
+regression produce the same value, and the check passed against the very bug it was named
+for.
+
+**That also fixed a defect this section already recorded.** `update_state` recoloured only
+the ring, so a scrape left the inner mark pure white and a frame with the barrier visibly
+half-drained was pixel-identical to a clean one — on the larger of the two surfaces, and the
+one the trailing camera actually sees. The colour feature and that fix are the same change.
+
+#### A decal is a hole cut in the mark, never a patch drawn on it
+
+**Decals are generated from the outline**, not authored per shape. One drawing per
+shape-and-decal pairing is a shapes × decals grid — six by five today, and a seventh shape
+means five more drawings or five silent blanks. That is the parallel-array failure §6 records
+for landmark density, and the stale cell is always the one nobody looks at. `RulesTest`
+asserts the **whole cross product**, so a shape added later is decorated by construction or
+the harness goes red.
+
+**The mark saturates to white, which is why a patch cannot work.** It is
+`SHADING_MODE_UNSHADED` at emission 3.0, so what renders is `albedo + emission × energy` and
+the silhouette blows out. **Five fixes were spent on the decal's own properties before a
+real-game frame was read** — raising the lift, lowering the emission, clearing the mark's
+volume, reparenting the node, and finally a bright red plane floating half a unit above it,
+which also did not appear. That last one is what proved the problem was never a property of
+the decal. **When a surface is not visible, establish where it actually is before adjusting
+how it is drawn.**
+
+A hole cannot be washed out: the dark floor shows through it however bright the mark becomes,
+and it holds at every state colour for free, since the gap has no colour of its own to keep
+in step.
+
+**A cutter must SPAN the shape.** The first working version intersected each band with the
+outline before subtracting it, so the bands stopped *at* the edge and left the flanks joined —
+and at 12% of height near the tail they bit where the mark is narrow, reading as a single nick
+in the trailing edge. Cuts now land where the silhouette is **widest**, so the gap survives the
+trailing camera's foreshortening, which already ate a shallow taper once.
+
+**`SPLIT` is a thin centre slot, not half the mark**, because removing half leaves a shape
+that no longer reads as pointing — the one property every marker shape must keep.
+
+**An `EDGE` decal was tried and removed.** Subtracting an inset copy leaves a *ring*, which is
+an outline plus a hole, and the extrusion builds one closed loop per piece — so it came back as
+the plain shape plus a clockwise hole the extruder would have filled in solid. `NOTCH` replaces
+it with wedges cut from each flank, which is one loop. Recorded in the table so nobody re-adds
+it without first giving the extrusion real hole support.
+
+**The extrusion handles multiple pieces**, because a stripe genuinely severs the mark
+(measured: 2 pieces on every shape). Depth is measured across the **whole** mark so the pieces
+share one slope rather than each rising to full height and reading as a staircase.
+
+> **Two weaker assertions were tried for "the cut landed" and both were wrong in opposite
+> directions.** A face **count** missed real changes — splitting a delta yields another
+> triangle. The **AABB** missed more: a stripe cut from the middle does not move the outer
+> bounds at all. It compares vertex data.
 - **Amber and red must keep reading as STATE.** The scrape and crash colours work precisely
   because the resting marker carries no hue of its own (§12). A tinted resting marker makes
   the drain-to-red a shift between two hues rather than the arrival of one, which is a weaker
@@ -3582,6 +3694,64 @@ name, and an unknown name resolves to the default. `SceneTest` asserts the marke
 every shape in the table and that the choice moves nothing about the racer. `MarkerShot.gd`
 is the picture half: one frame per shape from the ordinary trailing camera, since whether a
 silhouette reads as pointing at that angle is exactly what no headless assertion can see.
+
+### The upgrade compendium
+
+**A browsable screen off the menu listing every upgrade line, each with an animated diagram
+of what the mechanic does.** Reached from an `UPGRADES` button beside `MARKER`, for the same
+reason that one is not behind the cog: it is not a *preference*, it is a reference a player
+opens to decide what to take.
+
+**Demos are 2D drawings, not live racers.** `MarkerPicker` can afford a 3D preview because
+it previews **one** object; this screen has an entry per line, and a real racer would need a
+real `Maze` — dragging the simulation into a menu screen. §12 says the simulation must never
+require a rendered frame, and the inverse holds here.
+
+**Lines with no visible on-screen effect get a labelled BAR, not an invented animation.**
+Cornering, Wall Armor, Score Multiplier and five others change a number and nothing else.
+Motion drawn for a mechanic that has none is the HUD-chevron mistake of §7 — a picture
+pulling the eye somewhere the mechanic is not. Five kinds cover everything: `CORRIDOR`,
+`BAR`, `GAUGE`, `PANEL`, `STILL`.
+
+**Every number is derived from a real `Upgrades` taken to that rank**, and the per-rank text
+comes from `next_rank_description()` — the same call the cards use, so the two can never
+disagree. A compendium contradicting a card is worse than no compendium.
+
+**`DEMOS` is a table, asserted for total coverage in both directions**, so adding an upgrade
+line and forgetting this screen fails a test by name rather than drawing a blank box forever.
+Verified by deleting an entry.
+
+**The demo is a bubble beside the focused row, not a fixed pane.** The list is the subject —
+a player deciding between Cornering and Snap Turn wants both names in view — and a pane would
+spend half the screen permanently on one of them. Being transient, the bubble can also be
+*larger* than a pane could afford. The affordance is the row's own hover and focus, never an
+(i) glyph: that would be the tofu-box failure §9d records for the settings cog, plus a second
+focus stop on every row.
+
+**Bubble placement is derived from the row's measured rect and clamped**, never a fixed
+offset — the hard-coded-band trap, where a constant is correct for the row it was tuned
+against and runs off the bottom for the last one. `ShellTest` asserts it at **both ends** of
+the list, because the top passes trivially; verified by removing the clamp, where the last
+row's bubble ran 697px past the panel bottom.
+
+**Three things only rendered frames caught**, none visible to any assertion:
+
+- **The demo box came out 152px tall.** A `VBoxContainer` gives a minimum-sized child exactly
+  its minimum, and the caption plus a seven-rank list took the rest — a 6-cell corridor in
+  152px draws a 52px cell, which is a strip rather than a diagram.
+- **The list expanded past the panel and pushed the heading off the top.** A
+  `PanelContainer` sizes to its contents and ignores an offset smaller than they need — the
+  §8c overrun in a third place. The list's height is derived from the panel box minus a
+  measured header cost.
+- **The bubble then covered the heading anyway**, which reads as the title never being built.
+  Both labels were present, visible and correctly placed the whole time. **Rect containment
+  is not clearance** — the bubble is clamped below the header band, not merely inside the
+  panel.
+
+`CompendiumShot.gd` is the picture half: one frame per demo **kind** rather than per line,
+plus the first and last rows where placement fails. It shoots **mid-animation**, because a
+demo that never advances is identical to a working one in a frame taken at t=0 — the reason
+`QuadrantShot` seeks a region change.
 
 #### Four traps found while building the picker
 
@@ -3792,10 +3962,10 @@ Six harnesses, each answering a different question:
 
 | Harness | Question it answers |
 |---|---|
-| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count, and the marker shape table -- that every entry points forward and is longer than it is wide, that ids are unique, that an unknown id falls back to the arrow, and that the choice never moves the racer. 544 assertions. |
-| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording, and that every marker shape builds a closed, outward-wound solid inside its ring, that the steering pads stand down while an upgrade pick is open while the pause pad stays up, and that a pause press both pauses AND opens the settings panel, that closing it resumes, that the cog stands down while the pads are up, and that QUIT TO MENU reports run_dismissed rather than tearing the run down itself. 215 assertions. |
+| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count, and the marker shape table -- that every entry points forward and is longer than it is wide, that ids are unique, that an unknown id falls back to the arrow, and that the choice never moves the racer, the marker decal table -- every decal generated from the outline it decorates, asserted across the WHOLE cross product of shapes and decals so a shape added later is decorated by construction, and the cut RESULT bounded rather than the cutter, the cosmetic unlock tables -- paired in both directions, since a cosmetic no achievement grants is unreachable and an achievement granting a typo is a goal with no reward, that the three defaults are never lockable, that a run which drove nowhere earns nothing by vacuous truth, and peak speed surviving a maze bank, and the compendium's demo table, covering every upgrade line in both directions. 1134 assertions. |
+| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording, and that every marker shape builds a closed, outward-wound solid inside its ring, that the steering pads stand down while an upgrade pick is open while the pause pad stays up, and that a pause press both pauses AND opens the settings panel, that closing it resumes, that the cog stands down while the pads are up, and that QUIT TO MENU reports run_dismissed rather than tearing the run down itself, that every marker shape builds with every decal and stays a closed solid once cut, and that scrape-amber and crash-red override a player-chosen colour on BOTH surfaces -- asserted with a colour that is not itself a state colour, since an earlier version used crash red and so passed against the exact regression it was named for. 337 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide, and that one real touch tap -- driven with the emulated mouse event a phone sends after it -- is exactly one turn and one held-direction change per edge -- including when that echo lands on a DIFFERENT pad, which is what a browser really sends -- that an unmatched release emits nothing, that a held tap whose emulated echo arrives LATE -- the case no time window can survive, since the echo is synthesized inside the engine and delivered on whatever frame it reaches -- is still one turn, that the pause pad clears the settings cog at two viewport sizes and stays above the 44px tap minimum on a phone, and that the menu's own buttons and labels clear that minimum on glass. 104 assertions. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide, and that one real touch tap -- driven with the emulated mouse event a phone sends after it -- is exactly one turn and one held-direction change per edge -- including when that echo lands on a DIFFERENT pad, which is what a browser really sends -- that an unmatched release emits nothing, that a held tap whose emulated echo arrives LATE -- the case no time window can survive, since the echo is synthesized inside the engine and delivered on whatever frame it reaches -- is still one turn, that the pause pad clears the settings cog at two viewport sizes and stays above the 44px tap minimum on a phone, and that the menu's own buttons and labels clear that minimum on glass, that the Unlocks autoload is REGISTERED -- the hole Leaderboard shipped inert through for weeks -- and that the UPGRADES button opens the compendium, lists every line, and keeps its bubble inside the panel at BOTH ends of the list, since the top passes trivially. 118 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 22 assertions. |
 | `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 105 assertions. |
 
@@ -3897,6 +4067,12 @@ assertion can see a row overflowing or text clipped from a narrowed card.
 > marker, which shows the marker's colour and nothing whatever about its height. It also
 > dismisses any upgrade pick immediately: the first run let a card screen open over the gate and
 > produced a frame of the card row where the marker should have been.
+
+`CompendiumShot.gd` is the picture half of the upgrade compendium: one frame per demo KIND
+rather than per line -- five kinds is what the drawing code has, and 28 frames of which a
+dozen are the same corridor function is a slower read for no more coverage -- plus the first
+and last rows, where bubble placement fails. It shoots mid-animation, because a demo that
+never advances is identical to a working one in a frame taken at t=0.
 
 `Screenshot.gd` is not a test — it runs the real game with rendering and saves frames to
 `logs/`, which is how the visuals get checked without anyone opening the editor.
