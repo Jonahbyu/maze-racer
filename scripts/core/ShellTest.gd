@@ -52,11 +52,78 @@ func _go() -> void:
 		for button in menu._buttons:
 			labels.append(String(button.text))
 	var joined := ", ".join(labels)
-	# MOBILE CONTROLS is deliberately NOT here -- it moved into the settings
-	# panel behind the cog, so that preferences live in one place.
-	for wanted in ["PLAY", "TRAILER", "QUIT"]:
-		check("the menu offers %s" % wanted, joined.contains(wanted), joined)
-	check("the menu has a settings cog", menu != null and menu._cog != null)
+	# The ROOT menu, which is now four grouped entries rather than a flat list
+	# of nine. Nine did not fit a phone -- measured, 5 rows of 2 needing 718
+	# viewport units against a 440-unit band -- and the previous answer was to
+	# switch five of them off, which left MARKER, UPGRADES and MAZE COLOURS
+	# unreachable on the platform most likely to be someone's only device.
+	for wanted in ["PLAY", "CUSTOMIZATION", "LEADERBOARD", "OTHER"]:
+		check("the root menu offers %s" % wanted, joined.contains(wanted),
+			joined)
+
+	# Every row of every menu is REACHABLE, and every submenu can be left.
+	#
+	# Walked rather than named: naming the rows here would restate MENUS, which
+	# is the transcription trap this file already avoids for the button count.
+	# What is asserted is the property -- nothing is stranded, and no menu is a
+	# dead end.
+	for menu_id in MainMenu.MENUS:
+		menu._build_menu(menu_id)
+		var found := PackedStringArray()
+		for button in menu._buttons:
+			found.append(String(button.text))
+		for item in MainMenu.MENUS[menu_id]["items"]:
+			check("%s offers %s" % [menu_id, item["label"]],
+				found.has(String(item["label"])), ", ".join(found))
+		if menu_id != MainMenu.MENU_ROOT:
+			check("%s has a way back" % menu_id, found.has("BACK"),
+				", ".join(found))
+	menu._build_menu(MainMenu.MENU_ROOT)
+
+	# Entering a submenu and pressing BACK returns to the root, and the trail
+	# is a STACK -- so a menu reached from two places goes back where it came
+	# from rather than to a remembered parent.
+	menu._enter_menu("play")
+	check("entering a submenu switches the menu",
+		menu._menu_id == "play", menu._menu_id)
+	menu._leave_menu()
+	check("BACK returns to the root",
+		menu._menu_id == MainMenu.MENU_ROOT, menu._menu_id)
+	check("BACK empties the trail", menu._menu_stack.is_empty())
+
+	# The cog is GONE from the main menu: SETTINGS is a labelled row in OTHER,
+	# and two doors to one panel is two things to keep in step. Section 9d had
+	# already rescued the cog once on a phone, where its rect sat inside the
+	# pause pad and was unhittable.
+	check("the main menu has no settings cog", menu._cog == null)
+
+	# THE SUBMENU TITLE CLEARS THE LOGO AND THE FIRST ROW.
+	#
+	# Its first placement hung off ROW_TOP and landed at -86..-52, INSIDE the
+	# logo's own box (-286..-75) -- so "CUSTOMIZATION" was drawn across the
+	# wordmark's "RACER". Only a rendered frame showed it, and it is the same
+	# failure section 12 records twice for the mirror and the quadrant box.
+	#
+	# Asserted at both a desktop and a phone scale, because the title's height
+	# is derived from the live viewport scale and a band correct at one size is
+	# the hard-coded-band trap at the other.
+	menu._enter_menu("custom")
+	menu._size_buttons()
+	await process_frame
+	var title: Label = menu._menu_title
+	check("a submenu shows its title", title != null and title.visible)
+	if title != null:
+		var logo_bottom: float = MainMenu.LOGO_TOP + MainMenu.LOGO_SIZE.y
+		check("the title clears the logo", title.offset_top >= logo_bottom,
+			"title top %.0f, logo bottom %.0f"
+				% [title.offset_top, logo_bottom])
+		check("the first row clears the title",
+			menu._button_grid.offset_top >= title.offset_bottom,
+			"row top %.0f, title bottom %.0f"
+				% [menu._button_grid.offset_top, title.offset_bottom])
+	menu._leave_menu()
+	check("the root hides the title",
+		menu._menu_title != null and not menu._menu_title.visible)
 
 	# PLAY must reach a real, running Game -- not just swap a node in.
 	shell.start_game()
@@ -95,11 +162,16 @@ func _go() -> void:
 
 		shell.show_menu()
 		var m = shell._current
+		# The seeded runs live in the PLAY submenu now, so this navigates
+		# rather than reading the root -- and that navigation is part of what
+		# is asserted: a board reachable only from code is the state section
+		# 9b-2 records the shared mazes shipping in for weeks.
+		m._enter_menu("play")
 		var button: Button = null
 		for b in m._buttons:
-			if b.text == "PLAY " + label:
+			if b.text == label + " RUN":
 				button = b
-		check("the menu has a PLAY %s button" % label, button != null)
+		check("the PLAY menu has a %s RUN button" % label, button != null)
 		if button == null:
 			continue
 
@@ -867,8 +939,13 @@ func _check_compendium(shell) -> void:
 		check("menu is present for the compendium check", false)
 		return
 
+	# UPGRADES lives in the OTHER menu now, so the check has to NAVIGATE there
+	# rather than expecting it at the root -- which is the point of the check:
+	# a row that cannot be reached is a row that does not exist.
+	menu._enter_menu("other")
+	await process_frame
 	var button := _find_button(menu, "UPGRADES")
-	check("the menu has an UPGRADES button", button != null)
+	check("the OTHER menu has an UPGRADES button", button != null)
 	if button == null:
 		return
 

@@ -2627,6 +2627,59 @@ settings have — the autoload is absent in every harness, and a dead network mu
 what stops a run starting. The trailer is excluded from posting on `trailer_seed`, the flag
 that already suppresses the HUD banner and the loadout pick.
 
+### The menu is grouped into submenus, and the cog is gone
+
+**Four entries at the root — PLAY, CUSTOMIZATION, LEADERBOARD, OTHER — each opening a short
+list with a BACK row.**
+
+**The flat list reached nine buttons, and nine do not fit a phone.** Measured on the 844×390
+screen `MenuShot` and `TouchShot` both use: nine wrap to 5 rows of 2 and need **718 viewport
+units against a 440-unit band**. The previous answer was `PHONE_HIDDEN`, which simply
+switched five entries off — so **MARKER, UPGRADES and MAZE COLOURS were unreachable on the
+platform most likely to be someone's only device**, and every cosmetic added to them was
+invisible there. That is the same failure §9b-2 records for the leaderboards being hidden
+with no other way in, and the same one §9d records for the board button that fixed it.
+
+**Grouping fixes the count structurally rather than by shrinking buttons toward the tap
+floor.** Shrinking was measured first and does work — at 480 units wide all nine fit as 3×3,
+bottom at 384 against the 440 limit — but it spends the fix on making every target smaller
+on the smallest screen, which is backwards. It costs desktop nothing: four entries is a
+shorter read than nine, and the screens a player opens once a session are one press further
+away than the one they open every time.
+
+**`MENUS` is a table, and the root is just another row in it.** Adding a screen is a table
+entry rather than an edit in several places — the failure §6 records for landmark density
+and §9c for music tracks. **BACK is appended by the builder rather than declared**, so a menu
+cannot be entered with no way out; relying on each row to remember its own escape is exactly
+the per-entry duty that goes stale on the row nobody looks at.
+
+**The trail back is a STACK, not a parent pointer**, so a menu reached from two places
+returns where it came from.
+
+**`PHONE_HIDDEN` survives, holding only QUIT** — which does nothing meaningful in a browser
+tab. It is now a statement about one platform-inapplicable row rather than a way to make a
+too-long list fit.
+
+**The settings cog is no longer built.** SETTINGS is a labelled row in OTHER, and two doors
+to one panel is two things to keep in step — §9d already had to rescue the cog once on a
+phone, where its 17px rect sat *inside* the pause pad and was unhittable. The builder and its
+drawn icon are kept rather than deleted, since `_place_cog` and `_tint_cog` are already
+null-guarded and the in-game cog is a separate control; deleting live code to express a
+layout decision would make restoring it a rewrite.
+
+> **The submenu title landed across the logo, and only a rendered frame showed it.** Hung off
+> `ROW_TOP` it sat at −86..−52, **inside the logo's own box** (−286..−75), so
+> "CUSTOMIZATION" was drawn over the wordmark's *RACER*. It now hangs off the logo's measured
+> bottom and the first row is pushed down by the space it takes. `ShellTest` asserts both
+> clearances; verified failing at `title top -86, logo bottom -75`.
+
+> **A flat font size is a COUNT, not a size** — the title's first version at 22 viewport units
+> measured ~9 CSS px on the phone. It scales from the live viewport-to-screen scale like the
+> buttons and the hint, which is the §9d lesson arriving on the one label added since.
+
+`SubmenuShot.gd` is the picture half: every menu at phone dimensions, since the grouping
+exists for that screen. `MenuShot` still shoots the root at three widths.
+
 ### The daily and monthly runs each get their own button
 
 `PLAY` / `PLAY DAILY` / `PLAY MONTHLY` / `WATCH TRAILER` / `QUIT`. The two new
@@ -4129,7 +4182,7 @@ Six harnesses, each answering a different question:
 | `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count, and the marker shape table -- that every entry points forward and is longer than it is wide, that ids are unique, that an unknown id falls back to the arrow, and that the choice never moves the racer, the marker decal table -- every decal generated from the outline it decorates, asserted across the WHOLE cross product of shapes and decals so a shape added later is decorated by construction, and the cut RESULT bounded rather than the cutter, the cosmetic unlock tables -- paired in both directions, since a cosmetic no achievement grants is unreachable and an achievement granting a typo is a goal with no reward, that the three defaults are never lockable, that a run which drove nowhere earns nothing by vacuous truth, and peak speed surviving a maze bank, and the compendium's demo table, covering every upgrade line in both directions. and the maze palettes -- stable ids, each maze defaulting to its own authored colourway, and the assignment moving nothing about the racer, and that no achievement grants something a fresh profile already has, which is the reverse of the pairing check and the direction it missed, and the STARTING SET counted by kind rather than named -- exactly one shape, colour, decal and palette -- since a named check has to be widened every time a cosmetic is added and widening it is how the palettes reached five free entries, and that no two achievements fire on the SAME condition, swept over 600 randomised run shapes on a fixed seed, since two goals with one condition unlock as a pair and each looks correct alone. 3609 assertions. |
 | `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording, and that every marker shape builds a closed, outward-wound solid inside its ring, that the steering pads stand down while an upgrade pick is open while the pause pad stays up, and that a pause press both pauses AND opens the settings panel, that closing it resumes, that the cog stands down while the pads are up, and that QUIT TO MENU reports run_dismissed rather than tearing the run down itself, that every marker shape builds with every decal and stays a closed solid once cut, and that scrape-amber and crash-red override a player-chosen colour on BOTH surfaces -- asserted with a colour that is not itself a state colour, since an earlier version used crash red and so passed against the exact regression it was named for. 481 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide, and that one real touch tap -- driven with the emulated mouse event a phone sends after it -- is exactly one turn and one held-direction change per edge -- including when that echo lands on a DIFFERENT pad, which is what a browser really sends -- that an unmatched release emits nothing, that a held tap whose emulated echo arrives LATE -- the case no time window can survive, since the echo is synthesized inside the engine and delivered on whatever frame it reaches -- is still one turn, that the pause pad clears the settings cog at two viewport sizes and stays above the 44px tap minimum on a phone, and that the menu's own buttons and labels clear that minimum on glass, that the Unlocks autoload is REGISTERED -- the hole Leaderboard shipped inert through for weeks -- and that the UPGRADES button opens the compendium, lists every line, and keeps its bubble inside the panel at BOTH ends of the list, since the top passes trivially. 118 assertions. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide, and that one real touch tap -- driven with the emulated mouse event a phone sends after it -- is exactly one turn and one held-direction change per edge -- including when that echo lands on a DIFFERENT pad, which is what a browser really sends -- that an unmatched release emits nothing, that a held tap whose emulated echo arrives LATE -- the case no time window can survive, since the echo is synthesized inside the engine and delivered on whatever frame it reaches -- is still one turn, that the pause pad clears the settings cog at two viewport sizes and stays above the 44px tap minimum on a phone, and that the menu's own buttons and labels clear that minimum on glass, that the Unlocks autoload is REGISTERED -- the hole Leaderboard shipped inert through for weeks -- and that the UPGRADES button opens the compendium, lists every line, and keeps its bubble inside the panel at BOTH ends of the list, since the top passes trivially, and the grouped menus -- every row of every menu REACHABLE by walking the table rather than by naming the rows, every submenu carrying a way back, the trail returning to the root, and the submenu title clearing both the logo above it and the first row below. 142 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 22 assertions. |
 | `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 105 assertions. |
 

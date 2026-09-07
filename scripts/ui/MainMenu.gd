@@ -183,6 +183,12 @@ var _name_modal: Control = null
 var _buttons: Array[Button] = []
 var _button_grid: GridContainer = null
 var _board_button: Button = null
+# Which menu is on screen, and the trail back to the root. A STACK rather than
+# a parent pointer, so a menu reached from two places returns where it came
+# from -- and so ui_cancel has one obvious meaning at every depth.
+var _menu_id := MENU_ROOT
+var _menu_stack: Array[String] = []
+var _menu_title: Label = null
 var _board_modal: Control = null
 var _hint: Label = null
 var _cog: Button = null
@@ -203,7 +209,16 @@ func _ready() -> void:
 	_build_title()
 	_build_buttons()
 	_build_leaderboard()
-	_build_cog()
+	# The cog is NOT built. SETTINGS is a labelled row in the OTHER menu now,
+	# and two doors to one panel is two things to keep in step -- section 9d
+	# already had to rescue this one on a phone, where a 17px glyph sat inside
+	# the pause pad's rect and was unhittable.
+	#
+	# The builder and its drawn icon are kept rather than deleted: _place_cog
+	# and _tint_cog are already null-guarded, so nothing needs unpicking, and
+	# the in-GAME cog (TouchControls' own, section 9d) is a separate control
+	# that still stands down off the pads. Deleting live code to express a
+	# layout decision would make restoring it a rewrite.
 	_layout_columns()
 	# The viewport can resize under a running menu -- a browser window drag is
 	# the common case -- and the two-column split is width-dependent, so it has
@@ -335,47 +350,20 @@ func _build_buttons() -> void:
 	grid.add_theme_constant_override("h_separation", int(SEPARATION))
 	add_child(grid)
 
-	# One button per board rather than a selector beside PLAY: a toggle would
-	# make starting a daily run two presses and would need the lit board to be
-	# legible at a glance, where a labelled button says which maze it starts by
-	# being pressed.
-	grid.add_child(_make_button("PLAY", _on_play.bind(Tuning.Board.GENERAL)))
-	grid.add_child(_make_button("PLAY DAILY", _on_play.bind(Tuning.Board.DAILY)))
-	grid.add_child(_make_button("PLAY MONTHLY",
-		_on_play.bind(Tuning.Board.MONTHLY)))
-	# MARKER sits with the play buttons rather than behind the cog, which is a
-	# deliberate exception to the rule that moved MOBILE CONTROLS into the
-	# settings panel. That rule is about PREFERENCES -- things set once to make
-	# the game work on your hardware. This is closer to picking a character: it
-	# is the one cosmetic choice in the game, it wants to be seen rather than
-	# found, and it needs a preview, which is a panel row's worth of screen on
-	# its own.
-	grid.add_child(_make_button("MARKER", _on_marker))
-	# UPGRADES sits beside MARKER for the same reason MARKER is not behind the
-	# cog: it is not a PREFERENCE. It is a reference screen a player opens to
-	# decide what to take, which wants to be seen rather than found.
-	grid.add_child(_make_button("UPGRADES", _on_upgrades))
-	# MAZE COLOURS sits with MARKER and UPGRADES rather than behind the cog, for
-	# the same reason both of those do: it is a cosmetic CHOICE with unlockables
-	# behind it, not a preference set once to make the game work.
-	grid.add_child(_make_button("MAZE COLOURS", _on_maze_colours))
-	grid.add_child(_make_button("WATCH TRAILER", _on_trailer))
-	# LEADERBOARD reaches the board on a screen too narrow to show the panel
-	# beside the menu. Below TWO_COLUMN_MIN_WINDOW_WIDTH the panel is hidden
-	# outright, and it was hidden with no other way in -- so on a phone the
-	# leaderboards were unreachable rather than merely off to one side. Built
-	# always, shown only when the panel is not: on a desktop the board is
-	# already on screen and a button to open it would be a second door to a
-	# room the player is standing in.
-	_board_button = _make_button("LEADERBOARD", _on_leaderboard)
-	grid.add_child(_board_button)
-	# MOBILE CONTROLS used to sit here. It moved into the settings panel so
-	# that preferences live in exactly one place -- a toggle in the button
-	# stack and a panel behind a cog would be two homes for the same category.
-	grid.add_child(_make_button("QUIT", _on_quit))
-
 	_button_grid = grid
-	_size_buttons()
+
+	# Which menu you are in, between the logo and the first row. Built BEFORE
+	# the menu, because _build_menu writes to it.
+	#
+	# Hidden at the root, where the logo already answers the question -- a
+	# label reading "ROOT" or repeating the game's name would be noise in the
+	# one place the player is never lost.
+	_menu_title = _centred_label("", TITLE_FONT, COL_ACCENT,
+		TITLE_TOP, TITLE_TOP + TITLE_HEIGHT)
+	_menu_title.visible = false
+	add_child(_menu_title)
+
+	_build_menu(MENU_ROOT)
 
 	# Below the grid wherever _size_buttons left it. Built here rather than
 	# there because _size_buttons runs on EVERY resize -- building the hint in
@@ -411,8 +399,92 @@ func _build_buttons() -> void:
 # push a different one off the phone.
 # UPGRADES is a list beside a diagram, which wants a desktop screen for the same
 # reason MARKER's preview does.
-const PHONE_HIDDEN := ["MARKER", "UPGRADES", "MAZE COLOURS", "WATCH TRAILER",
-	"QUIT"]
+# The menus, as a TABLE. The root and every submenu are the same construct, so
+# adding a screen is a row rather than an edit in several places -- the failure
+# section 6 records for landmark density and 9c for music tracks.
+#
+# WHY SUBMENUS AT ALL. The flat list reached nine buttons, and nine do not fit a
+# phone: measured on the 844x390 MenuShot size, nine buttons wrap to 5 rows of 2
+# and need 718 viewport units against a 440-unit band. The previous answer was
+# PHONE_HIDDEN, which simply switched five entries off -- so MARKER, UPGRADES
+# and MAZE COLOURS were UNREACHABLE on the one platform most likely to be
+# someone's only device, and every cosmetic added to them was invisible there.
+#
+# Grouping fixes the count structurally rather than by shrinking buttons toward
+# the tap floor, and it costs desktop nothing: four buttons at the top level is
+# a shorter read than nine, and the things a player opens once a session are one
+# press further away than the thing they open every time.
+#
+# "id" is what a submenu is addressed by; "label" is what the player reads.
+# Every submenu ends with BACK, added by _build_menu rather than declared, so a
+# menu cannot be entered with no way out.
+const MENU_ROOT := "root"
+
+# The submenu title, between the logo's baseline (-75) and the first row
+# (ROW_TOP, -40). A tight band, which is why the label is short and the font is
+# sized to it rather than to the buttons.
+# Sized in CSS pixels like every other text on this screen, then converted
+# through the live scale -- a viewport unit is a count, not a size. Between a
+# button label (19) and the hint (12): it names where you are, which is read
+# once on arrival rather than scanned.
+const TITLE_GLASS_PX := 16.0
+const TITLE_GAP := 12.0
+const TITLE_TOP := -78.0
+const TITLE_HEIGHT := 34.0
+const TITLE_FONT := 22
+
+const MENUS := {
+	"root": {
+		"title": "",
+		"items": [
+			{"label": "PLAY", "menu": "play"},
+			{"label": "CUSTOMIZATION", "menu": "custom"},
+			{"label": "LEADERBOARD", "action": "leaderboard"},
+			{"label": "OTHER", "menu": "other"},
+		],
+	},
+	# One button per board rather than a selector: a toggle would need the lit
+	# board legible at a glance, where a labelled button says which maze it
+	# starts by being pressed.
+	"play": {
+		"title": "PLAY",
+		"items": [
+			{"label": "QUICK RACE", "action": "play_general"},
+			{"label": "DAILY RUN", "action": "play_daily"},
+			{"label": "MONTHLY RUN", "action": "play_monthly"},
+		],
+	},
+	# The cosmetic CHOICES, which are not preferences. Section 12 records why
+	# these were never behind the cog: a preference is set once to make the game
+	# work on your hardware, where these are closer to picking a character --
+	# they want to be seen, and each needs a preview.
+	"custom": {
+		"title": "CUSTOMIZATION",
+		"items": [
+			{"label": "MARKER", "action": "marker"},
+			{"label": "MAZE COLOURS", "action": "maze_colours"},
+		],
+	},
+	# Everything that is neither a run nor a cosmetic. SETTINGS lives here, and
+	# that is what retires the cog from the main menu: a labelled row in a
+	# labelled menu is a better door than a 17px glyph in a corner, which
+	# section 9d already had to rescue once on a phone.
+	"other": {
+		"title": "OTHER",
+		"items": [
+			{"label": "SETTINGS", "action": "settings"},
+			{"label": "UPGRADES", "action": "upgrades"},
+			{"label": "WATCH TRAILER", "action": "trailer"},
+			{"label": "QUIT", "action": "quit"},
+		],
+	},
+}
+
+# Rows that do not apply on every platform. QUIT does nothing meaningful in a
+# browser tab, and LEADERBOARD opens the panel only on screens too narrow to
+# show it beside the menu -- on a desktop the board is already on screen, and a
+# button to open it would be a second door to a room the player is standing in.
+const PHONE_HIDDEN := ["QUIT"]
 
 
 # Size the buttons for the glass and wrap them into as many columns as it takes.
@@ -420,6 +492,96 @@ const PHONE_HIDDEN := ["MARKER", "UPGRADES", "MAZE COLOURS", "WATCH TRAILER",
 # Re-run on every resize, because the scale it reads changes with the window --
 # a browser drag is the ordinary case, and a menu that sized itself once at boot
 # would be correct only at the size it happened to start on.
+# Build one menu into the grid, replacing whatever was there.
+#
+# Every submenu gets a BACK row, appended here rather than declared in MENUS:
+# a menu that could be entered with no way out is a dead end, and relying on
+# each table row to remember its own escape is exactly the kind of per-entry
+# duty that goes stale on the one row nobody looks at.
+func _build_menu(id: String) -> void:
+	if not MENUS.has(id):
+		id = MENU_ROOT
+	_menu_id = id
+	var menu: Dictionary = MENUS[id]
+
+	for button in _buttons:
+		button.queue_free()
+	_buttons.clear()
+	_board_button = null
+	for child in _button_grid.get_children():
+		_button_grid.remove_child(child)
+
+	for item in menu["items"]:
+		var label := String(item["label"])
+		var button: Button
+		if item.has("menu"):
+			button = _make_button(label, _enter_menu.bind(String(item["menu"])))
+		else:
+			button = _make_button(label, _do_action.bind(String(item["action"])))
+		# The board button keeps its own visibility rule, which _layout_columns
+		# owns: it appears only on screens that cannot show the panel.
+		if String(item.get("action", "")) == "leaderboard":
+			_board_button = button
+		_button_grid.add_child(button)
+
+	if id != MENU_ROOT:
+		_button_grid.add_child(_make_button("BACK", _leave_menu))
+
+	if _menu_title != null:
+		_menu_title.text = String(menu.get("title", ""))
+		_menu_title.visible = _menu_title.text != ""
+
+	_size_buttons()
+	_layout_columns()
+
+
+func _enter_menu(id: String) -> void:
+	_menu_stack.append(_menu_id)
+	_build_menu(id)
+	if not _buttons.is_empty():
+		_buttons[0].grab_focus()
+
+
+func _leave_menu() -> void:
+	if _menu_stack.is_empty():
+		return
+	var came_from := _menu_id
+	var back: String = _menu_stack.pop_back()
+	_build_menu(back)
+	# Land on the row that opened the menu just left, rather than at the top of
+	# the list -- the same courtesy every screen's close handler gives.
+	for button in _buttons:
+		if String(button.text) != "" and MENUS.has(came_from) 				and _opens_menu(button.text, came_from):
+			button.grab_focus()
+			return
+	if not _buttons.is_empty():
+		_buttons[0].grab_focus()
+
+
+# Does this label, in the CURRENT menu, lead to the given submenu?
+func _opens_menu(label: String, target: String) -> bool:
+	for item in MENUS[_menu_id]["items"]:
+		if String(item["label"]) == label:
+			return String(item.get("menu", "")) == target
+	return false
+
+
+# One place every menu action is dispatched, so a row in MENUS names a string
+# rather than binding a Callable the table would have to keep in step.
+func _do_action(action: String) -> void:
+	match action:
+		"play_general": _on_play(Tuning.Board.GENERAL)
+		"play_daily": _on_play(Tuning.Board.DAILY)
+		"play_monthly": _on_play(Tuning.Board.MONTHLY)
+		"marker": _on_marker()
+		"maze_colours": _on_maze_colours()
+		"upgrades": _on_upgrades()
+		"settings": _on_settings()
+		"trailer": _on_trailer()
+		"leaderboard": _on_leaderboard()
+		"quit": _on_quit()
+
+
 func _size_buttons() -> void:
 	if _button_grid == null:
 		return
@@ -502,8 +664,15 @@ func _size_buttons() -> void:
 	var stack: float = height * float(rows_n) + SEPARATION * float(rows_n - 1)
 	_button_grid.offset_left = -grid_w * 0.5
 	_button_grid.offset_right = grid_w * 0.5
-	_button_grid.offset_top = ROW_TOP
-	_button_grid.offset_bottom = ROW_TOP + stack
+	# The first row starts below the title when there is one, so a submenu's
+	# heading never sits on the buttons. Derived from the title's measured
+	# bottom rather than from a second constant -- one number moving is one
+	# number to keep right.
+	var row_top := ROW_TOP
+	if _menu_title != null and _menu_title.visible:
+		row_top = maxf(ROW_TOP, _menu_title.offset_bottom + TITLE_GAP)
+	_button_grid.offset_top = row_top
+	_button_grid.offset_bottom = row_top + stack
 
 	if _hint != null:
 		# The hint scales too. At a flat 16 units it measured 7 CSS px on the
@@ -512,9 +681,32 @@ func _size_buttons() -> void:
 		var hint_font: int = clampi(int(round(HINT_FONT_GLASS_PX / scale)),
 			FONT_MIN, FONT_MAX)
 		_hint.add_theme_font_size_override("font_size", hint_font)
+		# The submenu title scales the same way, and for the same reason: a
+		# flat font size in viewport units is a COUNT, not a size, so at 22 it
+		# measured ~9 CSS px on the phone -- the failure section 9d records for
+		# the hint, reappearing on the label added above it. Sized from the
+		# live scale, and its band grows with it so the glyphs are not clipped
+		# by a fixed-height rect.
+		if _menu_title != null:
+			var title_font: int = clampi(
+				int(round(TITLE_GLASS_PX / scale)), FONT_MIN, FONT_MAX)
+			_menu_title.add_theme_font_size_override("font_size", title_font)
+			var title_h: float = maxf(TITLE_HEIGHT, float(title_font) * 1.5)
+			# BELOW the logo's own rect, never in the gap above the first row.
+			#
+			# Hanging it off ROW_TOP put it at -86..-52, which is INSIDE the
+			# logo box (-286..-75) -- and the wordmark's drawn glyphs reach the
+			# bottom of that box, so the title landed across "RACER". The two
+			# rects overlapping is the whole failure; section 12 records the
+			# same thing twice, for the mirror cutting through the maze name
+			# and the quadrant's count label reaching into the mirror. Rect
+			# clearance is not text clearance, and here even the rects did not
+			# clear.
+			_menu_title.offset_top = LOGO_TOP + LOGO_SIZE.y + TITLE_GAP
+			_menu_title.offset_bottom = _menu_title.offset_top + title_h
 		var hint_h: float = maxf(HINT_HEIGHT, float(hint_font) * 1.6)
-		_hint.offset_top = ROW_TOP + stack + HINT_GAP
-		_hint.offset_bottom = ROW_TOP + stack + HINT_GAP + hint_h
+		_hint.offset_top = row_top + stack + HINT_GAP
+		_hint.offset_bottom = row_top + stack + HINT_GAP + hint_h
 
 
 # The viewport-to-screen scale, guarded.
@@ -889,12 +1081,7 @@ func _on_marker_closed() -> void:
 	if _marker_picker != null:
 		_marker_picker.queue_free()
 		_marker_picker = null
-	# Land the player back on the button they opened, rather than at the top of
-	# the stack -- the same courtesy the cog gets on the way out of settings.
-	for button in _buttons:
-		if button.text == "MARKER":
-			button.grab_focus()
-			break
+	_focus_button("MARKER")
 
 
 func _on_upgrades() -> void:
@@ -911,12 +1098,7 @@ func _on_upgrades_closed() -> void:
 	if _compendium != null:
 		_compendium.queue_free()
 		_compendium = null
-	# Land back on the button that opened it -- the courtesy MARKER and the cog
-	# both get.
-	for button in _buttons:
-		if button.text == "UPGRADES":
-			button.grab_focus()
-			break
+	_focus_button("UPGRADES")
 
 
 func _on_maze_colours() -> void:
@@ -933,10 +1115,7 @@ func _on_maze_colours_closed() -> void:
 	if _maze_colours != null:
 		_maze_colours.queue_free()
 		_maze_colours = null
-	for button in _buttons:
-		if button.text == "MAZE COLOURS":
-			button.grab_focus()
-			break
+	_focus_button("MAZE COLOURS")
 
 
 func _on_settings() -> void:
@@ -957,8 +1136,22 @@ func _on_settings_closed() -> void:
 	# now where that gets changed -- so it has to be re-read on the way out.
 	if _hint != null:
 		_hint.text = _hint_text()
-	if _cog != null:
-		_cog.grab_focus()
+	_focus_button("SETTINGS")
+
+
+# Land focus on a named row of the LIVE menu, falling back to the first row.
+#
+# Every screen closes back onto the button that opened it, and with submenus
+# that button may no longer be on screen -- a player can close a screen after
+# the menu has moved on. A miss must leave focus somewhere real rather than
+# nowhere, or the keyboard stops working with nothing to show why.
+func _focus_button(label: String) -> void:
+	for button in _buttons:
+		if button.text == label:
+			button.grab_focus()
+			return
+	if not _buttons.is_empty():
+		_buttons[0].grab_focus()
 
 
 func _make_button(text: String, handler: Callable) -> Button:
