@@ -1280,11 +1280,18 @@ const MARKER_DECALS := [
 		# read of the four at the trailing camera's shallow angle.
 	},
 	{
-		"id": "edge",
-		"label": "EDGE",
-		# An inset copy of the outline, so the pattern IS the silhouette. The
-		# one decal that flatters every shape equally, since it is derived from
-		# the shape rather than imposed on it.
+		"id": "notch",
+		"label": "NOTCH",
+		# A wedge cut from each flank, so the mark reads as having shoulders.
+		#
+		# This replaced an "EDGE" decal that subtracted an INSET COPY of the
+		# outline. That is the prettiest idea in the set and it cannot be built
+		# here: subtracting an inset leaves a RING, which is an outline plus a
+		# hole, and the mark is extruded as a single closed loop per piece. A
+		# ring came back as an outer loop identical to the plain shape (so the
+		# decal did nothing) plus a clockwise hole the extruder would have
+		# filled in solid. Recorded so nobody re-adds it without first giving
+		# the extrusion real hole support.
 	},
 	{
 		"id": "tip",
@@ -1362,34 +1369,20 @@ static func decal_polygons(id: String, outline: Array) -> Array:
 					if piece.size() >= 3:
 						out.append(piece)
 			return out
-		"edge":
-			# offset_polygon with a negative delta shrinks the outline along its
-			# own normals, so the result follows whatever silhouette it is given.
-			#
-			# An inset larger than the shape's THINNEST part consumes it and
-			# returns nothing at all. Measured: the chevron's arms vanish at
-			# 0.270 and survive at 0.180, because its bulk is two thin limbs
-			# rather than one body -- max_x and height describe its bounding box
-			# and say nothing about that.
-			#
-			# So the inset is not a constant, and it is not derived from the
-			# bounding box either. It steps DOWN until the offset actually
-			# returns a polygon, which is a property of the shape rather than a
-			# guess about it -- a thinner shape added later simply lands on a
-			# smaller step instead of silently drawing nothing. A branch that
-			# promises geometry has to verify it (section 12).
+		"notch":
+			# A wedge into each flank at the mark's widest point. Proportional
+			# to the shape, so it bites the same fraction of a narrow dart as of
+			# a broad delta.
 			var out2: Array = []
-			var widest: float = minf(max_x, height * 0.5)
-			for frac in [0.30, 0.22, 0.16, 0.11, 0.07]:
-				var inset: float = widest * frac
-				if inset <= 0.0:
-					continue
-				var pieces := Geometry2D.offset_polygon(poly, -inset)
-				for piece in pieces:
-					if piece.size() >= 3:
-						out2.append(piece)
-				if not out2.is_empty():
-					break
+			var mid: float = min_y + height * 0.55
+			var bite: float = height * 0.16
+			for side in [-1.0, 1.0]:
+				var tipx: float = max_x * side * 0.35
+				out2.append(PackedVector2Array([
+					Vector2(reach * side, mid - bite),
+					Vector2(tipx, mid),
+					Vector2(reach * side, mid + bite),
+				]))
 			return out2
 		"tip":
 			# Facing is -Y in this space, so forward is the LOW end.

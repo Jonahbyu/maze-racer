@@ -34,15 +34,6 @@ const COL_ARROW := Color(1.0, 1.0, 1.0)
 const COL_CRASH := Color(1.0, 0.25, 0.20)
 const COL_SCRAPE := Color(1.0, 0.72, 0.15)
 
-# How far the decal sits above the mark's top face.
-#
-# Geometric separation rather than a depth bias, because StandardMaterial3D
-# has no polygon-offset property in 4.7 (section 12). That section also records
-# two coplanar-surface failures -- the wall band and the wall-top cap -- which
-# were both fixed by separating generously rather than by a hairline: 0.05 was
-# still interleaving at grazing angles.
-const DECAL_LIFT := 0.006
-
 # Which shape the inner mark is drawn as, by Tuning.MARKER_SHAPES id.
 #
 # Empty means "ask Settings" -- which is what the game does. It is settable so
@@ -81,10 +72,8 @@ var player_colour := COL_ARROW
 
 var _ring: MeshInstance3D
 var _arrow: MeshInstance3D
-var _decal: MeshInstance3D
 var _ring_material: StandardMaterial3D
 var _arrow_material: StandardMaterial3D
-var _decal_material: StandardMaterial3D
 
 # Bobs gently so the marker reads as alive rather than pasted on the floor.
 var _bob := 0.0
@@ -187,66 +176,48 @@ func _build_shape() -> void:
 	var flat := PackedVector2Array()
 	for v in outline:
 		flat.append(Vector2(v.x * r, v.y * r))
-	var indices := Geometry2D.triangulate_polygon(flat)
 
-	# A degenerate outline triangulates to nothing. Falling back to a fan keeps
-	# a marker on screen -- losing track of your own marker is the one failure
-	# this whole file exists to prevent, so a shape that cannot be triangulated
-	# must still draw something.
-	if indices.is_empty():
-		for i in flat.size():
-			indices.append_array([i, (i + 1) % flat.size(), 0])
-
-	# The raised spine, lifted at the tip so the mark has a front seen from
-	# above as well as in silhouette. Every vertex is lifted by how far FORWARD
-	# it sits, which is what keeps a flat outline from reading as a flat plate:
-	# the shape rises toward the direction it points.
+	# The decal is CUT OUT of the mark, not drawn on top of it.
+	#
+	# Drawing a patch over the mark cannot work, and the reason is the material
+	# rather than the geometry: this surface is SHADING_MODE_UNSHADED with an
+	# emission energy of 3.0, so what renders is albedo + emission x energy and
+	# the mark SATURATES TO WHITE. A patch on it is invisible at every colour,
+	# every height and every energy -- measured in a real-game frame, where the
+	# marker is a flat white silhouette with even its own ring lost.
+	#
+	# Five fixes were spent on that surface before the frame was read: raising
+	# the lift, lowering the energy, clearing the mark's volume, reparenting the
+	# node, and finally a bright red plane floating half a unit above it, which
+	# also did not appear. That last one is what proved the problem was never a
+	# property of the decal.
+	#
+	# A HOLE cannot be washed out. The dark corridor floor shows through it, so
+	# the pattern reads as dark bands however bright the mark becomes -- and it
+	# holds at every state colour for free, since the gap has no colour of its
+	# own to keep in step.
+	var pieces := _cut_decal(flat)
+	# Every piece is extruded into ONE surface.
+	#
+	# The mark is a single loop UNTIL a decal is cut from it: a stripe severs it
+	# into bands and an inset rim leaves a ring plus its hole, so both return
+	# more than one polygon (measured: 2 pieces on every shape in the table).
+	# Extruding only the first would draw a marker missing most of itself.
+	#
+	# Depth is measured across the WHOLE mark rather than per piece, so the
+	# pieces keep one shared slope and still read as one object cut apart -- per
+	# piece, each band would rise to full height on its own and the shape would
+	# read as a staircase.
 	var min_z := INF
 	var max_z := -INF
-	for v in flat:
-		min_z = minf(min_z, v.y)
-		max_z = maxf(max_z, v.y)
+	for piece in pieces:
+		for v in piece:
+			min_z = minf(min_z, v.y)
+			max_z = maxf(max_z, v.y)
 	var span: float = maxf(max_z - min_z, 0.0001)
 
-	# Top face.
-	var i := 0
-	while i < indices.size():
-		var a: Vector2 = flat[indices[i]]
-		var b: Vector2 = flat[indices[i + 1]]
-		var c: Vector2 = flat[indices[i + 2]]
-		# Reversed against the triangulator's own order. Geometry2D winds in
-		# 2D screen convention, which maps to INWARD once y becomes +Z with +Y
-		# up -- the same sign flip the landmark drums hit (section 12). Asserted
-		# by signed volume rather than trusted, because an unshaded material
-		# looks identical either way.
-		_tri(st, _lift(c, min_z, span, h), _lift(b, min_z, span, h),
-			_lift(a, min_z, span, h))
-		i += 3
-
-	# Flat underside, wound the other way so it is visible from below. The
-	# marker sits a few centimetres off the floor and the camera dips toward it
-	# through a corner, so an open bottom shows as a hole in the mark.
-	i = 0
-	while i < indices.size():
-		var a2: Vector2 = flat[indices[i]]
-		var b2: Vector2 = flat[indices[i + 1]]
-		var c2: Vector2 = flat[indices[i + 2]]
-		_tri(st, Vector3(a2.x, 0.0, a2.y), Vector3(b2.x, 0.0, b2.y),
-			Vector3(c2.x, 0.0, c2.y))
-		i += 3
-
-	# The rim, joining the lifted top to the flat base around the whole outline.
-	# Without it the two faces float apart at every edge and the mark reads as
-	# two stacked cut-outs rather than one solid object.
-	for j in flat.size():
-		var p0: Vector2 = flat[j]
-		var p1: Vector2 = flat[(j + 1) % flat.size()]
-		var t0 := _lift(p0, min_z, span, h)
-		var t1 := _lift(p1, min_z, span, h)
-		var b0 := Vector3(p0.x, 0.0, p0.y)
-		var b1 := Vector3(p1.x, 0.0, p1.y)
-		_tri(st, b0, t0, t1)
-		_tri(st, b0, t1, b1)
+	for piece in pieces:
+		_extrude(st, piece, min_z, span, h)
 
 	st.generate_normals()
 
@@ -266,88 +237,71 @@ func _build_shape() -> void:
 	_arrow.position.y = 0.06
 	add_child(_arrow)
 
-	_build_decal(flat, min_z, span, h, r)
 
 
-# The decal, laid on the mark's own sloped top face.
+
+# Extrude one closed loop into a solid: sloped top, flat base, and a rim joining
+# them.
 #
-# The polygons come from Tuning.decal_polygons, which CLIPS the shape's outline
-# rather than looking a drawing up per pairing -- so a shape added later is
-# decorated by construction. See the table's own comment.
-#
-# It is lifted by the SAME _lift as the mark beneath it, not laid flat: the mark
-# is a prism whose top face rises toward the direction it points, so a flat
-# decal would sink through it along most of its length.
-func _build_decal(flat: PackedVector2Array, min_z: float, span: float,
-		h: float, r: float) -> void:
-	var id := _decal_id()
-	if id == Tuning.MARKER_DECAL_DEFAULT:
+# Split out of _build_shape so a decal that cuts the mark into several pieces
+# can extrude each one. It was inline while the mark was always a single loop.
+func _extrude(st: SurfaceTool, loop: PackedVector2Array, min_z: float,
+		span: float, h: float) -> void:
+	if loop.size() < 3:
 		return
+	var indices := Geometry2D.triangulate_polygon(loop)
 
-	# Generated from the SCALED outline the mark was actually built from, so
-	# the decal lands on the shape as drawn rather than on the table's unit
-	# version of it.
-	var outline: Array = []
-	for v in flat:
-		outline.append(v)
-	var polys: Array = Tuning.decal_polygons(id, outline)
-	if polys.is_empty():
-		return
+	# A degenerate loop triangulates to nothing. Falling back to a fan keeps a
+	# marker on screen -- losing track of your own marker is the one failure
+	# this whole file exists to prevent, so a piece that cannot be triangulated
+	# must still draw something.
+	#
+	# A fan FILLS a concave loop, which is wrong for a chevron and is why the
+	# mark is triangulated properly in the first place (section 12). It is
+	# acceptable only here, as the alternative to drawing nothing at all.
+	if indices.is_empty():
+		for k in loop.size():
+			indices.append_array([k, (k + 1) % loop.size(), 0])
 
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var emitted := 0
+	# Top face.
+	var i := 0
+	while i < indices.size():
+		var a: Vector2 = loop[indices[i]]
+		var b: Vector2 = loop[indices[i + 1]]
+		var c: Vector2 = loop[indices[i + 2]]
+		# Reversed against the triangulator's own order. Geometry2D winds in
+		# 2D screen convention, which maps to INWARD once y becomes +Z with +Y
+		# up -- the same sign flip the landmark drums hit (section 12). Asserted
+		# by signed volume rather than trusted, because an unshaded material
+		# looks identical either way.
+		_tri(st, _lift(c, min_z, span, h), _lift(b, min_z, span, h),
+			_lift(a, min_z, span, h))
+		i += 3
 
-	for poly in polys:
-		var points := PackedVector2Array(poly)
-		if points.size() < 3:
-			continue
-		# TRIANGULATED, not fanned -- a clipped polygon can be concave (the
-		# chevron's stripe is), and a fan would fill the notch. The same trap
-		# the inner mark itself hit (section 12).
-		var indices := Geometry2D.triangulate_polygon(points)
-		if indices.is_empty():
-			continue
-		var i := 0
-		while i < indices.size():
-			var a: Vector2 = points[indices[i]]
-			var b: Vector2 = points[indices[i + 1]]
-			var c: Vector2 = points[indices[i + 2]]
-			# Reversed against the triangulator's own order, for the reason the
-			# mark's top face is: Geometry2D winds in 2D screen convention,
-			# which maps to INWARD once y becomes +Z with +Y up.
-			_tri(st,
-				_lift_decal(c, min_z, span, h),
-				_lift_decal(b, min_z, span, h),
-				_lift_decal(a, min_z, span, h))
-			i += 3
-			emitted += 1
+	# Flat underside, wound the other way so it is visible from below. The
+	# marker sits a few centimetres off the floor and the camera dips toward it
+	# through a corner, so an open bottom shows as a hole in the mark.
+	i = 0
+	while i < indices.size():
+		var a2: Vector2 = loop[indices[i]]
+		var b2: Vector2 = loop[indices[i + 1]]
+		var c2: Vector2 = loop[indices[i + 2]]
+		_tri(st, Vector3(a2.x, 0.0, a2.y), Vector3(b2.x, 0.0, b2.y),
+			Vector3(c2.x, 0.0, c2.y))
+		i += 3
 
-	if emitted == 0:
-		return
-
-	st.generate_normals()
-
-	_decal_material = _make_material(_decal_colour(player_colour), 3.4)
-
-	_decal = MeshInstance3D.new()
-	_arrow.add_child(_decal)
-	# Named AFTER add_child: a name assigned before entry to the tree is
-	# overwritten by a generated one (section 12, the gate markers).
-	_decal.name = "Decal"
-	_decal.mesh = st.commit()
-	_decal.material_override = _decal_material
-
-
-# A decal vertex, on the mark's top face plus a small lift.
-#
-# The lift is geometric rather than a depth bias, because StandardMaterial3D has
-# no polygon-offset property in 4.7 -- section 12 records that, and records two
-# coplanar-surface failures (the wall band, the wall-top cap) that were both
-# fixed by real separation and generously rather than by a hairline.
-func _lift_decal(v: Vector2, min_z: float, span: float, h: float) -> Vector3:
-	var lifted := _lift(v, min_z, span, h)
-	return Vector3(lifted.x, lifted.y + DECAL_LIFT, lifted.z)
+	# The rim, joining the lifted top to the flat base around the whole outline.
+	# Without it the two faces float apart at every edge and the mark reads as
+	# two stacked cut-outs rather than one solid object.
+	for j in loop.size():
+		var p0: Vector2 = loop[j]
+		var p1: Vector2 = loop[(j + 1) % loop.size()]
+		var t0 := _lift(p0, min_z, span, h)
+		var t1 := _lift(p1, min_z, span, h)
+		var b0 := Vector3(p0.x, 0.0, p0.y)
+		var b1 := Vector3(p1.x, 0.0, p1.y)
+		_tri(st, b0, t0, t1)
+		_tri(st, b0, t1, b1)
 
 
 # The chosen decal's id.
@@ -363,6 +317,49 @@ func _decal_id() -> String:
 		if settings != null:
 			id = String(settings.marker_decal)
 	return String(Tuning.marker_decal(id)["id"])
+
+
+# The mark's outline with the chosen decal subtracted, as one or more pieces.
+#
+# Returns the ORIGINAL outline as a single piece when the cut would leave
+# nothing usable. Losing the pattern is cosmetic; losing the mark is the failure
+# this whole file exists to prevent, so anything ambiguous falls back to the
+# plain shape rather than risking a marker with holes where its body should be.
+#
+# Godot returns a HOLE as a clockwise-wound polygon from clip_polygons. Those
+# are dropped rather than modelled: the extrusion builds a solid per loop, so a
+# hole extruded as a solid would fill the gap it is supposed to be. Dropping it
+# leaves the outer ring, which is exactly what an inset rim should look like.
+func _cut_decal(flat: PackedVector2Array) -> Array:
+	var id := _decal_id()
+	if id == Tuning.MARKER_DECAL_DEFAULT:
+		return [flat]
+
+	var outline_array: Array = []
+	for v in flat:
+		outline_array.append(v)
+	var cuts: Array = Tuning.decal_polygons(id, outline_array)
+	if cuts.is_empty():
+		return [flat]
+
+	var result: Array = [flat]
+	for cut in cuts:
+		var next: Array = []
+		for loop in result:
+			for piece in Geometry2D.clip_polygons(loop,
+					PackedVector2Array(cut)):
+				if piece.size() < 3:
+					continue
+				# Clockwise is a hole -- see above.
+				if Geometry2D.is_polygon_clockwise(piece):
+					continue
+				next.append(piece)
+		if next.is_empty():
+			# The cut removed everything. Keep the plain mark.
+			return [flat]
+		result = next
+
+	return result
 
 
 # The outline for the shape this marker was built with.
@@ -393,28 +390,6 @@ func _tri(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3) -> void:
 	st.add_vertex(a)
 	st.add_vertex(b)
 	st.add_vertex(c)
-
-
-# The decal's colour, DERIVED from whatever the mark is currently showing.
-#
-# It has to contrast or it is not a pattern -- a decal drawn in the mark's own
-# colour is invisible, which is the same failure as not building it at all and
-# far harder to notice. And it cannot be a fixed colour either: a fixed dark
-# patch vanishes on a dark marker, and a fixed white one vanishes on the
-# near-white default.
-#
-# So it is derived: darkened against a light mark, lightened against a dark one,
-# with the switch on the mark's own luminance. That holds for every colour a
-# player can pick AND for the state colours, which is why it is computed here on
-# every update rather than once at build time.
-func _decal_colour(base: Color) -> Color:
-	# Rec. 601 luma -- the same weighting the eye applies, so a saturated yellow
-	# counts as light and a saturated blue as dark, which a plain average gets
-	# wrong in both directions.
-	var luma := base.r * 0.299 + base.g * 0.587 + base.b * 0.114
-	if luma > 0.42:
-		return base.darkened(0.62)
-	return base.lightened(0.68)
 
 
 func _make_material(colour: Color, energy: float) -> StandardMaterial3D:
@@ -470,10 +445,7 @@ func update_state(racer: Racer, delta: float) -> void:
 	if _arrow_material != null:
 		_arrow_material.albedo_color = mark_colour
 		_arrow_material.emission = mark_colour
-	# The decal follows the mark, CONTRASTED against it -- so a patterned marker
-	# still reads as one object changing colour rather than as a mark with a
-	# stuck patch on it, while the pattern stays visible at every colour.
-	if _decal_material != null:
-		var patch := _decal_colour(mark_colour)
-		_decal_material.albedo_color = patch
-		_decal_material.emission = patch
+	# The decal needs no colour update: it is a HOLE in the mark (see
+	# _cut_decal), so it shows the floor rather than a colour of its own. That
+	# is what makes it hold at every state colour without a second material to
+	# keep in step.

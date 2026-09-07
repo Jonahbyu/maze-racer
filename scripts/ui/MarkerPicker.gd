@@ -49,7 +49,51 @@ const PREVIEW_LOOK := Vector3(0.0, 0.0, -0.08)
 # box on the empty floor around it.
 const PREVIEW_FOV := 38.0
 
-const PANEL_SIZE := Vector2(720, 620)
+const PANEL_SIZE := Vector2(760, 830)
+
+# The colours offered as swatches.
+#
+# A PALETTE rather than a full RGB wheel, and that is a usability choice rather
+# than a restriction: the wheel's useful answers are a dozen saturated hues, and
+# a grid of them is one press where a wheel is a drag. NEAR-WHITE leads, because
+# it is what the marker was before this choice existed and a player must be able
+# to get back to it in one press (section 12 refused a colour picker over
+# exactly the visibility this row can cost).
+#
+# The maze palettes are deliberately NOT excluded. Section 12's objection is
+# real -- green in maze 3 is hard to see -- but the free choice is what was
+# asked for, and hiding the colours that make it visible would be pretending to
+# offer a choice while quietly removing its consequences. The preview shows the
+# state colours instead, so the cost is visible before it is paid.
+# Named so a tool or a test can ask for a specific swatch without restating its
+# value. MarkerPickerShot did restate one, got it wrong, and shot a white marker
+# while reporting success.
+const SWATCH_WHITE := Color(1.0, 1.0, 1.0)
+const SWATCH_LIME := Color(0.55, 0.95, 0.45)
+
+const COLOUR_SWATCHES: Array[Color] = [
+	SWATCH_WHITE,                # the default, first
+	Color(0.30, 0.85, 1.0),      # ice
+	Color(0.25, 0.55, 1.0),      # cobalt
+	Color(0.65, 0.45, 1.0),      # violet
+	Color(1.0, 0.40, 0.85),      # magenta
+	Color(1.0, 0.45, 0.35),      # coral
+	Color(1.0, 0.80, 0.30),      # gold
+	SWATCH_LIME,                 # lime -- maze 3's wall colour
+	Color(0.20, 0.85, 0.65),     # jade
+	Color(0.75, 0.78, 0.85),     # steel
+]
+
+const SWATCH_SIZE := Vector2(52, 40)
+
+# How long the preview holds each state before moving on.
+#
+# The preview CYCLES resting -> scrape -> crash rather than only showing the
+# resting colour. A player choosing a colour near amber or red needs to see what
+# a scrape looks like BEFORE committing to it -- otherwise the picker hides the
+# exact interaction the free choice put at risk, and the first time they learn
+# it is mid-run with the barrier draining.
+const STATE_CYCLE_SECONDS := 1.6
 
 # How fast the preview turns. Slow enough to read the silhouette at every angle,
 # fast enough that a player deciding between two shapes does not have to wait.
@@ -61,6 +105,13 @@ var _pivot: Node3D = null
 var _name_label: Label = null
 var _index := 0
 var _buttons: Array[Button] = []
+var _decal_buttons: Array[Button] = []
+var _swatches: Array[Button] = []
+var _decal_index := 0
+var _colour: Color = PlayerMarker.COL_ARROW
+var _state_clock := 0.0
+var _state_label: Label = null
+var _preview_state: Racer = null
 
 
 func _ready() -> void:
@@ -72,6 +123,8 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 
 	_index = _current_index()
+	_decal_index = _current_decal_index()
+	_colour = _current_colour()
 	_build_scrim()
 	_build_panel()
 	_show_shape()
@@ -113,10 +166,22 @@ func _build_panel() -> void:
 	rows.add_child(_heading("MARKER", 30, COL_ACCENT))
 	rows.add_child(_build_preview())
 
+	# What the preview is currently showing. Directly under the preview and
+	# ABOVE the shape name, because it describes the picture rather than the
+	# grid -- placed below the name it read as a heading for the shape buttons
+	# ("DRIVING" over a row of shapes), which only a rendered frame showed.
+	_state_label = _heading("", 14, COL_DIM)
+	rows.add_child(_state_label)
+
 	_name_label = _heading("", 24, Color.WHITE)
 	rows.add_child(_name_label)
 
+	rows.add_child(_label_row("SHAPE"))
 	rows.add_child(_build_grid())
+	rows.add_child(_label_row("PATTERN"))
+	rows.add_child(_build_decal_grid())
+	rows.add_child(_label_row("COLOUR"))
+	rows.add_child(_build_swatches())
 	rows.add_child(_make_button("CLOSE", _on_close))
 
 
@@ -188,12 +253,130 @@ func _build_grid() -> Control:
 	return grid
 
 
+# One button per decal, in a grid whose column count reads the table rather than
+# assuming a row width -- the same hard-coded-band reasoning _build_grid uses.
+func _build_decal_grid() -> Control:
+	var grid := GridContainer.new()
+	grid.columns = min(5, max(Tuning.MARKER_DECALS.size(), 1))
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+
+	for i in Tuning.MARKER_DECALS.size():
+		var decal: Dictionary = Tuning.MARKER_DECALS[i]
+		var button := _make_button(String(decal["label"]), _on_pick_decal.bind(i))
+		button.custom_minimum_size = Vector2(118, 42)
+		button.add_theme_font_size_override("font_size", 15)
+		_decal_buttons.append(button)
+		grid.add_child(button)
+
+	return grid
+
+
+# The colour swatches. Each draws its own colour as its face rather than naming
+# it, because a colour name is a worse answer to "what will this look like" than
+# the colour itself.
+func _build_swatches() -> Control:
+	var grid := GridContainer.new()
+	grid.columns = min(10, max(COLOUR_SWATCHES.size(), 1))
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 8)
+
+	for i in COLOUR_SWATCHES.size():
+		var button := Button.new()
+		button.custom_minimum_size = SWATCH_SIZE
+		button.focus_mode = Control.FOCUS_ALL
+		button.tooltip_text = "Marker colour"
+		for state in ["normal", "hover", "pressed", "focus", "disabled"]:
+			var style := StyleBoxFlat.new()
+			style.bg_color = COLOUR_SWATCHES[i]
+			style.set_corner_radius_all(6)
+			style.set_border_width_all(3)
+			style.border_color = Color(0.2, 0.3, 0.45)
+			button.add_theme_stylebox_override(state, style)
+		button.pressed.connect(_on_pick_colour.bind(i))
+		_swatches.append(button)
+		grid.add_child(button)
+
+	return grid
+
+
+func _label_row(text: String) -> Label:
+	return _heading(text, 15, COL_DIM)
+
+
 func _process(delta: float) -> void:
 	# Turning the preview is what makes a silhouette decision possible: several
 	# of these shapes are told apart by their outline from behind and to the
 	# side, which one fixed angle cannot show.
 	if _pivot != null:
 		_pivot.rotate_y(delta * SPIN_RATE)
+
+	_advance_state_preview(delta)
+
+
+# Cycle the preview through resting, scraping and crashed.
+#
+# This is the half of the picker that answers the objection section 12 raised
+# against offering colour at all. The marker turns amber on a scrape and red on
+# a crash, and those only read as STATE against a resting colour that is not
+# already amber or red -- so a player picking gold or coral needs to see the
+# collision here rather than discover it mid-run.
+#
+# It drives PlayerMarker.update_state directly with a stub rather than
+# duplicating the colour rules, so the preview cannot drift from what the game
+# actually draws.
+func _advance_state_preview(delta: float) -> void:
+	if _marker == null:
+		return
+	_state_clock = fmod(_state_clock + delta, STATE_CYCLE_SECONDS * 3.0)
+	var phase := int(_state_clock / STATE_CYCLE_SECONDS)
+
+	var racer := _preview_racer(phase)
+	if racer == null:
+		return
+	_marker.update_state(racer, delta)
+
+	if _state_label != null:
+		match phase:
+			1: _state_label.text = "SCRAPING  -  the barrier is draining"
+			2: _state_label.text = "CRASHED"
+			_: _state_label.text = "DRIVING"
+
+
+# A racer for the preview.
+#
+# The picker runs on the MENU, where there is no maze and no run. A bare
+# Racer.new() is not enough either: update_state reads barrier_fraction(), which
+# divides by upgrades.barrier_capacity() -- so an un-setup racer takes the
+# preview down on a null. It is given a real maze and a real build for that one
+# reason, and is never stepped.
+func _preview_racer(phase: int) -> Racer:
+	# Built ONCE and mutated, not rebuilt per frame. Generating a maze every
+	# frame to set three fields is the failure section 12 records for
+	# GoldenTrail's ribbon: 23ms a frame for something whose inputs never
+	# changed.
+	if _preview_state == null:
+		var racer := Racer.new()
+		var maze := Maze.new()
+		maze.generate(8, 8, 1, 0.0, 0.0, 4)
+		racer.setup(maze, Upgrades.new(1))
+		_preview_state = racer
+	var r := _preview_state
+	match phase:
+		1:
+			r.state = Racer.State.RUNNING
+			r.scraping = true
+			# Part-drained, so the scrape colour is mid-way between amber and
+			# red -- which is what a player actually sees for most of a scrape,
+			# rather than either endpoint.
+			r.barrier = r.upgrades.barrier_capacity() * 0.45
+		2:
+			r.state = Racer.State.PARKED
+			r.scraping = false
+		_:
+			r.state = Racer.State.RUNNING
+			r.scraping = false
+	return r
 
 
 # --- State -------------------------------------------------------------------
@@ -218,6 +401,27 @@ func _current_index() -> int:
 		if String(Tuning.MARKER_SHAPES[i]["id"]) == resolved:
 			return i
 	return 0
+
+
+# Where the saved decal sits in the table, resolved through Tuning so a decal
+# dropped since the file was written lands on the default.
+func _current_decal_index() -> int:
+	var settings := _settings()
+	var id: String = Tuning.MARKER_DECAL_DEFAULT
+	if settings != null:
+		id = String(settings.marker_decal)
+	var resolved: String = String(Tuning.marker_decal(id)["id"])
+	for i in Tuning.MARKER_DECALS.size():
+		if String(Tuning.MARKER_DECALS[i]["id"]) == resolved:
+			return i
+	return 0
+
+
+func _current_colour() -> Color:
+	var settings := _settings()
+	if settings != null:
+		return settings.marker_colour
+	return PlayerMarker.COL_ARROW
 
 
 # Rebuild the preview marker for the current index.
@@ -247,6 +451,8 @@ func _show_shape() -> void:
 	# to show them a shape (section 12: a tool must not write the state it is
 	# inspecting).
 	_marker.shape_id = String(shape["id"])
+	_marker.decal_id = String(Tuning.MARKER_DECALS[_decal_index]["id"])
+	_marker.player_colour = _colour
 	_pivot.add_child(_marker)
 
 	if _name_label != null:
@@ -259,13 +465,51 @@ func _show_shape() -> void:
 # live rather than leaving that to the label above it alone.
 func _refresh_buttons() -> void:
 	for i in _buttons.size():
-		var lit: bool = i == _index
-		var button: Button = _buttons[i]
-		var style := button.get_theme_stylebox("normal") as StyleBoxFlat
+		_mark_selected(_buttons[i], i == _index)
+
+	for i in _decal_buttons.size():
+		_mark_selected(_decal_buttons[i], i == _decal_index)
+
+	# The live swatch is marked by its BORDER, never by its fill -- the fill is
+	# the colour being offered, so changing it would misreport the choice.
+	for i in _swatches.size():
+		var slit: bool = COLOUR_SWATCHES[i].is_equal_approx(_colour)
+		for state in ["normal", "hover", "pressed", "focus", "disabled"]:
+			var sstyle := _swatches[i].get_theme_stylebox(state) as StyleBoxFlat
+			if sstyle != null:
+				sstyle.border_color = Color.WHITE if slit 					else Color(0.2, 0.3, 0.45)
+
+
+# Mark a button as the live choice, across EVERY state.
+#
+# Refreshing only the "normal" stylebox is not enough, and a rendered frame is
+# what showed it: focus_first() grabs focus on the saved choice, and a focused
+# button draws its FOCUS stylebox -- so after picking a different shape, two
+# buttons were lit at once and the panel reported two selections. Selection and
+# focus are different things and must not share one signal.
+#
+# Selected keeps the accent border in every state; unselected is dim in its
+# resting states and still brightens on hover and focus, so keyboard navigation
+# stays visible without claiming to be a choice.
+func _mark_selected(button: Button, selected: bool) -> void:
+	for state in ["normal", "hover", "pressed", "focus", "disabled"]:
+		var style := button.get_theme_stylebox(state) as StyleBoxFlat
 		if style == null:
 			continue
-		style.border_color = COL_ACCENT if lit else Color(0.2, 0.3, 0.45)
-		style.bg_color = COL_CARD_HOVER if lit else COL_CARD
+		var interactive: bool = state in ["hover", "focus", "pressed"]
+		if selected:
+			style.border_color = COL_ACCENT
+			style.bg_color = COL_CARD_HOVER
+		else:
+			# A NEUTRAL focus ring, not a dimmer accent. Darkening the accent
+			# was measured against a rendered frame and still read as a second
+			# selection -- the eye separates hues far more readily than it
+			# separates two values of one hue, so a focused-but-unchosen button
+			# in dim cyan beside a chosen one in bright cyan reports two
+			# choices. Focus says "you are here"; the accent says "this is your
+			# marker", and they must not share a colour.
+			style.border_color = Color(0.55, 0.62, 0.75) if interactive 				else Color(0.2, 0.3, 0.45)
+			style.bg_color = COL_CARD_HOVER if interactive else COL_CARD
 
 
 # --- Widgets -----------------------------------------------------------------
@@ -316,6 +560,28 @@ func _on_pick(index: int) -> void:
 	var settings := _settings()
 	if settings != null:
 		settings.set_marker_shape(String(Tuning.MARKER_SHAPES[index]["id"]))
+
+
+func _on_pick_decal(index: int) -> void:
+	if index < 0 or index >= Tuning.MARKER_DECALS.size():
+		return
+	_decal_index = index
+	# Rebuilt rather than mutated, for the reason a shape change is: the decal
+	# is baked into a mesh at build time.
+	_show_shape()
+	var settings := _settings()
+	if settings != null:
+		settings.set_marker_decal(String(Tuning.MARKER_DECALS[index]["id"]))
+
+
+func _on_pick_colour(index: int) -> void:
+	if index < 0 or index >= COLOUR_SWATCHES.size():
+		return
+	_colour = COLOUR_SWATCHES[index]
+	_show_shape()
+	var settings := _settings()
+	if settings != null:
+		settings.set_marker_colour(_colour)
 
 
 func _on_close() -> void:

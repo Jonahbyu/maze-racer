@@ -22,6 +22,13 @@ var _stage := 0
 
 # The player's own choice, put back before the tool exits.
 var _saved := ""
+# The picker now writes THREE preferences, not one. Restoring only the shape
+# would leave the player on whichever colour and pattern this tool shot last --
+# the same failure the shape restore already exists to prevent, arriving through
+# the two settings added after it.
+var _saved_decal := ""
+var _saved_colour := Color.WHITE
+var _remembered := false
 
 # Long enough for the panel to lay out and for the preview's turntable to swing
 # off its start angle, so the shot shows the shape at an angle rather than
@@ -66,6 +73,25 @@ func _on_frame() -> void:
 			_stage = 2
 		2:
 			_capture("02_last")
+			# A DECAL, on the lightcycle picked above. The pattern is generated
+			# by clipping the shape's own outline, so whether it reads at all
+			# is a question about a rendered frame rather than about geometry
+			# -- RulesTest already proves the polygons are valid and inside the
+			# shape, and a valid polygon can still be invisible.
+			_pick_decal("stripe")
+			_stage = 3
+		3:
+			_capture("03_decal")
+			# A COLOUR, named by its position in the real table rather than by
+			# a literal. The first version passed Color(0.2, 0.9, 0.35), which
+			# is not in COLOUR_SWATCHES at all -- the lime is (0.55, 0.95,
+			# 0.45) -- so the lookup matched nothing, returned silently, and
+			# the frame came back white while reporting PASS. A literal here is
+			# a transcription of the table, and it went stale immediately.
+			_pick_colour(MarkerPicker.SWATCH_LIME)
+			_stage = 4
+		4:
+			_capture("04_colour")
 			_restore()
 			print("RESULT: PASS")
 			quit(0)
@@ -92,16 +118,47 @@ func _pick(index: int) -> void:
 		_picker._on_pick(index)
 
 
+func _pick_decal(id: String) -> void:
+	if _picker == null:
+		return
+	for i in Tuning.MARKER_DECALS.size():
+		if String(Tuning.MARKER_DECALS[i]["id"]) == id:
+			_picker._on_pick_decal(i)
+			return
+
+
+func _pick_colour(colour: Color) -> void:
+	if _picker == null:
+		return
+	# Through the picker's own handler, by INDEX, so the tool exercises the
+	# same path a click does rather than writing the setting behind it.
+	for i in MarkerPicker.COLOUR_SWATCHES.size():
+		if MarkerPicker.COLOUR_SWATCHES[i].is_equal_approx(colour):
+			_picker._on_pick_colour(i)
+			return
+	# A no-match must be LOUD. Returning quietly is what produced a white frame
+	# under a PASS -- the tool agreeing with itself about a colour it never set.
+	push_error("MarkerPickerShot: no swatch matches %s" % colour)
+
+
 func _remember() -> void:
 	var settings := root.get_node_or_null("/root/Settings")
 	if settings != null:
 		_saved = String(settings.marker_shape)
+		_saved_decal = String(settings.marker_decal)
+		_saved_colour = settings.marker_colour
+		_remembered = true
 
 
 func _restore() -> void:
 	var settings := root.get_node_or_null("/root/Settings")
-	if settings != null and _saved != "":
+	if settings == null or not _remembered:
+		return
+	if _saved != "":
 		settings.set_marker_shape(_saved)
+	if _saved_decal != "":
+		settings.set_marker_decal(_saved_decal)
+	settings.set_marker_colour(_saved_colour)
 
 
 func _capture(label: String) -> void:

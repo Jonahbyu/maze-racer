@@ -227,10 +227,30 @@ func _test_marker_decals() -> void:
 
 			for poly in polys:
 				check("%s polygon closes" % label, poly.size() >= 3)
-				# A decal must stay INSIDE the mark it decorates. One spilling
-				# past the outline would draw over the ring -- which is the
-				# state channel -- and over the corridor floor beyond it.
-				for point in poly:
+
+			# What must stay inside the shape is the RESULT of cutting, not the
+			# cutter.
+			#
+			# An earlier version asserted the cutters themselves were bounded,
+			# which was right while a decal was drawn ON the mark and became
+			# wrong when it became a hole cut FROM it: a tool that removes a
+			# wedge from a flank has to start outside the flank, so a bounded
+			# cutter cannot reach the edge it is meant to bite. The check now
+			# clips the outline and asserts what survives.
+			var pieces: Array = [PackedVector2Array(outline)]
+			for cut in polys:
+				var next: Array = []
+				for loop in pieces:
+					for piece in Geometry2D.clip_polygons(loop,
+							PackedVector2Array(cut)):
+						if piece.size() >= 3 								and not Geometry2D.is_polygon_clockwise(piece):
+							next.append(piece)
+				if not next.is_empty():
+					pieces = next
+
+			check("%s leaves something to draw" % label, not pieces.is_empty())
+			for piece in pieces:
+				for point in piece:
 					check("%s stays inside the shape" % label,
 						absf(point.x) <= max_x + 0.001
 							and point.y >= min_y - 0.001

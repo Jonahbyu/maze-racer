@@ -1841,6 +1841,10 @@ func _check_every_shape_builds_with_every_decal() -> void:
 	var host := Node3D.new()
 	get_root().add_child(host)
 
+	# The plain face count per shape, filled in by the "none" pairing, which
+	# the table lists first. Every other decal is compared against it.
+	var plain_faces := {}
+
 	for shape in Tuning.MARKER_SHAPES:
 		for decal in Tuning.MARKER_DECALS:
 			var sid: String = String(shape["id"])
@@ -1861,14 +1865,45 @@ func _check_every_shape_builds_with_every_decal() -> void:
 			check("%s keeps its ring" % label,
 				marker.get_node_or_null("Ring") != null)
 
-			var patch := marker.get_node_or_null("Arrow/Decal") \
-				as MeshInstance3D
-			if did == Tuning.MARKER_DECAL_DEFAULT:
-				check("%s draws no decal" % label, patch == null)
-			else:
-				check("%s draws its decal" % label, patch != null)
-				if patch != null:
-					check("%s decal has a mesh" % label, patch.mesh != null)
+			# The decal is CUT OUT of the mark rather than drawn on top of it
+			# (PlayerMarker._cut_decal), so what proves it landed is the mark's
+			# own geometry differing from the plain version -- there is no
+			# separate node to look for.
+			#
+			# A patch node WOULD have been easier to assert, and that is worth
+			# knowing: the first version of this check asserted exactly that,
+			# and passed for every pairing while the decal was invisible in
+			# every rendered frame. The mark is unshaded at emission 3.0 and
+			# saturates to white, so nothing drawn ON it can ever be seen.
+			var mark := marker.get_node_or_null("Arrow") as MeshInstance3D
+			if mark != null and mark.mesh != null:
+				# Compared by the actual VERTEX DATA.
+				#
+				# Two weaker proxies were tried first and both were wrong in
+				# opposite directions. A face COUNT missed real changes --
+				# splitting a delta yields another triangle, same count. The
+				# AABB missed even more: a stripe cut from the middle of a shape
+				# does not move its outer bounds at all, so nearly every pairing
+				# reported "no change" while the mesh had plainly changed. Only
+				# the vertices themselves answer "did the cut land".
+				var verts := mark.mesh.get_faces()
+				if did == Tuning.MARKER_DECAL_DEFAULT:
+					plain_faces[sid] = verts
+				elif plain_faces.has(sid):
+					var plain: PackedVector3Array = plain_faces[sid]
+					var same := verts.size() == plain.size()
+					if same:
+						for vi in verts.size():
+							if not verts[vi].is_equal_approx(plain[vi]):
+								same = false
+								break
+					check("%s changes the mark's geometry" % label, not same,
+						"%d verts against %d" % [verts.size(), plain.size()])
+				# Still a closed solid after cutting -- the property that
+				# actually matters, and the one a hole could break.
+				var volume := _signed_volume(mark.mesh)
+				check("%s stays a closed solid" % label, volume > 0.0,
+					"signed volume %f" % volume)
 
 			marker.queue_free()
 
