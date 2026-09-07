@@ -57,6 +57,7 @@ func _init() -> void:
 	_test_unlocks()
 	_test_peak_speed()
 	_test_achievement_evaluation()
+	_test_demo_table()
 
 	print("")
 	print("passed: %d   failed: %d" % [_passed, _failed])
@@ -365,6 +366,38 @@ func _test_achievement_evaluation() -> void:
 	rich.banked = 600000.0
 	fresh.evaluate(rich, Upgrades.new(1), 4, 50, true)
 	check("half a million unlocks violet", fresh.is_unlocked("colour:violet"))
+
+
+# The compendium's demo table (docs/plans/upgrade-compendium.md).
+#
+# Asserts the table's SHAPE, never its contents -- the same division
+# _test_marker_shapes() draws. What matters is that every upgrade line has
+# exactly one demo and that every demo names a kind the drawer implements. What
+# a given demo LOOKS like is a rendered-frame question (CompendiumShot).
+#
+# The coverage check is the one that earns its place: it fails when someone adds
+# an upgrade line and forgets this screen, which would otherwise show a blank box
+# forever with nothing reporting it.
+func _test_demo_table() -> void:
+	for line in Upgrades.DEFINITIONS:
+		check("demo table covers %s" % Upgrades.DEFINITIONS[line]["name"],
+			UpgradeDemo.DEMOS.has(line))
+
+	for line in UpgradeDemo.DEMOS:
+		check("demo %d names a real line" % line,
+			Upgrades.DEFINITIONS.has(line))
+
+		var entry: Dictionary = UpgradeDemo.DEMOS[line]
+		var name := String(Upgrades.DEFINITIONS[line]["name"]) 			if Upgrades.DEFINITIONS.has(line) else str(line)
+
+		# A typo'd kind would draw an empty box, which reads as the demo being
+		# unwired rather than as a bad table entry.
+		check("demo for %s names a valid kind" % name,
+			int(entry.get("kind", -1)) in UpgradeDemo.KINDS)
+		# Every demo carries a one-line summary of the MECHANIC. The derived
+		# per-rank text covers the numbers; this covers the idea.
+		check("demo for %s has a caption" % name,
+			String(entry.get("caption", "")).strip_edges() != "")
 
 
 # The quadrant box and the cardinal compass (CLAUDE.md section 7).

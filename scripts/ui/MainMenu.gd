@@ -188,6 +188,7 @@ var _hint: Label = null
 var _cog: Button = null
 var _panel: SettingsPanel = null
 var _marker_picker: MarkerPicker = null
+var _compendium: UpgradeCompendium = null
 
 
 func _ready() -> void:
@@ -349,6 +350,10 @@ func _build_buttons() -> void:
 	# found, and it needs a preview, which is a panel row's worth of screen on
 	# its own.
 	grid.add_child(_make_button("MARKER", _on_marker))
+	# UPGRADES sits beside MARKER for the same reason MARKER is not behind the
+	# cog: it is not a PREFERENCE. It is a reference screen a player opens to
+	# decide what to take, which wants to be seen rather than found.
+	grid.add_child(_make_button("UPGRADES", _on_upgrades))
 	grid.add_child(_make_button("WATCH TRAILER", _on_trailer))
 	# LEADERBOARD reaches the board on a screen too narrow to show the panel
 	# beside the menu. Below TWO_COLUMN_MIN_WINDOW_WIDTH the panel is hidden
@@ -399,7 +404,9 @@ func _build_buttons() -> void:
 #
 # They are named rather than counted, so adding a button later does not silently
 # push a different one off the phone.
-const PHONE_HIDDEN := ["MARKER", "WATCH TRAILER", "QUIT"]
+# UPGRADES is a list beside a diagram, which wants a desktop screen for the same
+# reason MARKER's preview does.
+const PHONE_HIDDEN := ["MARKER", "UPGRADES", "WATCH TRAILER", "QUIT"]
 
 
 # Size the buttons for the glass and wrap them into as many columns as it takes.
@@ -880,6 +887,28 @@ func _on_marker_closed() -> void:
 	# the stack -- the same courtesy the cog gets on the way out of settings.
 	for button in _buttons:
 		if button.text == "MARKER":
+			button.grab_focus()
+			break
+
+
+func _on_upgrades() -> void:
+	if _compendium != null:
+		return
+	var screen := UpgradeCompendium.new()
+	screen.closed.connect(_on_upgrades_closed)
+	_compendium = screen
+	add_child(screen)
+	screen.focus_first()
+
+
+func _on_upgrades_closed() -> void:
+	if _compendium != null:
+		_compendium.queue_free()
+		_compendium = null
+	# Land back on the button that opened it -- the courtesy MARKER and the cog
+	# both get.
+	for button in _buttons:
+		if button.text == "UPGRADES":
 			button.grab_focus()
 			break
 

@@ -665,6 +665,7 @@ func _go() -> void:
 	_check_menu_buttons(shell)
 	_check_name_prompt(shell)
 	_check_unlocks_autoload()
+	await _check_compendium(shell)
 
 	_finish()
 
@@ -849,6 +850,80 @@ func _check_unlocks_autoload() -> void:
 	if node != null:
 		check("Unlocks carries its table",
 			node.ACHIEVEMENTS.size() > 0)
+
+
+# The UPGRADES button opens the compendium, and its bubble stays in the panel.
+#
+# Driven through the menu's own button rather than by constructing the screen,
+# because that is the half that rots: a button wired to nothing leaves
+# UpgradeCompendium perfectly correct and the player unable to reach it.
+func _check_compendium(shell) -> void:
+	# Through the shell's own live child, the way every other menu check finds
+	# it -- the node is not named "MainMenu" in the tree.
+	shell.show_menu()
+	await process_frame
+	var menu = shell._current
+	if menu == null:
+		check("menu is present for the compendium check", false)
+		return
+
+	var button := _find_button(menu, "UPGRADES")
+	check("the menu has an UPGRADES button", button != null)
+	if button == null:
+		return
+
+	button.pressed.emit()
+	await process_frame
+	await process_frame
+
+	var screen: UpgradeCompendium = null
+	for child in menu.get_children():
+		if child is UpgradeCompendium:
+			screen = child
+	check("UPGRADES opens the compendium", screen != null)
+	if screen == null:
+		return
+
+	# Every line in the game is listed. This is the menu-side half of
+	# RulesTest's table coverage check.
+	check("the compendium lists every upgrade line",
+		screen._lines.size() == Upgrades.DEFINITIONS.size())
+
+	# THE BUBBLE STAYS INSIDE THE PANEL, at BOTH ends of the list.
+	#
+	# Both ends, because the top passes trivially: a bubble placed at a fixed
+	# offset is correct there and runs off the screen at the last row, which is
+	# exactly the hard-coded-band failure the clamp exists to prevent. Testing
+	# one end would pass against the broken version.
+	var panel: PanelContainer = screen.get_node_or_null("Panel")
+	var bubble: PanelContainer = screen.get_node_or_null("Bubble")
+	check("the compendium builds its panel", panel != null)
+	check("the compendium builds its bubble", bubble != null)
+
+	if panel != null and bubble != null:
+		for index in [0, screen._lines.size() - 1]:
+			screen._select(index)
+			await process_frame
+			await process_frame
+			var p := panel.get_global_rect()
+			var b := bubble.get_global_rect()
+			check("bubble top inside the panel at row %d" % index,
+				b.position.y >= p.position.y - 1.0,
+				"bubble %.1f, panel %.1f" % [b.position.y, p.position.y])
+			check("bubble bottom inside the panel at row %d" % index,
+				b.position.y + b.size.y <= p.position.y + p.size.y + 1.0,
+				"bubble %.1f, panel %.1f" % [
+					b.position.y + b.size.y, p.position.y + p.size.y])
+			check("bubble right inside the panel at row %d" % index,
+				b.position.x + b.size.x <= p.position.x + p.size.x + 1.0)
+
+	screen.closed.emit()
+	await process_frame
+	var still_open := false
+	for child in menu.get_children():
+		if child is UpgradeCompendium:
+			still_open = true
+	check("closing the compendium frees it", not still_open)
 
 
 func _find_button(node: Node, text: String) -> Button:
