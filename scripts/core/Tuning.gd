@@ -1356,18 +1356,29 @@ static func decal_polygons(id: String, outline: Array) -> Array:
 		MARKER_DECAL_DEFAULT:
 			return []
 		"stripe":
+			# Two bands cut ACROSS the facing axis, placed where the shape is
+			# WIDEST rather than at even fractions of its length.
+			#
+			# Measured in a real-game frame: at 12% of height and sitting near
+			# the tail, the bands landed where the mark is narrow and read as a
+			# single nick in the trailing edge -- correct geometry, no pattern.
+			# The gap has to be a real fraction of the silhouette to survive the
+			# trailing camera's foreshortening, which already ate a shallow
+			# taper once (section 12, the lightcycle nose).
 			var out: Array = []
-			for frac in [0.32, 0.60]:
+			for frac in [0.42, 0.70]:
 				var y: float = min_y + height * frac
 				var band := PackedVector2Array([
 					Vector2(-reach, y),
 					Vector2(reach, y),
-					Vector2(reach, y + height * 0.12),
-					Vector2(-reach, y + height * 0.12),
+					Vector2(reach, y + height * 0.10),
+					Vector2(-reach, y + height * 0.10),
 				])
-				for piece in Geometry2D.intersect_polygons(band, poly):
-					if piece.size() >= 3:
-						out.append(piece)
+				# NOT intersected with the shape. A cutter is subtracted from
+				# the outline (PlayerMarker._cut_decal), so it must SPAN the
+				# shape to cut clean through it -- an intersected band stops at
+				# the outline and leaves the flanks joined.
+				out.append(band)
 			return out
 		"notch":
 			# A wedge into each flank at the mark's widest point. Proportional
@@ -1385,31 +1396,31 @@ static func decal_polygons(id: String, outline: Array) -> Array:
 				]))
 			return out2
 		"tip":
-			# Facing is -Y in this space, so forward is the LOW end.
-			var cut: float = min_y + height * 0.34
-			var nose := PackedVector2Array([
-				Vector2(-reach, min_y - height),
-				Vector2(reach, min_y - height),
-				Vector2(reach, cut),
-				Vector2(-reach, cut),
-			])
-			var out3: Array = []
-			for piece in Geometry2D.intersect_polygons(nose, poly):
-				if piece.size() >= 3:
-					out3.append(piece)
+			# A band cut just behind the nose, so the tip reads as a separate
+			# forward element. Facing is -Y here, so forward is the LOW end.
+			#
+			# A cutter, so it spans the shape rather than being clipped to it.
+			var lo: float = min_y + height * 0.22
+			var out3: Array = [PackedVector2Array([
+				Vector2(-reach, lo),
+				Vector2(reach, lo),
+				Vector2(reach, lo + height * 0.09),
+				Vector2(-reach, lo + height * 0.09),
+			])]
 			return out3
 		"split":
-			var half := PackedVector2Array([
-				Vector2(0.0, min_y - height),
-				Vector2(reach, min_y - height),
-				Vector2(reach, max_y + height),
-				Vector2(0.0, max_y + height),
-			])
-			var out4: Array = []
-			for piece in Geometry2D.intersect_polygons(half, poly):
-				if piece.size() >= 3:
-					out4.append(piece)
-			return out4
+			# A slot down the centre line, splitting the mark lengthways.
+			#
+			# A THIN slot rather than a whole half: removing half the mark
+			# leaves a shape that no longer reads as pointing, which is the one
+			# property every marker shape must keep (section 12).
+			var slot: float = maxf(max_x * 0.10, 0.004)
+			return [PackedVector2Array([
+				Vector2(-slot, min_y - height),
+				Vector2(slot, min_y - height),
+				Vector2(slot, max_y + height),
+				Vector2(-slot, max_y + height),
+			])]
 	return []
 
 
