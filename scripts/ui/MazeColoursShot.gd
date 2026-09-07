@@ -29,6 +29,14 @@ func _run() -> void:
 	root.add_child(_menu)
 	await process_frame
 
+	# A genuinely FRESH profile, not this machine's saved one. The first
+	# version shot whatever was already earned here and produced a nearly
+	# complete board labelled "01_locked" -- a frame that cannot show the state
+	# it is named for. The saved set is restored on the way out.
+	var fresh := root.get_node_or_null("Unlocks")
+	if fresh != null:
+		fresh.earned = {}
+
 	_screen = MazeColours.new()
 	_menu.add_child(_screen)
 	# Nothing is captured on the frame the screen is BUILT: process_frame fires

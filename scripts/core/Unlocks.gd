@@ -129,6 +129,15 @@ const ACHIEVEMENTS := {
 		"requirement": "Take 500 clean turns in one run",
 		"grants": "colour:lime",
 	},
+	# Cobalt became lockable when colour 2's default moved to white. It was
+	# unlocked from the start purely to be the second default, which is a
+	# cosmetic nobody had to earn -- the mirror of the "achievement granting
+	# something already held" bug, and asserted in both directions now.
+	"gatecrasher": {
+		"label": "GATECRASHER",
+		"requirement": "Collect every gate in three mazes",
+		"grants": "colour:cobalt",
+	},
 
 	# --- Palettes: earned across the whole spread of play -----------------
 	#
@@ -138,27 +147,52 @@ const ACHIEVEMENTS := {
 	# them. A player who never crashes never earns CRIMSON, and one who never
 	# scrapes never earns JADE.
 	#
-	# The four "reach maze N" entries no longer grant the mazes' own palettes:
-	# those are unlocked from the start now, and an achievement granting
-	# something already held is a goal with no reward (asserted).
+	# The four "reach maze N" entries grant the mazes' OWN colourways, and that
+	# pairing is deliberate: reaching The Ember is what earns you the right to
+	# put ember on another maze. The reward is the thing the player just drove
+	# through, which needs no explaining.
+	"palette_magenta": {
+		"label": "THE EMBER",
+		"requirement": "Reach maze 2",
+		"grants": "palette:magenta",
+	},
+	"palette_acid": {
+		"label": "THE TANGLE",
+		"requirement": "Reach maze 3",
+		"grants": "palette:acid",
+	},
+	"palette_ember": {
+		"label": "THE LABYRINTH",
+		"requirement": "Reach maze 4",
+		"grants": "palette:ember",
+	},
+	"palette_violet": {
+		"label": "THE VAULT",
+		"requirement": "Reach maze 5",
+		"grants": "palette:violet",
+	},
+	# These four moved OFF "reach maze N" when the authored colourways took
+	# those slots. Two goals with the same requirement unlock as a pair, which
+	# spends two entries to ask one question -- so these sit on score, speed and
+	# survival instead, keeping the spread this block is built around.
 	"palette_ice": {
 		"label": "ICE",
-		"requirement": "Reach maze 2",
+		"requirement": "Bank 50,000 points in a run",
 		"grants": "palette:ice",
 	},
 	"palette_azure": {
 		"label": "AZURE",
-		"requirement": "Reach maze 3",
+		"requirement": "Reach 5x speed",
 		"grants": "palette:azure",
 	},
 	"palette_cobalt": {
 		"label": "COBALT",
-		"requirement": "Reach maze 4",
+		"requirement": "Bank a maze without crashing once",
 		"grants": "palette:cobalt",
 	},
 	"palette_indigo": {
 		"label": "INDIGO",
-		"requirement": "Reach maze 5",
+		"requirement": "Clear three mazes in one run",
 		"grants": "palette:indigo",
 	},
 	"palette_orchid": {
@@ -289,12 +323,23 @@ func _is_default(id: String) -> bool:
 	return id == id_for(KIND_SHAPE, Tuning.MARKER_SHAPE_DEFAULT) 		or id == id_for(KIND_DECAL, Tuning.MARKER_DECAL_DEFAULT) 		or id == id_for(KIND_COLOUR, Tuning.MARKER_COLOUR_DEFAULT) 		or id == id_for(KIND_COLOUR, Tuning.MARKER_COLOUR_2_DEFAULT) 		or _is_authored_palette(id)
 
 
-# One of the five palettes a maze ships with, which are never lockable.
+# MAZE 1's palette, the one colourway that can never be locked.
+#
+# All five authored palettes used to sit here, and that gave a fresh profile
+# five ready choices on a screen whose whole job is to be a goal list -- the
+# five were simultaneously every maze's default AND every slot's alternative,
+# so the screen opened fully stocked and nothing on it read as earnable.
+#
+# Displaying a colourway and being able to REASSIGN it are different rights, and
+# only the first has to be free: Game reads default_palette_id() directly, so
+# every maze still SHOWS its own authored hue on a fresh profile and the
+# escalation section 8 tuned is intact. What is earned is the ability to move a
+# colourway onto a slot it does not belong to.
+#
+# Maze 1's stays unlocked because a profile with nothing earned could otherwise
+# assign nothing at all, which is a screen with no legal move on it.
 func _is_authored_palette(id: String) -> bool:
-	for i in Tuning.MAZES.size():
-		if id == id_for(KIND_PALETTE, Tuning.default_palette_id(i)):
-			return true
-	return false
+	return id == id_for(KIND_PALETTE, Tuning.default_palette_id(0))
 
 
 # Every cosmetic that CAN be locked -- everything but the three defaults.
@@ -315,14 +360,15 @@ static func lockable_ids() -> Array:
 	for decal in Tuning.MARKER_DECALS:
 		if String(decal["id"]) != Tuning.MARKER_DECAL_DEFAULT:
 			out.append(id_for(KIND_DECAL, String(decal["id"])))
-	# The five AUTHORED palettes -- the mazes' own colourways -- all start
-	# unlocked. A first run must show the game as written, escalating through
-	# five hues; locking them left every maze cyan until they were earned, which
-	# is a worse first impression than having no choice at all.
+	# Every palette but MAZE 1's is earned, including the other four authored
+	# ones. That does NOT make a first run cyan: Game resolves an unassigned
+	# slot through default_palette_id(), which never consults this set, so each
+	# maze still wears its own colourway from the first run. What is locked is
+	# only the right to MOVE a colourway to another maze.
 	#
-	# Derived from MAZES rather than a literal 5: the two move together, since
-	# default_palette_id() maps maze N to PALETTES[N].
-	for i in range(Tuning.MAZES.size(), Tuning.PALETTES.size()):
+	# Index 0 rather than a literal, since default_palette_id() maps maze N to
+	# PALETTES[N] and maze 1 is the slot that must always have a legal choice.
+	for i in range(1, Tuning.PALETTES.size()):
 		out.append(id_for(KIND_PALETTE, String(Tuning.PALETTES[i].get("id", ""))))
 	return out
 
@@ -401,10 +447,14 @@ func _met(aid: String, score: Score, upgrades: Upgrades, maze_index: int,
 		"first_blood": return drove
 		"the_tangle": return maze_index >= 2 or cleared
 		"the_vault": return maze_index >= 4 or cleared
-		"palette_ice": return maze_index >= 1 or cleared
-		"palette_azure": return maze_index >= 2 or cleared
-		"palette_cobalt": return maze_index >= 3 or cleared
-		"palette_indigo": return maze_index >= 4 or cleared
+		"palette_ice": return score.banked >= 50000.0
+		"palette_azure": return score.peak_speed >= 5.0
+		"palette_cobalt": return drove and score.crashes == 0
+		"palette_indigo": return score.maze_results.size() >= 3
+		"palette_magenta": return maze_index >= 1 or cleared
+		"palette_acid": return maze_index >= 2 or cleared
+		"palette_ember": return maze_index >= 3 or cleared
+		"palette_violet": return maze_index >= 4 or cleared
 		"palette_orchid": return cleared
 		"palette_plum": return score.banked >= 250000.0
 		"palette_fuchsia": return score.banked >= 750000.0
@@ -436,6 +486,7 @@ func _met(aid: String, score: Score, upgrades: Upgrades, maze_index: int,
 		"half_million": return score.banked >= 500000.0
 		"survivor": return cleared and hp > 0 and hp < 10
 		"cornerer": return score.clean_turns >= 500
+		"gatecrasher": return _mazes_fully_gated(score) >= 3
 		"legend": return upgrades.has_legendary()
 		"maxed": return _has_a_maxed_line(upgrades)
 		"specialist": return upgrades.started_line_count() >= 12
@@ -460,6 +511,17 @@ func _has_a_maxed_line(upgrades: Upgrades) -> bool:
 # are a per-maze entry in Tuning.MAZES. Checked before writing this rather than
 # assumed, because an achievement must never be the reason a rules-layer class
 # grows a field.
+# How many banked mazes had every one of their gates collected. The gate
+# achievement above asks for one; this asks for three, so the two sit on the
+# same axis at different depths rather than needing a new tally on Score.
+func _mazes_fully_gated(score: Score) -> int:
+	var n := 0
+	for result in score.maze_results:
+		if float(result.get("progress", 0.0)) >= 1.0:
+			n += 1
+	return n
+
+
 func _took_every_gate(score: Score) -> bool:
 	for result in score.maze_results:
 		if float(result.get("progress", 0.0)) >= 1.0:

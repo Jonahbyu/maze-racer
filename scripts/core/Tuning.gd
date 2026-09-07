@@ -1533,10 +1533,39 @@ static func default_palette_id(maze_index: int) -> String:
 # colours instead, so the cost is visible before it is paid.
 const MARKER_COLOUR_DEFAULT := "white"
 
-# Colour 2's default is COBALT rather than white: the two defaults must differ,
-# or a player who unlocks their first decal sees a white pattern on a white mark
-# and concludes the decal is broken. Both are unlocked from the start.
-const MARKER_COLOUR_2_DEFAULT := "cobalt"
+# Colour 2 defaults to WHITE, the same as the mark, so a fresh profile starts
+# with exactly ONE colour unlocked rather than two.
+#
+# It was cobalt, on the reasoning that the two defaults must differ or a white
+# pattern on a white mark reads as a broken decal. That reasoning assumed a
+# player could SEE a pattern on a fresh profile, and they cannot: the default
+# decal is PLAIN, which has no cuts to fill, so colour 2 is not drawn at all
+# until a decal is earned. By then the picker has shown them the second row.
+#
+# And white-on-white is not invisible anyway, because the inlay is a recessed
+# surface rather than a flat fill: it is drawn at INLAY_ENERGY against the
+# mark's 3.0, dropped by INLAY_DROP and inset by INLAY_INSET, so a dark seam
+# runs around every piece and the pattern reads as dimmer white inside brighter
+# white. That seam is what section 12 says guarantees the read AT ANY PAIR --
+# an identical pair is simply the hardest case of the rule, not an exception to
+# it. Verified in a rendered frame rather than argued.
+const MARKER_COLOUR_2_DEFAULT := "white"
+
+# How far colour 2 is darkened from the mark when the two still match and a
+# decal goes on. Settings separates them at that moment, because white-on-white
+# draws no visible pattern at all -- measured against a cobalt control in a
+# rendered frame, not argued.
+#
+# A DERIVED SHADE rather than a table colour, and that is the whole point: every
+# entry in MARKER_COLOURS except the default is EARNED, so seeding colour 2 from
+# the table would hand out a locked cosmetic through a back door the picker's
+# own swatch rows carefully guard. Darkening the player's own mark grants
+# nothing -- it is the colour they already have, dimmed.
+#
+# 0.55 rather than a subtle nudge: the inlay is already drawn dimmer than the
+# mark, and the measured failure above is precisely that a small difference
+# vanishes at the trailing camera's angle.
+const MARKER_COLOUR_2_DARKEN := 0.55
 
 const MARKER_COLOURS := [
 	{"id": "white", "label": "WHITE", "colour": Color(1.0, 1.0, 1.0)},

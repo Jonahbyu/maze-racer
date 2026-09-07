@@ -3271,13 +3271,16 @@ choice, by driving two racers side by side on one seed.
 belong in this system.** Persistent upgrade lines, starting bonuses and maze modifiers all
 still fail that test and all stay out.
 
-**A bare starting loadout**, deliberately: arrow, white, plain, and nothing else. A
-first-time player has no cosmetic choice at all, which is the cost, and it buys the thing
-the feature exists for — every other entry in the picker is something to earn.
+**A bare starting loadout**, deliberately: arrow, white, plain, maze 1's colourway, and
+nothing else. A first-time player has no cosmetic choice at all, which is the cost, and it
+buys the thing the feature exists for — every other entry in the picker is something to
+earn. Asserted as a COUNT of one per kind, because the starting set grows by accident:
+colour 2's default and the five authored palettes each looked like a separate necessity and
+together made nine free cosmetics.
 
-**The three defaults can never be locked.** A saved name that no longer resolves falls back
-to them (§12), so a locked default would strand a player with no marker. `RulesTest` asserts
-it.
+**The defaults can never be locked.** A saved name that no longer resolves falls back to
+them (§12), so a locked default would strand a player with no marker — and a profile with no
+unlocked palette could assign nothing at all. `RulesTest` asserts it.
 
 **The achievement table and the cosmetic tables are asserted paired in BOTH directions.** A
 cosmetic no achievement grants is unreachable forever; an achievement granting a typo is a
@@ -3606,8 +3609,27 @@ The pattern row is hidden when `PLAIN` is selected, since a plain mark has no cu
 drawn dimmer than the mark (`INLAY_ENERGY`) and inset from the cut, so a gap of unlit surface
 runs around every piece. Without it, two bright colours meeting edge to edge merge into one
 shape on an unshaded surface — the same saturation failure that forced the decal to become a
-hole. **No contrast rule between two independently chosen colours can prevent that**; a seam
-guarantees the read at any pair.
+hole. **No contrast rule between two independently chosen colours can prevent that.**
+
+> **This section used to end "a seam guarantees the read at any pair", and that is measured
+> false.** Shot in a real corridor against a cobalt control: cobalt draws two unmistakable
+> bands, and **white-on-white draws a plain grey arrow with no pattern visible at all** at the
+> trailing camera's angle. The seam *separates* two colours; it does not manufacture a second
+> one where none exists. The claim was written from the construction rather than from a frame,
+> which is the §12 lesson about the decal itself arriving one layer up.
+
+**So the two defaults are the SAME colour, and `Settings` separates them when a decal first
+goes on.** Colour 2 defaults to white alongside the mark, so a fresh profile owns exactly one
+colour rather than two — the default decal is `PLAIN`, which has no cuts to fill, so nothing
+is drawn in colour 2 until a decal is earned. `set_marker_decal` seeds it at that moment, and
+only while the two are still equal, so a player who deliberately matches them later keeps it.
+
+**The seeded shade is DERIVED from the mark, never taken from the table.** Every colour but
+the default is earned, so seeding from `MARKER_COLOURS` would hand out a locked cosmetic
+through a back door the picker's own swatch rows carefully guard. Darkening the player's own
+mark grants nothing — it is the colour they already have, dimmed — and `RulesTest` asserts
+that the result matches no table entry. Verified in a frame: the seeded shade reads as
+clearly as the cobalt control.
 
 **The fill is built from the same cutters `_cut_decal` subtracts**, intersected with the
 outline rather than removed from it — so it is exactly the shape of the hole by construction,
@@ -3618,10 +3640,12 @@ keep the pattern in its resting colour on a marker that has gone crash-red, read
 stuck patch; matching it would merge the two surfaces exactly when the player most needs to
 recognise their own marker.
 
-**The two defaults differ** — white and cobalt — because identical defaults would draw a
-white pattern on a white mark and read as a broken decal. Both are therefore unlocked from
-the start, and **both must be excluded from the lockable set**: `RulesTest` caught the
-contradiction the moment only one was.
+**The two defaults are now IDENTICAL — both white — and cobalt is earned.** They differed
+precisely so a white pattern on a white mark could not read as a broken decal, and that
+concern is real; it is answered by seeding at the moment a decal is taken rather than by
+spending a second free cosmetic on it. Cobalt was unlocked from the start purely to be the
+second default, which is a cosmetic nobody had to earn — the mirror of the "achievement
+granting something already held" bug, and now asserted in both directions.
 
 ### Maze palettes are the player's to assign, one per maze
 
@@ -3637,13 +3661,36 @@ rest of the palette from one colour**, which is exactly what a per-hue picker wo
 do. Every entry offered is authored and tuned as a set, so no assignment a player can make
 reproduces either failure.
 
-**Twenty-five colourways: the five a maze ships with, all unlocked, plus twenty earned.**
+**Twenty-five colourways: maze 1's, unlocked, plus twenty-four earned.**
 
-**The five authored palettes start unlocked**, which is a correction. They were initially
-locked behind "reach maze N", and the result was that a first run showed *every* maze in
-cyan — a worse first impression than having no choice at all, since the escalation through
-five hues is part of what §8 tuned. The set is derived from `MAZES` rather than a literal
-five, so the two move together.
+**Displaying a colourway and being able to REASSIGN it are different rights, and only the
+first is free.** All five authored palettes were briefly unlocked, on the reasoning that a
+first run must show the game as written — and that reasoning is correct but does not need
+the unlock: `Game` resolves an unassigned slot through `default_palette_id()`, which never
+consults the earned set, so **every maze still wears its own hue on a fresh profile** with
+only one palette owned. The escalation §8 tuned is intact either way.
+
+What the five free entries actually bought was a screen that opened fully stocked. They were
+simultaneously every maze's default *and* every slot's alternative, so `MAZE COLOURS` had
+five ready choices on it and nothing read as earnable — the failure being that the count of
+*visible* unlocks, not the count of *reachable* mazes, is what makes the screen a goal list.
+What is earned now is the right to move a colourway onto a slot it does not belong to.
+
+**Maze 1's is the one that can never be locked**, since a profile with nothing earned could
+otherwise assign nothing at all — a screen with no legal move on it. Index 0 rather than a
+literal, since `default_palette_id()` maps maze N to `PALETTES[N]`.
+
+**The four "reach maze N" achievements grant the mazes' OWN colourways**, which is the
+pairing worth having: reaching The Ember is what earns the right to put ember somewhere
+else. The reward is the thing the player just drove through, and needs no explaining. The
+four generated palettes that previously held those slots moved onto score, speed and
+survival — two goals sharing one requirement unlock as a pair, which spends two entries to
+ask one question.
+
+**`RulesTest` asserts the starting set by COUNT, not by name**: exactly one of each kind. A
+named check would have to be widened every time a cosmetic is added, and widening it is
+exactly how the palettes reached five. Verified by restoring the old behaviour, where it
+fails at `a fresh profile has exactly one palette (5)`.
 
 **The twenty extras are GENERATED against a measured rule, not hand-picked**, because the
 failure mode is invisible in a swatch. Ambient is mixed from the **grid** colour
@@ -4058,7 +4105,7 @@ Six harnesses, each answering a different question:
 
 | Harness | Question it answers |
 |---|---|
-| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count, and the marker shape table -- that every entry points forward and is longer than it is wide, that ids are unique, that an unknown id falls back to the arrow, and that the choice never moves the racer, the marker decal table -- every decal generated from the outline it decorates, asserted across the WHOLE cross product of shapes and decals so a shape added later is decorated by construction, and the cut RESULT bounded rather than the cutter, the cosmetic unlock tables -- paired in both directions, since a cosmetic no achievement grants is unreachable and an achievement granting a typo is a goal with no reward, that the three defaults are never lockable, that a run which drove nowhere earns nothing by vacuous truth, and peak speed surviving a maze bank, and the compendium's demo table, covering every upgrade line in both directions. and the maze palettes -- stable ids, each maze defaulting to its own authored colourway, and the assignment moving nothing about the racer, and that no achievement grants something a fresh profile already has, which is the reverse of the pairing check and the direction it missed. 1445 assertions. |
+| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count, and the marker shape table -- that every entry points forward and is longer than it is wide, that ids are unique, that an unknown id falls back to the arrow, and that the choice never moves the racer, the marker decal table -- every decal generated from the outline it decorates, asserted across the WHOLE cross product of shapes and decals so a shape added later is decorated by construction, and the cut RESULT bounded rather than the cutter, the cosmetic unlock tables -- paired in both directions, since a cosmetic no achievement grants is unreachable and an achievement granting a typo is a goal with no reward, that the three defaults are never lockable, that a run which drove nowhere earns nothing by vacuous truth, and peak speed surviving a maze bank, and the compendium's demo table, covering every upgrade line in both directions. and the maze palettes -- stable ids, each maze defaulting to its own authored colourway, and the assignment moving nothing about the racer, and that no achievement grants something a fresh profile already has, which is the reverse of the pairing check and the direction it missed, and the STARTING SET counted by kind rather than named -- exactly one shape, colour, decal and palette -- since a named check has to be widened every time a cosmetic is added and widening it is how the palettes reached five free entries. 1487 assertions. |
 | `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording, and that every marker shape builds a closed, outward-wound solid inside its ring, that the steering pads stand down while an upgrade pick is open while the pause pad stays up, and that a pause press both pauses AND opens the settings panel, that closing it resumes, that the cog stands down while the pads are up, and that QUIT TO MENU reports run_dismissed rather than tearing the run down itself, that every marker shape builds with every decal and stays a closed solid once cut, and that scrape-amber and crash-red override a player-chosen colour on BOTH surfaces -- asserted with a colour that is not itself a state colour, since an earlier version used crash red and so passed against the exact regression it was named for. 337 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
 | `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide, and that one real touch tap -- driven with the emulated mouse event a phone sends after it -- is exactly one turn and one held-direction change per edge -- including when that echo lands on a DIFFERENT pad, which is what a browser really sends -- that an unmatched release emits nothing, that a held tap whose emulated echo arrives LATE -- the case no time window can survive, since the echo is synthesized inside the engine and delivered on whatever frame it reaches -- is still one turn, that the pause pad clears the settings cog at two viewport sizes and stays above the 44px tap minimum on a phone, and that the menu's own buttons and labels clear that minimum on glass, that the Unlocks autoload is REGISTERED -- the hole Leaderboard shipped inert through for weeks -- and that the UPGRADES button opens the compendium, lists every line, and keeps its bubble inside the panel at BOTH ends of the list, since the top passes trivially. 118 assertions. |

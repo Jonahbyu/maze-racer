@@ -171,6 +171,27 @@ func set_marker_decal(id: String) -> void:
 	if resolved == marker_decal:
 		return
 	marker_decal = resolved
+	# Taking a decal while both colours still match separates them, ONCE.
+	#
+	# Colour 2 defaults to the same white as the mark so a fresh profile has a
+	# single colour unlocked. That is safe only while PLAIN is worn, because a
+	# plain mark has no cuts to fill -- the moment a real decal goes on, an
+	# untouched profile would show white on white.
+	#
+	# And that genuinely does not read. Measured against a cobalt control in a
+	# rendered frame: cobalt draws two unmistakable bands, white draws a plain
+	# grey arrow with no pattern visible at all. CLAUDE.md's claim that the seam
+	# "guarantees the read AT ANY PAIR" is wrong, and is corrected there -- the
+	# seam separates two colours, it does not manufacture a second one.
+	#
+	# Separating here rather than at the picker's swatch row means every route
+	# to a decal is covered, including a future one. It fires only while the two
+	# are equal, so a player who has deliberately chosen matching colours after
+	# this point keeps them.
+	if marker_decal != Tuning.MARKER_DECAL_DEFAULT 			and marker_colour_2.is_equal_approx(marker_colour):
+		marker_colour_2 = marker_colour.darkened(
+			Tuning.MARKER_COLOUR_2_DARKEN)
+		emit_signal("marker_colour_2_changed", marker_colour_2)
 	_save()
 	emit_signal("marker_decal_changed", marker_decal)
 

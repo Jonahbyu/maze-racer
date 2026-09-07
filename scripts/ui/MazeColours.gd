@@ -95,9 +95,14 @@ func _build_panel() -> void:
 	card.add_child(rows)
 
 	rows.add_child(_heading("MAZE COLOURS", 26, COL_ACCENT))
+	# "by reaching them" was true when every palette was a maze-progress
+	# reward. Most are not: they are spread across score, speed, cornering,
+	# scraping, build width and failure, so a line naming one route would send
+	# the player at the wrong one. A locked chip states its OWN requirement when
+	# pressed, which is the only place that can be accurate.
 	rows.add_child(_heading(
-		"Pick a colourway for each maze. Unlock more by reaching them.", 13,
-		COL_DIM))
+		"Pick a colourway for each maze. Press a locked one to see what earns it.",
+		13, COL_DIM))
 
 	_hint = _heading("", 14, Color(1.0, 0.72, 0.25))
 	rows.add_child(_hint)

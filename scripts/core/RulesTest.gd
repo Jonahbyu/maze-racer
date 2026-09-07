@@ -292,6 +292,57 @@ func _test_unlocks() -> void:
 		# can only name one of them.
 		check("%s has exactly one achievement" % id, granting <= 1)
 
+	# A fresh profile starts with as little as possible: exactly ONE of each
+	# kind. Counted rather than named, so adding a cosmetic cannot quietly
+	# widen the starting set -- which is how the palettes reached five free
+	# entries and made MAZE COLOURS open fully stocked.
+	var start_counts := {"shape": 0, "colour": 0, "decal": 0, "palette": 0}
+	var probe := UnlocksScript.new()
+	for entry in Tuning.MARKER_SHAPES:
+		if probe.is_unlocked(UnlocksScript.id_for(
+				UnlocksScript.KIND_SHAPE, String(entry["id"]))):
+			start_counts["shape"] += 1
+	for entry in Tuning.MARKER_COLOURS:
+		if probe.is_unlocked(UnlocksScript.id_for(
+				UnlocksScript.KIND_COLOUR, String(entry["id"]))):
+			start_counts["colour"] += 1
+	for entry in Tuning.MARKER_DECALS:
+		if probe.is_unlocked(UnlocksScript.id_for(
+				UnlocksScript.KIND_DECAL, String(entry["id"]))):
+			start_counts["decal"] += 1
+	for entry in Tuning.PALETTES:
+		if probe.is_unlocked(UnlocksScript.id_for(
+				UnlocksScript.KIND_PALETTE, String(entry.get("id", "")))):
+			start_counts["palette"] += 1
+	for kind in start_counts:
+		check("a fresh profile has exactly one %s (%d)"
+			% [kind, start_counts[kind]], start_counts[kind] == 1)
+	probe.free()
+
+	# Colour 2 defaults to the SAME colour as the mark, which is only safe
+	# while the default decal has no cuts to fill. Measured in a rendered
+	# frame: white-on-white draws no visible pattern at all, where cobalt draws
+	# two unmistakable bands -- so the seam does NOT guarantee the read at any
+	# pair, and Settings separates the two the first time a decal goes on.
+	check("both marker colour defaults are the same colour",
+		Tuning.MARKER_COLOUR_DEFAULT == Tuning.MARKER_COLOUR_2_DEFAULT)
+	# The seeded shade is DERIVED from the mark rather than taken from the
+	# table: every colour but the default is earned, so seeding from
+	# MARKER_COLOURS would hand out a locked cosmetic through a back door the
+	# picker's own swatch rows guard.
+	var seeded := Color(Tuning.marker_colour(
+		Tuning.MARKER_COLOUR_DEFAULT)["colour"]).darkened(
+			Tuning.MARKER_COLOUR_2_DARKEN)
+	check("the seeded second colour differs from the mark",
+		not seeded.is_equal_approx(Color(Tuning.marker_colour(
+			Tuning.MARKER_COLOUR_DEFAULT)["colour"])))
+	var seeded_in_table := false
+	for entry in Tuning.MARKER_COLOURS:
+		if Color(entry["colour"]).is_equal_approx(seeded):
+			seeded_in_table = true
+	check("the seeded second colour grants no table colour",
+		not seeded_in_table)
+
 	var fresh := UnlocksScript.new()
 
 	# No achievement grants something a fresh profile ALREADY HAS.
