@@ -1246,6 +1246,48 @@ static func marker_shape(id: String) -> Dictionary:
 	return MARKER_SHAPES[0]
 
 
+# --- Marker colours ----------------------------------------------------------
+#
+# PRESETS, not a wheel. Each one is earned by an achievement (Unlocks), so the
+# set has to be enumerable and stable -- a free RGB picker cannot be unlocked.
+#
+# Stored by NAME like the shapes and decals, so reordering the table cannot
+# re-point a saved choice or an earned unlock at something else.
+#
+# The maze palettes are deliberately NOT avoided. Section 12 objected to a
+# colour picker because a marker matching the walls is hard to see, and that
+# objection is real -- lime IS maze 3's wall colour. The choice was asked for
+# anyway, and hiding the colours that make it visible would be pretending to
+# offer a choice while removing its consequences. The picker previews the state
+# colours instead, so the cost is visible before it is paid.
+const MARKER_COLOUR_DEFAULT := "white"
+
+const MARKER_COLOURS := [
+	{"id": "white", "label": "WHITE", "colour": Color(1.0, 1.0, 1.0)},
+	{"id": "ice", "label": "ICE", "colour": Color(0.30, 0.85, 1.0)},
+	{"id": "cobalt", "label": "COBALT", "colour": Color(0.25, 0.55, 1.0)},
+	{"id": "violet", "label": "VIOLET", "colour": Color(0.65, 0.45, 1.0)},
+	{"id": "magenta", "label": "MAGENTA", "colour": Color(1.0, 0.40, 0.85)},
+	{"id": "coral", "label": "CORAL", "colour": Color(1.0, 0.45, 0.35)},
+	{"id": "gold", "label": "GOLD", "colour": Color(1.0, 0.80, 0.30)},
+	{"id": "lime", "label": "LIME", "colour": Color(0.55, 0.95, 0.45)},
+	{"id": "jade", "label": "JADE", "colour": Color(0.20, 0.85, 0.65)},
+	{"id": "steel", "label": "STEEL", "colour": Color(0.75, 0.78, 0.85)},
+]
+
+
+# The table entry for a colour id, falling back to the default rather than
+# failing -- the same promise marker_shape() and marker_decal() make.
+static func marker_colour(id: String) -> Dictionary:
+	for entry in MARKER_COLOURS:
+		if entry["id"] == id:
+			return entry
+	for entry in MARKER_COLOURS:
+		if entry["id"] == MARKER_COLOUR_DEFAULT:
+			return entry
+	return MARKER_COLOURS[0]
+
+
 # --- Marker decals -----------------------------------------------------------
 #
 # A pattern laid over whatever inner mark the player has chosen.

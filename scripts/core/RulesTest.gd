@@ -50,6 +50,9 @@ func _init() -> void:
 	_test_quadrant_upgrades()
 	_test_marker_shapes()
 	_test_marker_decals()
+	_test_unlocks()
+	_test_peak_speed()
+	_test_achievement_evaluation()
 
 	print("")
 	print("passed: %d   failed: %d" % [_passed, _failed])
@@ -255,6 +258,109 @@ func _test_marker_decals() -> void:
 						absf(point.x) <= max_x + 0.001
 							and point.y >= min_y - 0.001
 							and point.y <= max_y + 0.001)
+
+
+# The unlock tables (docs/plans/cosmetic-unlocks.md).
+#
+# Asserts the PAIRING, which is the property that rots. A cosmetic whose id no
+# achievement grants is permanently unreachable; an achievement granting an id
+# nothing offers is a goal with no reward. Both fail SILENTLY -- the picker just
+# shows a locked square forever -- and neither is visible in a rendered frame.
+func _test_unlocks() -> void:
+	for id in Unlocks.ACHIEVEMENTS:
+		var entry: Dictionary = Unlocks.ACHIEVEMENTS[id]
+		check("achievement %s has a label" % id,
+			String(entry.get("label", "")) != "")
+		check("achievement %s has a requirement line" % id,
+			String(entry.get("requirement", "")) != "")
+		check("achievement %s grants a real cosmetic" % id,
+			Unlocks.cosmetic_exists(String(entry.get("grants", ""))))
+
+	for id in Unlocks.lockable_ids():
+		var granting := 0
+		for aid in Unlocks.ACHIEVEMENTS:
+			if String(Unlocks.ACHIEVEMENTS[aid]["grants"]) == id:
+				granting += 1
+		check("%s is unlockable at all" % id, granting >= 1)
+		# Two routes to one item makes the picker's requirement line a lie: it
+		# can only name one of them.
+		check("%s has exactly one achievement" % id, granting <= 1)
+
+	var fresh := Unlocks.new()
+
+	# THE DEFAULTS ARE NEVER LOCKED. A saved name that no longer resolves falls
+	# back to these (section 12), so a locked default strands the player with no
+	# marker at all.
+	check("the default shape starts unlocked", fresh.is_unlocked(
+		Unlocks.id_for(Unlocks.KIND_SHAPE, Tuning.MARKER_SHAPE_DEFAULT)))
+	check("the default decal starts unlocked", fresh.is_unlocked(
+		Unlocks.id_for(Unlocks.KIND_DECAL, Tuning.MARKER_DECAL_DEFAULT)))
+	check("the default colour starts unlocked", fresh.is_unlocked(
+		Unlocks.id_for(Unlocks.KIND_COLOUR, Tuning.MARKER_COLOUR_DEFAULT)))
+
+	# And everything else starts LOCKED. A table that defaulted to unlocked
+	# would make the whole feature invisible while every other check passed.
+	for id in Unlocks.lockable_ids():
+		check("%s starts locked" % id, not fresh.is_unlocked(id))
+
+
+# Peak speed is remembered across a whole run.
+func _test_peak_speed() -> void:
+	var s := Score.new()
+	check("peak speed starts at zero", s.peak_speed == 0.0)
+	s.note_speed(3.0)
+	s.note_speed(6.5)
+	s.note_speed(2.0)
+	check("peak speed keeps the maximum", absf(s.peak_speed - 6.5) < 0.0001)
+	s.bank_maze(0, "The Grid")
+	s.note_speed(1.0)
+	# NOT cleared by banking: "reach 8x" is a thing the player did, and clearing
+	# it at a maze boundary would make it depend on where rather than whether.
+	check("peak speed survives banking a maze",
+		absf(s.peak_speed - 6.5) < 0.0001)
+
+
+# Achievements are awarded from a finished run.
+func _test_achievement_evaluation() -> void:
+	var u := Unlocks.new()
+
+	# A run that banked a maze grants the entry-level achievement.
+	var weak := Score.new()
+	weak.bank_maze(0, "The Grid")
+	u.evaluate(weak, Upgrades.new(1), 0, 50, false)
+	check("finishing a run grants the first shape",
+		u.is_unlocked("shape:dart"))
+
+	# Speed achievements read the peak.
+	var fast := Score.new()
+	fast.bank_maze(0, "The Grid")
+	fast.note_speed(8.2)
+	u.evaluate(fast, Upgrades.new(1), 0, 50, false)
+	check("6x unlocks ice", u.is_unlocked("colour:ice"))
+	check("8x unlocks coral", u.is_unlocked("colour:coral"))
+
+	# ALREADY-EARNED achievements are not re-reported, or the summary would
+	# announce the same one after every run forever.
+	var again: Array = u.evaluate(fast, Upgrades.new(1), 0, 50, false)
+	check("an earned achievement is not re-reported", not again.has("ton_up"))
+
+	# A run that did nothing must not satisfy the "without X" achievements by
+	# vacuous truth -- zero crashes because zero driving.
+	var nothing := Unlocks.new()
+	nothing.evaluate(Score.new(), Upgrades.new(1), 0, 50, false)
+	check("an empty run grants no clean-driving achievement",
+		not nothing.is_unlocked("colour:jade"))
+	check("an empty run grants nothing at all",
+		not nothing.is_unlocked("shape:dart"))
+
+	# A locked item is genuinely locked until earned.
+	var fresh := Unlocks.new()
+	check("violet starts locked", not fresh.is_unlocked("colour:violet"))
+	var rich := Score.new()
+	rich.bank_maze(0, "The Grid")
+	rich.banked = 600000.0
+	fresh.evaluate(rich, Upgrades.new(1), 4, 50, true)
+	check("half a million unlocks violet", fresh.is_unlocked("colour:violet"))
 
 
 # The quadrant box and the cardinal compass (CLAUDE.md section 7).

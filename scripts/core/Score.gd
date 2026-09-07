@@ -33,6 +33,18 @@ var crashes := 0
 # with what was actually charged or the summary contradicts the score.
 var repeat_cells := 0
 
+
+# The fastest the racer went this RUN.
+#
+# Per run rather than per maze, and NOT cleared when a maze banks: "reach 8x"
+# describes something the player did, and resetting at a maze boundary would
+# make it depend on WHERE the speed happened rather than whether it did.
+#
+# Read by the achievement system and by nothing else. It is a tally like the
+# others here -- Score records what happened and the scoring rules decide what
+# that is worth, exactly as section 8c says of last_turn_scraped.
+var peak_speed := 0.0
+
 # Whether the racer is currently on ground it has already driven this maze. Set
 # by Game on each cell boundary and read by the earning calls below, which pay
 # SCORE_EARN_ON_REPEAT (zero) while it holds.
@@ -139,6 +151,11 @@ func time_remaining() -> float:
 # Finish a maze and bank it. `progress` is 1.0 for a completed maze; a run that
 # ended early passes the fraction of the maze actually reached (gates taken over
 # gates available), so a death scores what was achieved rather than nothing.
+# Remember the fastest the racer has gone. Called once a frame from Game.
+func note_speed(speed: float) -> void:
+	peak_speed = maxf(peak_speed, speed)
+
+
 func bank_maze(index: int, name: String, progress: float = 1.0) -> float:
 	var mult := time_multiplier()
 	# Clamp here rather than on every crash: a subtotal driven negative by
