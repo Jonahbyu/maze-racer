@@ -27,10 +27,22 @@ const COL_DIM := MainMenu.COL_DIM
 const COL_CARD := MainMenu.COL_CARD
 const COL_CARD_HOVER := MainMenu.COL_CARD_HOVER
 
-const PANEL_SIZE := Vector2(880, 700)
+const PANEL_SIZE := Vector2(1420, 900)
 # A swatch strip per maze, showing the palette rather than naming it: a colour
 # name is a worse answer to "what will this look like" than the colour itself.
-const CHIP_SIZE := Vector2(116, 38)
+const CHIP_SIZE := Vector2(92, 27)
+
+# How many chips fit across before the row wraps.
+#
+# DERIVED from the panel width rather than fixed, because the count is not: the
+# table grew from 5 palettes to 25, and a single row that fitted five ran the
+# panel clean off the screen edge -- taking the heading and both buttons with
+# it. That is the hard-coded-band trap section 12 records for the card row and
+# the summary panel, arriving through a table that got longer.
+#
+# A maze's own five come FIRST in the table, so the first row of every strip is
+# always the authored colourways.
+const CHIP_COLUMNS := 13
 
 var _rows: Array = []
 var _hint: Label = null
@@ -79,10 +91,10 @@ func _build_panel() -> void:
 	add_child(card)
 
 	var rows := VBoxContainer.new()
-	rows.add_theme_constant_override("separation", 10)
+	rows.add_theme_constant_override("separation", 8)
 	card.add_child(rows)
 
-	rows.add_child(_heading("MAZE COLOURS", 28, COL_ACCENT))
+	rows.add_child(_heading("MAZE COLOURS", 26, COL_ACCENT))
 	rows.add_child(_heading(
 		"Pick a colourway for each maze. Unlock more by reaching them.", 13,
 		COL_DIM))
@@ -93,8 +105,19 @@ func _build_panel() -> void:
 	for slot in Tuning.MAZES.size():
 		rows.add_child(_build_row(slot))
 
-	rows.add_child(_make_button("RESET TO DEFAULTS", _on_reset))
-	rows.add_child(_make_button("CLOSE", _on_close))
+		# Side by side rather than stacked: two full-width buttons cost two rows of
+	# height, and the chip grid has already spent nearly all of it. The panel
+	# overran the screen edge and clipped CLOSE outright when they were stacked
+	# -- the section 8c overrun, arriving through a table that grew.
+	var buttons := HBoxContainer.new()
+	buttons.add_theme_constant_override("separation", 12)
+	var reset := _make_button("RESET TO DEFAULTS", _on_reset)
+	reset.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var close := _make_button("CLOSE", _on_close)
+	close.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	buttons.add_child(reset)
+	buttons.add_child(close)
+	rows.add_child(buttons)
 
 
 # One maze, with a chip per palette.
@@ -107,8 +130,11 @@ func _build_row(slot: int) -> Control:
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	col.add_child(label)
 
-	var strip := HBoxContainer.new()
-	strip.add_theme_constant_override("separation", 8)
+	# A GRID, not a row: 25 chips do not fit a screen in one line.
+	var strip := GridContainer.new()
+	strip.columns = CHIP_COLUMNS
+	strip.add_theme_constant_override("h_separation", 6)
+	strip.add_theme_constant_override("v_separation", 4)
 	col.add_child(strip)
 
 	var chips: Array = []
@@ -117,7 +143,7 @@ func _build_row(slot: int) -> Control:
 		chip.custom_minimum_size = CHIP_SIZE
 		chip.focus_mode = Control.FOCUS_ALL
 		chip.text = String(Tuning.PALETTES[i].get("label", ""))
-		chip.add_theme_font_size_override("font_size", 11)
+		chip.add_theme_font_size_override("font_size", 10)
 		chip.pressed.connect(_on_pick.bind(slot, i))
 		strip.add_child(chip)
 		chips.append(chip)

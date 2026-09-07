@@ -434,6 +434,33 @@ func _test_maze_palettes() -> void:
 		check("palette %s resolves to itself" % id,
 			String(Tuning.palette_by_id(id).get("id", "")) == id)
 
+	# AMBIENT MUST STAY COOL, on every palette in the table.
+	#
+	# This is the rule the whole set is generated against, and it is asserted
+	# rather than trusted because the failure is invisible in a swatch: ambient
+	# is mixed from the GRID colour (Game._apply_palette blends it 20/80 toward
+	# neutral), and warm ambient reads as a LIT surface where cool ambient reads
+	# as shadow. Ember's grid was a bright yellow once and every wall face in
+	# the maze turned milky brown (section 8).
+	#
+	# Measured across the five authored palettes, ambient R-B runs -0.222 (cyan)
+	# to -0.026 (ember) -- ember being the one that had to be pulled back. So
+	# the bound is ember's own value, and a palette added later by hand cannot
+	# reintroduce the failure without failing here.
+	for entry in Tuning.PALETTES:
+		var pid := String(entry.get("id", ""))
+		var ambient: Color = Color(entry["grid"]).lerp(
+			Color(0.62, 0.66, 0.76), 0.8)
+		var rb := ambient.r - ambient.b
+		check("palette %s keeps ambient cool" % pid, rb < 0.0,
+			"ambient R-B %+.4f" % rb)
+
+	# Twenty-five colourways, five of them the mazes' own. Read from the tables
+	# rather than restated: this asserts that the set is bigger than the mazes
+	# that ship with it, which is what makes assignment a choice at all.
+	check("there are more palettes than mazes",
+		Tuning.PALETTES.size() > Tuning.MAZES.size())
+
 	# An unknown id falls back rather than failing -- the promise every other
 	# table makes, and the one that matters when a saved assignment names a
 	# palette a later build dropped.

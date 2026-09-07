@@ -130,30 +130,116 @@ const ACHIEVEMENTS := {
 		"grants": "colour:lime",
 	},
 
-	# --- Palettes: earned by REACHING the maze that wears them ------------
+	# --- Palettes: earned across the whole spread of play -----------------
 	#
-	# Each maze's colourway is unlocked by getting to that maze, which makes the
-	# reward the thing the player just saw. Maze 1's is the default and is never
-	# locked, or a fresh profile would have no colours at all to assign.
-	"palette_magenta": {
-		"label": "MAGENTA",
+	# Twenty colourways on top of the five a fresh profile already has, spread
+	# deliberately across DIFFERENT axes -- progress, score, speed, cornering,
+	# scraping, build width and even failure -- so no single style of run sweeps
+	# them. A player who never crashes never earns CRIMSON, and one who never
+	# scrapes never earns JADE.
+	#
+	# The four "reach maze N" entries no longer grant the mazes' own palettes:
+	# those are unlocked from the start now, and an achievement granting
+	# something already held is a goal with no reward (asserted).
+	"palette_ice": {
+		"label": "ICE",
 		"requirement": "Reach maze 2",
-		"grants": "palette:magenta",
+		"grants": "palette:ice",
 	},
-	"palette_acid": {
-		"label": "ACID GREEN",
+	"palette_azure": {
+		"label": "AZURE",
 		"requirement": "Reach maze 3",
-		"grants": "palette:acid",
+		"grants": "palette:azure",
 	},
-	"palette_ember": {
-		"label": "EMBER",
+	"palette_cobalt": {
+		"label": "COBALT",
 		"requirement": "Reach maze 4",
-		"grants": "palette:ember",
+		"grants": "palette:cobalt",
 	},
-	"palette_violet": {
-		"label": "DEEP VIOLET",
+	"palette_indigo": {
+		"label": "INDIGO",
 		"requirement": "Reach maze 5",
-		"grants": "palette:violet",
+		"grants": "palette:indigo",
+	},
+	"palette_orchid": {
+		"label": "ORCHID",
+		"requirement": "Clear all five mazes",
+		"grants": "palette:orchid",
+	},
+	"palette_plum": {
+		"label": "PLUM",
+		"requirement": "Bank 250,000 points in a run",
+		"grants": "palette:plum",
+	},
+	"palette_fuchsia": {
+		"label": "FUCHSIA",
+		"requirement": "Bank 750,000 points in a run",
+		"grants": "palette:fuchsia",
+	},
+	"palette_rose": {
+		"label": "ROSE",
+		"requirement": "Bank 1,000,000 points in a run",
+		"grants": "palette:rose",
+	},
+	"palette_crimson": {
+		"label": "CRIMSON",
+		"requirement": "Crash 10 times in one run",
+		"grants": "palette:crimson",
+	},
+	"palette_coral": {
+		"label": "CORAL",
+		"requirement": "Reach 7x speed",
+		"grants": "palette:coral",
+	},
+	"palette_bronze": {
+		"label": "BRONZE",
+		"requirement": "Reach 9x speed",
+		"grants": "palette:bronze",
+	},
+	"palette_sand": {
+		"label": "SAND",
+		"requirement": "Take 250 clean turns in one run",
+		"grants": "palette:sand",
+	},
+	"palette_olive": {
+		"label": "OLIVE",
+		"requirement": "Take 1,000 clean turns in one run",
+		"grants": "palette:olive",
+	},
+	"palette_lime": {
+		"label": "LIME",
+		"requirement": "Escape 20 scrapes in one run",
+		"grants": "palette:lime",
+	},
+	"palette_jade": {
+		"label": "JADE",
+		"requirement": "Escape 100 scrapes in one run",
+		"grants": "palette:jade",
+	},
+	"palette_mint": {
+		"label": "MINT",
+		"requirement": "Clear a run without a single scrape",
+		"grants": "palette:mint",
+	},
+	"palette_teal": {
+		"label": "TEAL",
+		"requirement": "Finish a run holding 8 upgrade lines",
+		"grants": "palette:teal",
+	},
+	"palette_aqua": {
+		"label": "AQUA",
+		"requirement": "Finish a run holding 16 upgrade lines",
+		"grants": "palette:aqua",
+	},
+	"palette_slate": {
+		"label": "SLATE",
+		"requirement": "Finish a run with full health",
+		"grants": "palette:slate",
+	},
+	"palette_ash": {
+		"label": "ASH",
+		"requirement": "Re-cross 100 cells in one run",
+		"grants": "palette:ash",
 	},
 
 	# --- Decals: earned by what you BUILD ---------------------------------
@@ -200,7 +286,15 @@ func is_unlocked(id: String) -> bool:
 
 
 func _is_default(id: String) -> bool:
-	return id == id_for(KIND_SHAPE, Tuning.MARKER_SHAPE_DEFAULT) 		or id == id_for(KIND_DECAL, Tuning.MARKER_DECAL_DEFAULT) 		or id == id_for(KIND_COLOUR, Tuning.MARKER_COLOUR_DEFAULT) 		or id == id_for(KIND_COLOUR, Tuning.MARKER_COLOUR_2_DEFAULT) 		or id == id_for(KIND_PALETTE, Tuning.default_palette_id(0))
+	return id == id_for(KIND_SHAPE, Tuning.MARKER_SHAPE_DEFAULT) 		or id == id_for(KIND_DECAL, Tuning.MARKER_DECAL_DEFAULT) 		or id == id_for(KIND_COLOUR, Tuning.MARKER_COLOUR_DEFAULT) 		or id == id_for(KIND_COLOUR, Tuning.MARKER_COLOUR_2_DEFAULT) 		or _is_authored_palette(id)
+
+
+# One of the five palettes a maze ships with, which are never lockable.
+func _is_authored_palette(id: String) -> bool:
+	for i in Tuning.MAZES.size():
+		if id == id_for(KIND_PALETTE, Tuning.default_palette_id(i)):
+			return true
+	return false
 
 
 # Every cosmetic that CAN be locked -- everything but the three defaults.
@@ -221,10 +315,14 @@ static func lockable_ids() -> Array:
 	for decal in Tuning.MARKER_DECALS:
 		if String(decal["id"]) != Tuning.MARKER_DECAL_DEFAULT:
 			out.append(id_for(KIND_DECAL, String(decal["id"])))
-	# Maze 1's palette is the default and is never lockable, for the reason the
-	# marker defaults are not: a profile with no palette at all could assign
-	# nothing.
-	for i in range(1, Tuning.PALETTES.size()):
+	# The five AUTHORED palettes -- the mazes' own colourways -- all start
+	# unlocked. A first run must show the game as written, escalating through
+	# five hues; locking them left every maze cyan until they were earned, which
+	# is a worse first impression than having no choice at all.
+	#
+	# Derived from MAZES rather than a literal 5: the two move together, since
+	# default_palette_id() maps maze N to PALETTES[N].
+	for i in range(Tuning.MAZES.size(), Tuning.PALETTES.size()):
 		out.append(id_for(KIND_PALETTE, String(Tuning.PALETTES[i].get("id", ""))))
 	return out
 
@@ -303,6 +401,26 @@ func _met(aid: String, score: Score, upgrades: Upgrades, maze_index: int,
 		"first_blood": return drove
 		"the_tangle": return maze_index >= 2 or cleared
 		"the_vault": return maze_index >= 4 or cleared
+		"palette_ice": return maze_index >= 1 or cleared
+		"palette_azure": return maze_index >= 2 or cleared
+		"palette_cobalt": return maze_index >= 3 or cleared
+		"palette_indigo": return maze_index >= 4 or cleared
+		"palette_orchid": return cleared
+		"palette_plum": return score.banked >= 250000.0
+		"palette_fuchsia": return score.banked >= 750000.0
+		"palette_rose": return score.banked >= 1000000.0
+		"palette_crimson": return score.crashes >= 10
+		"palette_coral": return score.peak_speed >= 7.0
+		"palette_bronze": return score.peak_speed >= 9.0
+		"palette_sand": return score.clean_turns >= 250
+		"palette_olive": return score.clean_turns >= 1000
+		"palette_lime": return score.scraped_turns >= 20
+		"palette_jade": return score.scraped_turns >= 100
+		"palette_mint": return cleared and score.scraped_turns == 0
+		"palette_teal": return drove and upgrades.started_line_count() >= 8
+		"palette_aqua": return drove and upgrades.started_line_count() >= 16
+		"palette_slate": return cleared and hp >= Tuning.MAX_HP
+		"palette_ash": return score.repeat_cells >= 100
 		"palette_magenta": return maze_index >= 1 or cleared
 		"palette_acid": return maze_index >= 2 or cleared
 		"palette_ember": return maze_index >= 3 or cleared

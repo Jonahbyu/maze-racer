@@ -883,6 +883,247 @@ const PALETTES := [
 		"wall_emission": Color(0.11, 0.06, 0.22),
 		"fog": Color(0.04, 0.025, 0.10),
 	},
+	# --- Unlockable colourways ------------------------------------------------
+	#
+	# The five above are the mazes' OWN palettes and their order is load-bearing:
+	# default_palette_id() maps maze N to PALETTES[N]. Everything below is extra
+	# choice, appended so that mapping never moves.
+	#
+	# GENERATED against the measured rule rather than hand-picked, because the
+	# failure mode is not visible in the swatch. Ambient is mixed from the GRID
+	# colour (Game._apply_palette blends it 20/80 toward neutral), and warm
+	# ambient reads as a LIT surface where cool ambient reads as shadow -- which
+	# is what turned every wall milky brown when ember's grid was yellow.
+	#
+	# Measured across the five authored palettes, ambient R-B runs -0.222 (cyan)
+	# to -0.026 (ember), and ember is the one that had to be pulled back. So the
+	# rule is: ambient R-B must stay NEGATIVE, and ember's -0.026 is the outer
+	# limit. Every palette below is generated with its grid hue shifted toward
+	# blue in proportion to how warm its wall is -- ember's correction, applied
+	# systematically. The worst of the twenty lands at -0.032.
+	#
+	# RulesTest asserts the rule over the WHOLE table, so a palette added later
+	# by hand cannot reintroduce the failure silently.
+	{
+		"id": "ice",
+		"label": "ICE",
+		# Pale blue, the coldest read in the set.
+		"wall": Color(0.120, 0.894, 1.000),
+		"grid": Color(0.400, 0.752, 0.800),
+		"floor": Color(0.029, 0.061, 0.065),
+		"wall_albedo": Color(0.136, 0.223, 0.235),
+		"wall_emission": Color(0.042, 0.172, 0.190),
+		"fog": Color(0.027, 0.078, 0.085),
+	},
+	{
+		"id": "azure",
+		"label": "AZURE",
+		# Deeper than ice, still unmistakably blue.
+		"wall": Color(0.120, 0.578, 1.000),
+		"grid": Color(0.360, 0.589, 0.800),
+		"floor": Color(0.029, 0.048, 0.065),
+		"wall_albedo": Color(0.136, 0.188, 0.235),
+		"wall_emission": Color(0.042, 0.119, 0.190),
+		"fog": Color(0.027, 0.057, 0.085),
+	},
+	{
+		"id": "cobalt",
+		"label": "COBALT",
+		# Blue pushed toward indigo.
+		"wall": Color(0.120, 0.314, 1.000),
+		"grid": Color(0.320, 0.426, 0.800),
+		"floor": Color(0.029, 0.037, 0.065),
+		"wall_albedo": Color(0.136, 0.158, 0.235),
+		"wall_emission": Color(0.042, 0.074, 0.190),
+		"fog": Color(0.027, 0.040, 0.085),
+	},
+	{
+		"id": "indigo",
+		"label": "INDIGO",
+		# The dark end of blue, before violet takes over.
+		"wall": Color(0.296, 0.120, 1.000),
+		"grid": Color(0.448, 0.360, 0.800),
+		"floor": Color(0.036, 0.029, 0.065),
+		"wall_albedo": Color(0.156, 0.136, 0.235),
+		"wall_emission": Color(0.071, 0.042, 0.190),
+		"fog": Color(0.039, 0.027, 0.085),
+	},
+	{
+		"id": "orchid",
+		"label": "ORCHID",
+		# Violet leaning pink.
+		"wall": Color(0.771, 0.120, 1.000),
+		"grid": Color(0.692, 0.384, 0.800),
+		"floor": Color(0.056, 0.029, 0.065),
+		"wall_albedo": Color(0.209, 0.136, 0.235),
+		"wall_emission": Color(0.151, 0.042, 0.190),
+		"fog": Color(0.070, 0.027, 0.085),
+	},
+	{
+		"id": "plum",
+		"label": "PLUM",
+		# Deep and dusty, the quietest of the purples.
+		"wall": Color(1.000, 0.120, 0.965),
+		"grid": Color(0.800, 0.400, 0.784),
+		"floor": Color(0.065, 0.029, 0.064),
+		"wall_albedo": Color(0.235, 0.136, 0.231),
+		"wall_emission": Color(0.190, 0.042, 0.184),
+		"fog": Color(0.085, 0.027, 0.083),
+	},
+	{
+		"id": "fuchsia",
+		"label": "FUCHSIA",
+		# Hot pink, the loudest hue offered.
+		"wall": Color(1.000, 0.120, 0.648),
+		"grid": Color(0.800, 0.360, 0.571),
+		"floor": Color(0.065, 0.029, 0.051),
+		"wall_albedo": Color(0.235, 0.136, 0.196),
+		"wall_emission": Color(0.190, 0.042, 0.131),
+		"fog": Color(0.085, 0.027, 0.062),
+	},
+	{
+		"id": "rose",
+		"label": "ROSE",
+		# Pink softened toward red.
+		"wall": Color(1.000, 0.120, 0.384),
+		"grid": Color(0.800, 0.424, 0.400),
+		"floor": Color(0.065, 0.029, 0.040),
+		"wall_albedo": Color(0.235, 0.136, 0.166),
+		"wall_emission": Color(0.190, 0.042, 0.086),
+		"fog": Color(0.085, 0.027, 0.045),
+	},
+	{
+		"id": "crimson",
+		"label": "CRIMSON",
+		# Blood red. Warm, so the grid is pulled cool.
+		"wall": Color(1.000, 0.120, 0.173),
+		"grid": Color(0.440, 0.562, 0.800),
+		"floor": Color(0.065, 0.029, 0.031),
+		"wall_albedo": Color(0.235, 0.136, 0.142),
+		"wall_emission": Color(0.190, 0.042, 0.051),
+		"fog": Color(0.085, 0.027, 0.031),
+	},
+	{
+		"id": "coral",
+		"label": "CORAL",
+		# Red-orange, distinct from ember's pure orange.
+		"wall": Color(1.000, 0.305, 0.120),
+		"grid": Color(0.464, 0.528, 0.800),
+		"floor": Color(0.065, 0.037, 0.029),
+		"wall_albedo": Color(0.235, 0.157, 0.136),
+		"wall_emission": Color(0.190, 0.073, 0.042),
+		"fog": Color(0.085, 0.039, 0.027),
+	},
+	{
+		"id": "bronze",
+		"label": "BRONZE",
+		# Burnt orange, the warmest ground in the set.
+		"wall": Color(1.000, 0.569, 0.120),
+		"grid": Color(0.480, 0.483, 0.800),
+		"floor": Color(0.065, 0.047, 0.029),
+		"wall_albedo": Color(0.235, 0.187, 0.136),
+		"wall_emission": Color(0.190, 0.117, 0.042),
+		"fog": Color(0.085, 0.057, 0.027),
+	},
+	{
+		"id": "sand",
+		"label": "SAND",
+		# Pale gold.
+		"wall": Color(1.000, 0.754, 0.120),
+		"grid": Color(0.502, 0.496, 0.800),
+		"floor": Color(0.065, 0.055, 0.029),
+		"wall_albedo": Color(0.235, 0.207, 0.136),
+		"wall_emission": Color(0.190, 0.149, 0.042),
+		"fog": Color(0.085, 0.069, 0.027),
+	},
+	{
+		"id": "olive",
+		"label": "OLIVE",
+		# Yellow-green, the murkiest of the greens.
+		"wall": Color(0.877, 1.000, 0.120),
+		"grid": Color(0.525, 0.480, 0.800),
+		"floor": Color(0.060, 0.065, 0.029),
+		"wall_albedo": Color(0.221, 0.235, 0.136),
+		"wall_emission": Color(0.169, 0.190, 0.042),
+		"fog": Color(0.077, 0.085, 0.027),
+	},
+	{
+		"id": "lime",
+		"label": "LIME",
+		# Bright yellow-green.
+		"wall": Color(0.560, 1.000, 0.120),
+		"grid": Color(0.447, 0.440, 0.800),
+		"floor": Color(0.047, 0.065, 0.029),
+		"wall_albedo": Color(0.186, 0.235, 0.136),
+		"wall_emission": Color(0.116, 0.190, 0.042),
+		"fog": Color(0.056, 0.085, 0.027),
+	},
+	{
+		"id": "jade",
+		"label": "JADE",
+		# Green with blue in it.
+		"wall": Color(0.120, 1.000, 0.261),
+		"grid": Color(0.400, 0.800, 0.704),
+		"floor": Color(0.029, 0.065, 0.035),
+		"wall_albedo": Color(0.136, 0.235, 0.152),
+		"wall_emission": Color(0.042, 0.190, 0.066),
+		"fog": Color(0.027, 0.085, 0.036),
+	},
+	{
+		"id": "mint",
+		"label": "MINT",
+		# Pale green-cyan.
+		"wall": Color(0.120, 1.000, 0.578),
+		"grid": Color(0.416, 0.800, 0.731),
+		"floor": Color(0.029, 0.065, 0.048),
+		"wall_albedo": Color(0.136, 0.235, 0.188),
+		"wall_emission": Color(0.042, 0.190, 0.119),
+		"fog": Color(0.027, 0.085, 0.057),
+	},
+	{
+		"id": "teal",
+		"label": "TEAL",
+		# The blue-green midpoint.
+		"wall": Color(0.120, 1.000, 0.894),
+		"grid": Color(0.384, 0.800, 0.750),
+		"floor": Color(0.029, 0.065, 0.061),
+		"wall_albedo": Color(0.136, 0.235, 0.223),
+		"wall_emission": Color(0.042, 0.190, 0.172),
+		"fog": Color(0.027, 0.085, 0.078),
+	},
+	{
+		"id": "aqua",
+		"label": "AQUA",
+		# Cyan pushed slightly green.
+		"wall": Color(0.120, 1.000, 1.000),
+		"grid": Color(0.360, 0.800, 0.800),
+		"floor": Color(0.029, 0.065, 0.065),
+		"wall_albedo": Color(0.136, 0.235, 0.235),
+		"wall_emission": Color(0.042, 0.190, 0.190),
+		"fog": Color(0.027, 0.085, 0.085),
+	},
+	{
+		"id": "slate",
+		"label": "SLATE",
+		# Desaturated blue-grey, the most restrained option.
+		"wall": Color(0.120, 0.472, 1.000),
+		"grid": Color(0.560, 0.656, 0.800),
+		"floor": Color(0.029, 0.044, 0.065),
+		"wall_albedo": Color(0.136, 0.176, 0.235),
+		"wall_emission": Color(0.042, 0.101, 0.190),
+		"fog": Color(0.027, 0.050, 0.085),
+	},
+	{
+		"id": "ash",
+		"label": "ASH",
+		# Near-neutral with a cold cast.
+		"wall": Color(0.120, 0.208, 1.000),
+		"grid": Color(0.624, 0.642, 0.800),
+		"floor": Color(0.029, 0.033, 0.065),
+		"wall_albedo": Color(0.136, 0.146, 0.235),
+		"wall_emission": Color(0.042, 0.057, 0.190),
+		"fog": Color(0.027, 0.033, 0.085),
+	},
 ]
 
 # Gate and exit markers keep a FIXED colour across every maze. They are
