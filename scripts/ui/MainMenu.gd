@@ -189,6 +189,7 @@ var _cog: Button = null
 var _panel: SettingsPanel = null
 var _marker_picker: MarkerPicker = null
 var _compendium: UpgradeCompendium = null
+var _maze_colours: MazeColours = null
 
 
 func _ready() -> void:
@@ -354,6 +355,10 @@ func _build_buttons() -> void:
 	# cog: it is not a PREFERENCE. It is a reference screen a player opens to
 	# decide what to take, which wants to be seen rather than found.
 	grid.add_child(_make_button("UPGRADES", _on_upgrades))
+	# MAZE COLOURS sits with MARKER and UPGRADES rather than behind the cog, for
+	# the same reason both of those do: it is a cosmetic CHOICE with unlockables
+	# behind it, not a preference set once to make the game work.
+	grid.add_child(_make_button("MAZE COLOURS", _on_maze_colours))
 	grid.add_child(_make_button("WATCH TRAILER", _on_trailer))
 	# LEADERBOARD reaches the board on a screen too narrow to show the panel
 	# beside the menu. Below TWO_COLUMN_MIN_WINDOW_WIDTH the panel is hidden
@@ -406,7 +411,8 @@ func _build_buttons() -> void:
 # push a different one off the phone.
 # UPGRADES is a list beside a diagram, which wants a desktop screen for the same
 # reason MARKER's preview does.
-const PHONE_HIDDEN := ["MARKER", "UPGRADES", "WATCH TRAILER", "QUIT"]
+const PHONE_HIDDEN := ["MARKER", "UPGRADES", "MAZE COLOURS", "WATCH TRAILER",
+	"QUIT"]
 
 
 # Size the buttons for the glass and wrap them into as many columns as it takes.
@@ -909,6 +915,26 @@ func _on_upgrades_closed() -> void:
 	# both get.
 	for button in _buttons:
 		if button.text == "UPGRADES":
+			button.grab_focus()
+			break
+
+
+func _on_maze_colours() -> void:
+	if _maze_colours != null:
+		return
+	var screen := MazeColours.new()
+	screen.closed.connect(_on_maze_colours_closed)
+	_maze_colours = screen
+	add_child(screen)
+	screen.focus_first()
+
+
+func _on_maze_colours_closed() -> void:
+	if _maze_colours != null:
+		_maze_colours.queue_free()
+		_maze_colours = null
+	for button in _buttons:
+		if button.text == "MAZE COLOURS":
 			button.grab_focus()
 			break
 

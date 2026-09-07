@@ -800,6 +800,8 @@ const MAZES := [
 # suit an aesthetic.
 const PALETTES := [
 	{
+		"id": "cyan",
+		"label": "GRID CYAN",
 		# Maze 1 -- cyan. The stock lightcycle blue.
 		"wall": Color(0.12, 0.85, 1.0),
 		"grid": Color(0.30, 0.55, 0.85),
@@ -809,6 +811,8 @@ const PALETTES := [
 		"fog": Color(0.02, 0.05, 0.10),
 	},
 	{
+		"id": "magenta",
+		"label": "MAGENTA",
 		# Maze 2 -- magenta / violet. Warmer and denser, matching the step up in
 		# braid factor: the maze starts closing in.
 		"wall": Color(1.0, 0.25, 0.85),
@@ -819,6 +823,8 @@ const PALETTES := [
 		"fog": Color(0.07, 0.02, 0.09),
 	},
 	{
+		"id": "acid",
+		"label": "ACID GREEN",
 		# Maze 3 -- acid green. The most alien of the set, and far from both of
 		# its neighbours on the wheel.
 		"wall": Color(0.35, 1.0, 0.45),
@@ -829,6 +835,8 @@ const PALETTES := [
 		"fog": Color(0.02, 0.08, 0.04),
 	},
 	{
+		"id": "ember",
+		"label": "EMBER",
 		# Palette 3 -- ember. Bright red-orange, held clear of the amber the
 		# gate markers use.
 		#
@@ -857,6 +865,8 @@ const PALETTES := [
 		"fog": Color(0.065, 0.03, 0.014),
 	},
 	{
+		"id": "violet",
+		"label": "DEEP VIOLET",
 		# Palette 4 -- deep violet. The run's last maze, and the coldest and
 		# deepest of the five.
 		#
@@ -1246,6 +1256,26 @@ static func marker_shape(id: String) -> Dictionary:
 	return MARKER_SHAPES[0]
 
 
+# The palette a maze uses, by id, falling back to the maze's own default rather
+# than failing -- the promise every other table here makes.
+static func palette_by_id(id: String) -> Dictionary:
+	for entry in PALETTES:
+		if entry.get("id", "") == id:
+			return entry
+	return PALETTES[0]
+
+
+# The DEFAULT palette for a maze slot: the one that maze was authored with.
+#
+# By INDEX here rather than by id, because this is the identity relationship --
+# palette N is maze N's own colourway, and section 8 tuned the two together
+# (braid factor rising as the hues get colder). A player override sits on top of
+# this, never in place of it.
+static func default_palette_id(maze_index: int) -> String:
+	var i := clampi(maze_index, 0, PALETTES.size() - 1)
+	return String(PALETTES[i].get("id", ""))
+
+
 # --- Marker colours ----------------------------------------------------------
 #
 # PRESETS, not a wheel. Each one is earned by an achievement (Unlocks), so the
@@ -1278,6 +1308,7 @@ const MARKER_COLOURS := [
 	{"id": "lime", "label": "LIME", "colour": Color(0.55, 0.95, 0.45)},
 	{"id": "jade", "label": "JADE", "colour": Color(0.20, 0.85, 0.65)},
 	{"id": "steel", "label": "STEEL", "colour": Color(0.75, 0.78, 0.85)},
+	{"id": "rust", "label": "RUST", "colour": Color(0.85, 0.42, 0.20)},
 ]
 
 

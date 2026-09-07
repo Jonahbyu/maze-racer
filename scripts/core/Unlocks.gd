@@ -36,6 +36,7 @@ const SECTION := "unlocks"
 const KIND_SHAPE := "shape"
 const KIND_COLOUR := "colour"
 const KIND_DECAL := "decal"
+const KIND_PALETTE := "palette"
 
 
 static func id_for(kind: String, name: String) -> String:
@@ -106,7 +107,7 @@ const ACHIEVEMENTS := {
 	"no_looking_back": {
 		"label": "NO LOOKING BACK",
 		"requirement": "Finish a run without re-crossing a cell",
-		"grants": "colour:cobalt",
+		"grants": "colour:rust",
 	},
 	"century": {
 		"label": "CENTURY",
@@ -127,6 +128,32 @@ const ACHIEVEMENTS := {
 		"label": "CORNERER",
 		"requirement": "Take 500 clean turns in one run",
 		"grants": "colour:lime",
+	},
+
+	# --- Palettes: earned by REACHING the maze that wears them ------------
+	#
+	# Each maze's colourway is unlocked by getting to that maze, which makes the
+	# reward the thing the player just saw. Maze 1's is the default and is never
+	# locked, or a fresh profile would have no colours at all to assign.
+	"palette_magenta": {
+		"label": "MAGENTA",
+		"requirement": "Reach maze 2",
+		"grants": "palette:magenta",
+	},
+	"palette_acid": {
+		"label": "ACID GREEN",
+		"requirement": "Reach maze 3",
+		"grants": "palette:acid",
+	},
+	"palette_ember": {
+		"label": "EMBER",
+		"requirement": "Reach maze 4",
+		"grants": "palette:ember",
+	},
+	"palette_violet": {
+		"label": "DEEP VIOLET",
+		"requirement": "Reach maze 5",
+		"grants": "palette:violet",
 	},
 
 	# --- Decals: earned by what you BUILD ---------------------------------
@@ -173,9 +200,7 @@ func is_unlocked(id: String) -> bool:
 
 
 func _is_default(id: String) -> bool:
-	return id == id_for(KIND_SHAPE, Tuning.MARKER_SHAPE_DEFAULT) \
-		or id == id_for(KIND_DECAL, Tuning.MARKER_DECAL_DEFAULT) \
-		or id == id_for(KIND_COLOUR, Tuning.MARKER_COLOUR_DEFAULT)
+	return id == id_for(KIND_SHAPE, Tuning.MARKER_SHAPE_DEFAULT) 		or id == id_for(KIND_DECAL, Tuning.MARKER_DECAL_DEFAULT) 		or id == id_for(KIND_COLOUR, Tuning.MARKER_COLOUR_DEFAULT) 		or id == id_for(KIND_COLOUR, Tuning.MARKER_COLOUR_2_DEFAULT) 		or id == id_for(KIND_PALETTE, Tuning.default_palette_id(0))
 
 
 # Every cosmetic that CAN be locked -- everything but the three defaults.
@@ -185,11 +210,22 @@ static func lockable_ids() -> Array:
 		if String(shape["id"]) != Tuning.MARKER_SHAPE_DEFAULT:
 			out.append(id_for(KIND_SHAPE, String(shape["id"])))
 	for entry in Tuning.MARKER_COLOURS:
-		if String(entry["id"]) != Tuning.MARKER_COLOUR_DEFAULT:
-			out.append(id_for(KIND_COLOUR, String(entry["id"])))
+		# BOTH colour defaults are excluded. Colour 2 defaults to cobalt rather
+		# than to white, because two identical defaults would show a white
+		# pattern on a white mark and read as a broken decal -- so cobalt is a
+		# default too and cannot be lockable. RulesTest caught the contradiction
+		# the moment only one was excluded.
+		var cid := String(entry["id"])
+		if cid != Tuning.MARKER_COLOUR_DEFAULT 				and cid != Tuning.MARKER_COLOUR_2_DEFAULT:
+			out.append(id_for(KIND_COLOUR, cid))
 	for decal in Tuning.MARKER_DECALS:
 		if String(decal["id"]) != Tuning.MARKER_DECAL_DEFAULT:
 			out.append(id_for(KIND_DECAL, String(decal["id"])))
+	# Maze 1's palette is the default and is never lockable, for the reason the
+	# marker defaults are not: a profile with no palette at all could assign
+	# nothing.
+	for i in range(1, Tuning.PALETTES.size()):
+		out.append(id_for(KIND_PALETTE, String(Tuning.PALETTES[i].get("id", ""))))
 	return out
 
 
@@ -208,6 +244,8 @@ static func cosmetic_exists(id: String) -> bool:
 			return String(Tuning.marker_colour(parts[1])["id"]) == parts[1]
 		KIND_DECAL:
 			return String(Tuning.marker_decal(parts[1])["id"]) == parts[1]
+		KIND_PALETTE:
+			return String(Tuning.palette_by_id(parts[1]).get("id", "")) 				== parts[1]
 	return false
 
 
@@ -265,6 +303,10 @@ func _met(aid: String, score: Score, upgrades: Upgrades, maze_index: int,
 		"first_blood": return drove
 		"the_tangle": return maze_index >= 2 or cleared
 		"the_vault": return maze_index >= 4 or cleared
+		"palette_magenta": return maze_index >= 1 or cleared
+		"palette_acid": return maze_index >= 2 or cleared
+		"palette_ember": return maze_index >= 3 or cleared
+		"palette_violet": return maze_index >= 4 or cleared
 		"clear_run": return cleared
 		"flawless": return drove and score.crashes == 0
 		"ton_up": return score.peak_speed >= 6.0

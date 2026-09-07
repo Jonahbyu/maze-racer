@@ -58,6 +58,7 @@ func _init() -> void:
 	_test_peak_speed()
 	_test_achievement_evaluation()
 	_test_demo_table()
+	_test_maze_palettes()
 
 	print("")
 	print("passed: %d   failed: %d" % [_passed, _failed])
@@ -293,6 +294,18 @@ func _test_unlocks() -> void:
 
 	var fresh := UnlocksScript.new()
 
+	# No achievement grants something a fresh profile ALREADY HAS.
+	#
+	# The pairing check above runs lockable -> achievement, and this is the
+	# other direction: an achievement whose reward is unlocked from the start is
+	# a goal that pays nothing. It slipped through once -- colour 2's default
+	# moved to cobalt, which made cobalt permanently unlocked while an
+	# achievement still granted it.
+	for aid in UnlocksScript.ACHIEVEMENTS:
+		var granted := String(UnlocksScript.ACHIEVEMENTS[aid]["grants"])
+		check("achievement %s grants something still locked" % aid,
+			not fresh.is_unlocked(granted))
+
 	# THE DEFAULTS ARE NEVER LOCKED. A saved name that no longer resolves falls
 	# back to these (section 12), so a locked default strands the player with no
 	# marker at all.
@@ -398,6 +411,65 @@ func _test_demo_table() -> void:
 		# per-rank text covers the numbers; this covers the idea.
 		check("demo for %s has a caption" % name,
 			String(entry.get("caption", "")).strip_edges() != "")
+
+
+# Maze palettes are assignable, and assigning one changes NOTHING about the run.
+#
+# The separation is the whole reason this is safe to offer. A palette is six
+# interlocking colours and section 8 records two bugs from mixing them wrong --
+# but neither is reachable here, because the player assigns WHOLE authored
+# palettes rather than deriving five colours from one. What is left to prove is
+# that the choice is cosmetic: the same seed must drive identically whichever
+# colourway is on screen.
+func _test_maze_palettes() -> void:
+	# Every palette is addressable by a stable id, and every id round-trips.
+	var seen := {}
+	for entry in Tuning.PALETTES:
+		var id := String(entry.get("id", ""))
+		check("palette has an id", id != "")
+		check("palette %s has a label" % id,
+			String(entry.get("label", "")) != "")
+		check("palette id %s is unique" % id, not seen.has(id))
+		seen[id] = true
+		check("palette %s resolves to itself" % id,
+			String(Tuning.palette_by_id(id).get("id", "")) == id)
+
+	# An unknown id falls back rather than failing -- the promise every other
+	# table makes, and the one that matters when a saved assignment names a
+	# palette a later build dropped.
+	check("an unknown palette falls back",
+		Tuning.palette_by_id("no-such-palette").has("wall"))
+
+	# Each maze's DEFAULT is its own authored colourway. This is the identity
+	# section 8 tuned -- braid factor rising as the hues get colder -- so a
+	# fresh profile must see exactly the game as written.
+	for i in Tuning.PALETTES.size():
+		check("maze %d defaults to its own palette" % i,
+			Tuning.default_palette_id(i)
+				== String(Tuning.PALETTES[i].get("id", "")))
+
+	# THE CHOICE MOVES NOTHING. Two racers on one seed, driven identically,
+	# must never diverge -- the same assertion the marker shape gets, and for
+	# the same reason: the palette is reachable from every node in the tree even
+	# though nothing in movement, turn resolution, the buffer, the barrier or
+	# the penalties may read it.
+	var ma := Maze.new()
+	ma.generate(24, 24, 7171, 0.15, 0.03, 5)
+	var mb := Maze.new()
+	mb.generate(24, 24, 7171, 0.15, 0.03, 5)
+
+	var ra := Racer.new()
+	ra.setup(ma, Upgrades.new(1))
+	var rb := Racer.new()
+	rb.setup(mb, Upgrades.new(1))
+
+	var diverged := 0
+	for i in 900:
+		ra.step(1.0 / 60.0)
+		rb.step(1.0 / 60.0)
+		if ra.cell != rb.cell or absf(ra.progress - rb.progress) > 0.0001 				or ra.facing != rb.facing or absf(ra.speed - rb.speed) > 0.0001:
+			diverged += 1
+	check_eq("the maze palette never moves the racer", diverged, 0)
 
 
 # The quadrant box and the cardinal compass (CLAUDE.md section 7).

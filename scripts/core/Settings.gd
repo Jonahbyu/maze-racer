@@ -19,6 +19,7 @@ signal marker_shape_changed(id: String)
 signal marker_decal_changed(id: String)
 signal marker_colour_changed(colour: Color)
 signal marker_colour_2_changed(colour: Color)
+signal maze_palettes_changed()
 
 const CONFIG_PATH := "user://settings.cfg"
 const SECTION := "controls"
@@ -87,6 +88,21 @@ var marker_colour := PlayerMarker.COL_ARROW
 # decal other than PLAIN is chosen, since a plain mark has nothing to fill.
 var marker_colour_2: Color = Tuning.marker_colour(
 	Tuning.MARKER_COLOUR_2_DEFAULT)["colour"]
+
+# Which palette each maze slot draws in, by palette id.
+#
+# WHOLE PALETTES, never a single hue. A palette is six interlocking colours --
+# wall, grid, floor, ambient, fog, emission -- and section 8 records two separate
+# bugs from getting that mix wrong: maze 3's green ambient lighting every wall
+# face in its own neon, and ember's yellow grid driving ambient warm until every
+# wall turned milky brown. Both came from DERIVING the rest from one colour,
+# which is exactly what a per-hue picker would have to do. Each entry here is a
+# palette authored and tuned as a set, so no assignment a player can make
+# reproduces either failure.
+#
+# Empty means "this slot uses its own default", which is what keeps a fresh
+# profile identical to the game as authored.
+var maze_palettes: Array[String] = []
 
 
 func _ready() -> void:
@@ -159,6 +175,30 @@ func set_marker_decal(id: String) -> void:
 	emit_signal("marker_decal_changed", marker_decal)
 
 
+# Assign a palette to one maze slot. An empty id restores that slot's default.
+func set_maze_palette(slot: int, id: String) -> void:
+	if slot < 0 or slot >= Tuning.MAZES.size():
+		return
+	while maze_palettes.size() < Tuning.MAZES.size():
+		maze_palettes.append("")
+	var resolved := ""
+	if id != "":
+		resolved = String(Tuning.palette_by_id(id).get("id", ""))
+	if maze_palettes[slot] == resolved:
+		return
+	maze_palettes[slot] = resolved
+	_save()
+	emit_signal("maze_palettes_changed")
+
+
+# The palette id a maze slot should draw in: the player's assignment, or the
+# maze's own default.
+func palette_for_maze(slot: int) -> String:
+	if slot >= 0 and slot < maze_palettes.size() and maze_palettes[slot] != "":
+		return maze_palettes[slot]
+	return Tuning.default_palette_id(slot)
+
+
 func set_marker_colour_2(colour: Color) -> void:
 	var opaque2 := Color(colour.r, colour.g, colour.b, 1.0)
 	if opaque2.is_equal_approx(marker_colour_2):
@@ -209,6 +249,10 @@ func _load() -> void:
 	marker_colour_2 = Color.from_string(String(config.get_value(
 		SECTION_LOOK, "marker_colour_2", fallback2.to_html(false))), fallback2)
 	marker_colour_2.a = 1.0
+	maze_palettes.clear()
+	for i in Tuning.MAZES.size():
+		maze_palettes.append(String(config.get_value(
+			SECTION_LOOK, "maze_palette_%d" % i, "")))
 
 
 func _save() -> void:
@@ -222,4 +266,7 @@ func _save() -> void:
 	config.set_value(SECTION_LOOK, "marker_colour", marker_colour.to_html(false))
 	config.set_value(SECTION_LOOK, "marker_colour_2",
 		marker_colour_2.to_html(false))
+	for i in maze_palettes.size():
+		config.set_value(SECTION_LOOK, "maze_palette_%d" % i,
+			maze_palettes[i])
 	config.save(CONFIG_PATH)

@@ -529,7 +529,26 @@ func _start_maze(index: int) -> void:
 	# five today; this call does not care.
 	_music_for_maze(index)
 
+	# The maze's own palette, unless the player has assigned a different one.
+	#
+	# Resolved ONCE here, so the mesh, the environment and the HUD banner all
+	# read the same answer -- three separate lookups would be three chances for
+	# the world and the banner to disagree about what colour this maze is.
+	#
+	# Guarded on Settings, like every other preference read: a harness
+	# instantiates Game.tscn bare with no autoloads, and a missing preference
+	# must never be what stops a maze building. The trailer is excluded too --
+	# it is a fixed reel of the game as authored (docs/specs/trailer.md), and a
+	# player's colour choices must not restyle the shop window.
 	var palette_index := int(config.get("palette", 0))
+	if trailer_seed == 0:
+		var settings := get_node_or_null("/root/Settings")
+		if settings != null:
+			var wanted: String = settings.palette_for_maze(index)
+			for i in Tuning.PALETTES.size():
+				if String(Tuning.PALETTES[i].get("id", "")) == wanted:
+					palette_index = i
+					break
 	_mesh.build(maze, palette_index, upgrades.gate_height_scale())
 	# After build(), which is what creates the maze's trail image and texture --
 	# they are sized to the grid, so a handle taken before the build is a handle
