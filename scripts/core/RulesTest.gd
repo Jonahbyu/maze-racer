@@ -49,6 +49,7 @@ func _init() -> void:
 	_test_cardinal_compass()
 	_test_quadrant_upgrades()
 	_test_marker_shapes()
+	_test_marker_decals()
 
 	print("")
 	print("passed: %d   failed: %d" % [_passed, _failed])
@@ -150,6 +151,90 @@ func _test_marker_shapes() -> void:
 		check_eq("marker shape %s resolves to itself" % id2,
 			String(Tuning.marker_shape(id2)["id"]), id2)
 
+
+# The marker decal table (docs/plans/marker-colour-and-decals.md).
+#
+# Asserts the table's shape and the one property the whole design rests on: a
+# decal is a FUNCTION OF AN OUTLINE, so every decal must work on every shape --
+# including shapes added later.
+#
+# Authoring artwork per pairing would be a shapes x decals grid: six by five
+# today, and a seventh shape means five more drawings or five silent blanks.
+# That is the parallel-array failure section 6 records for landmark density and
+# 9c for music tracks, and the stale cell is always the one nobody looks at.
+# Generating instead makes a new shape correct by construction, and the CROSS
+# PRODUCT below is what turns that claim into something checked.
+func _test_marker_decals() -> void:
+	check("marker decals exist", Tuning.MARKER_DECALS.size() >= 2)
+
+	var seen := {}
+	for decal in Tuning.MARKER_DECALS:
+		var id: String = String(decal["id"])
+		check("marker decal %s has an id" % id, id != "")
+		check("marker decal %s has a label" % id, String(decal["label"]) != "")
+		# Ids address the saved preference, so a duplicate makes one of the two
+		# unreachable -- silently, since the lookup returns the first.
+		check("marker decal %s is unique" % id, not seen.has(id))
+		seen[id] = true
+
+	check("the default marker decal is in the table",
+		seen.has(Tuning.MARKER_DECAL_DEFAULT))
+
+	# Stored by NAME, so a reordered table cannot re-point a saved choice, and
+	# a name that no longer exists lands on the default rather than failing --
+	# the same promise the shape table makes.
+	check_eq("unknown marker decal falls back",
+		String(Tuning.marker_decal("no-such-decal")["id"]),
+		Tuning.MARKER_DECAL_DEFAULT)
+
+	for decal in Tuning.MARKER_DECALS:
+		var id3: String = String(decal["id"])
+		check_eq("marker decal %s resolves to itself" % id3,
+			String(Tuning.marker_decal(id3)["id"]), id3)
+
+	# THE CROSS PRODUCT. Every decal, on every shape, must produce usable
+	# geometry -- this is what "works on any chosen icon" means operationally.
+	#
+	# The hard cases are already in the table and are not special-cased
+	# anywhere: the chevron is CONCAVE, so a decal built by fanning from a
+	# centre would fill its notch (the failure section 12 records for the inner
+	# mark itself), and the delta has only three vertices.
+	for shape in Tuning.MARKER_SHAPES:
+		var outline: Array = shape["outline"]
+		# The shape's own half-width and length, so "inside the shape" is
+		# measured against the shape rather than against a constant.
+		var max_x := 0.0
+		var min_y := INF
+		var max_y := -INF
+		for v in outline:
+			max_x = maxf(max_x, absf(v.x))
+			min_y = minf(min_y, v.y)
+			max_y = maxf(max_y, v.y)
+
+		for decal in Tuning.MARKER_DECALS:
+			var did: String = String(decal["id"])
+			var label := "%s on %s" % [did, shape["id"]]
+			var polys: Array = Tuning.decal_polygons(did, outline)
+
+			# "none" is the plain shape and legitimately draws nothing. Every
+			# other decal must actually produce something, or it is a menu
+			# entry that silently does nothing.
+			if did == Tuning.MARKER_DECAL_DEFAULT:
+				check("%s draws nothing" % label, polys.is_empty())
+				continue
+
+			check("%s produces geometry" % label, not polys.is_empty())
+
+			for poly in polys:
+				check("%s polygon closes" % label, poly.size() >= 3)
+				# A decal must stay INSIDE the mark it decorates. One spilling
+				# past the outline would draw over the ring -- which is the
+				# state channel -- and over the corridor floor beyond it.
+				for point in poly:
+					check("%s stays inside the shape" % label,
+						absf(point.x) <= max_x + 0.001
+							and point.y >= min_y - 0.001
+							and point.y <= max_y + 0.001)
 
 
 # The quadrant box and the cardinal compass (CLAUDE.md section 7).

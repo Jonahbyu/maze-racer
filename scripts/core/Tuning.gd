@@ -1246,6 +1246,180 @@ static func marker_shape(id: String) -> Dictionary:
 	return MARKER_SHAPES[0]
 
 
+# --- Marker decals -----------------------------------------------------------
+#
+# A pattern laid over whatever inner mark the player has chosen.
+#
+# A decal is a FUNCTION OF AN OUTLINE, never authored artwork. Drawing one per
+# shape-and-decal pairing is a shapes x decals grid -- six by five today, and a
+# seventh shape means five more drawings or five silent blanks. That is the
+# parallel-array failure section 6 records for landmark density and 9c for music
+# tracks, and the stale cell is always the one nobody looks at.
+#
+# Generating from the outline means a shape added later is decorated correctly
+# by construction. RulesTest asserts the whole cross product rather than
+# trusting it.
+#
+# The two shapes that make this real are already in MARKER_SHAPES and are not
+# special-cased anywhere: the chevron is CONCAVE, and the delta has only three
+# vertices. Every decal below is built by CLIPPING or INSETTING the polygon it
+# was handed, which is what lets one rule cover both.
+const MARKER_DECAL_DEFAULT := "none"
+
+const MARKER_DECALS := [
+	{
+		"id": "none",
+		"label": "PLAIN",
+		# The shape as drawn, and the default. A marker with no pattern is the
+		# most legible one -- a decal is a choice, not an improvement on it.
+	},
+	{
+		"id": "stripe",
+		"label": "STRIPE",
+		# Two bands across the facing axis. Racing stripes, and the clearest
+		# read of the four at the trailing camera's shallow angle.
+	},
+	{
+		"id": "edge",
+		"label": "EDGE",
+		# An inset copy of the outline, so the pattern IS the silhouette. The
+		# one decal that flatters every shape equally, since it is derived from
+		# the shape rather than imposed on it.
+	},
+	{
+		"id": "tip",
+		"label": "TIP",
+		# The forward third. The only decal that REINFORCES facing, which is
+		# the one thing every shape in the table must say (section 12, "Every
+		# shape has to point").
+	},
+	{
+		"id": "split",
+		"label": "SPLIT",
+		# One half along the facing axis. The boldest of the set, and the one
+		# that most changes the silhouette's read at distance.
+	},
+]
+
+
+# The table entry for a decal id, falling back to the default rather than
+# failing -- the same promise marker_shape() makes, for the same reason.
+static func marker_decal(id: String) -> Dictionary:
+	for decal in MARKER_DECALS:
+		if decal["id"] == id:
+			return decal
+	for decal in MARKER_DECALS:
+		if decal["id"] == MARKER_DECAL_DEFAULT:
+			return decal
+	return MARKER_DECALS[0]
+
+
+# The polygons a decal contributes, given the outline it decorates.
+#
+# Every branch CLIPS or INSETS the polygon it was handed, so none may assume a
+# vertex count, a symmetry or a tail notch. Clipping is what makes a concave
+# chevron work without a special case: the band is a plain rectangle and the
+# intersection does all the shaping.
+#
+# Returns polygons in the outline's own space. Empty for "none", which is the
+# plain shape.
+static func decal_polygons(id: String, outline: Array) -> Array:
+	var poly := PackedVector2Array()
+	for v in outline:
+		poly.append(v)
+	if poly.size() < 3:
+		return []
+
+	# The shape's own extent, so every decal is proportional to what it
+	# decorates. A fixed band width would be right for the delta and wrong for
+	# the dart.
+	var min_y: float = poly[0].y
+	var max_y: float = poly[0].y
+	var max_x := 0.0
+	for p in poly:
+		min_y = minf(min_y, p.y)
+		max_y = maxf(max_y, p.y)
+		max_x = maxf(max_x, absf(p.x))
+	var height: float = maxf(max_y - min_y, 0.0001)
+	# Wider than the shape, so a clipping rectangle always spans it fully. The
+	# intersection is what bounds the result, never this number.
+	var reach: float = max_x * 2.0 + 1.0
+
+	match id:
+		MARKER_DECAL_DEFAULT:
+			return []
+		"stripe":
+			var out: Array = []
+			for frac in [0.32, 0.60]:
+				var y: float = min_y + height * frac
+				var band := PackedVector2Array([
+					Vector2(-reach, y),
+					Vector2(reach, y),
+					Vector2(reach, y + height * 0.12),
+					Vector2(-reach, y + height * 0.12),
+				])
+				for piece in Geometry2D.intersect_polygons(band, poly):
+					if piece.size() >= 3:
+						out.append(piece)
+			return out
+		"edge":
+			# offset_polygon with a negative delta shrinks the outline along its
+			# own normals, so the result follows whatever silhouette it is given.
+			#
+			# An inset larger than the shape's THINNEST part consumes it and
+			# returns nothing at all. Measured: the chevron's arms vanish at
+			# 0.270 and survive at 0.180, because its bulk is two thin limbs
+			# rather than one body -- max_x and height describe its bounding box
+			# and say nothing about that.
+			#
+			# So the inset is not a constant, and it is not derived from the
+			# bounding box either. It steps DOWN until the offset actually
+			# returns a polygon, which is a property of the shape rather than a
+			# guess about it -- a thinner shape added later simply lands on a
+			# smaller step instead of silently drawing nothing. A branch that
+			# promises geometry has to verify it (section 12).
+			var out2: Array = []
+			var widest: float = minf(max_x, height * 0.5)
+			for frac in [0.30, 0.22, 0.16, 0.11, 0.07]:
+				var inset: float = widest * frac
+				if inset <= 0.0:
+					continue
+				var pieces := Geometry2D.offset_polygon(poly, -inset)
+				for piece in pieces:
+					if piece.size() >= 3:
+						out2.append(piece)
+				if not out2.is_empty():
+					break
+			return out2
+		"tip":
+			# Facing is -Y in this space, so forward is the LOW end.
+			var cut: float = min_y + height * 0.34
+			var nose := PackedVector2Array([
+				Vector2(-reach, min_y - height),
+				Vector2(reach, min_y - height),
+				Vector2(reach, cut),
+				Vector2(-reach, cut),
+			])
+			var out3: Array = []
+			for piece in Geometry2D.intersect_polygons(nose, poly):
+				if piece.size() >= 3:
+					out3.append(piece)
+			return out3
+		"split":
+			var half := PackedVector2Array([
+				Vector2(0.0, min_y - height),
+				Vector2(reach, min_y - height),
+				Vector2(reach, max_y + height),
+				Vector2(0.0, max_y + height),
+			])
+			var out4: Array = []
+			for piece in Geometry2D.intersect_polygons(half, poly):
+				if piece.size() >= 3:
+					out4.append(piece)
+			return out4
+	return []
+
+
 # --- Landmarks (docs/specs/landmarks.md) -------------------------------------
 #
 # Decorative structures whose only job is to answer "have I been here before?".
