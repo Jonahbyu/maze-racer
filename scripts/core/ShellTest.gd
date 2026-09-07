@@ -9,17 +9,6 @@ var _passed := 0
 var _failed := 0
 
 
-# How long a modelled thumb rests on a pad before lifting, in ms. Comfortably
-# longer than TouchControls.ECHO_WINDOW_MS, because the whole point is that the
-# hold's LENGTH must not matter.
-const ECHO_HOLD_MS := 1500
-
-# The gap between the touch RELEASE and the browser's synthesized mousedown.
-# Measured on production as the same millisecond; a few ms here keeps the check
-# honest about jitter without pretending the gap is large.
-const ECHO_LIFT_GAP_MS := 12
-
-
 func _init() -> void:
 	print("=== ShellTest ===")
 	_go.call_deferred()
@@ -337,13 +326,11 @@ func _go() -> void:
 			# finger lifted from, which is often a different pad (see the
 			# cross-pad check below). So modelling a desktop means modelling a
 			# machine that has sent no touch at all: the stamp is pushed back
-			# out of range rather than the tap being moved to another pad,
-			# which no longer escapes anything.
-			#
-			# On a real desktop no InputEventScreenTouch is ever emitted, so
-			# the window is never open in the first place.
+			# by clearing the touch latch, which is what a real desktop is:
+			# no InputEventScreenTouch is ever emitted there, so the latch
+			# never closes and the mouse path stays live.
 			pads.clear_held()
-			pads._touch_at_ms = -1000000
+			pads._seen_touch = false
 			seen["turns"] = 0
 			pads._on_pad_input(pads._pads["right"], _mouse_event(true),
 				func() -> void: pads._steer(1), 1)
@@ -507,10 +494,9 @@ func _go() -> void:
 			# phantom slowdown behind it, and the pause that toggles straight
 			# back off, all from one cause.
 			#
-			# The stamp is refreshed by the touch RELEASE, so what the window
-			# must cover is only the gap from the lift. Held time is then
-			# irrelevant, which is what this asserts: the hold below is far
-			# longer than ECHO_WINDOW_MS.
+			# The guard is now a latch on having seen a finger, so held time
+			# is irrelevant by construction rather than by tuning -- which is
+			# what this asserts.
 			pads.clear_held()
 			seen["turns"] = 0
 			seen["reverses"] = 0
@@ -518,26 +504,24 @@ func _go() -> void:
 				func() -> void: pads._steer(-1), -1)
 			# The thumb RESTS, then lifts, and only then does the echo arrive.
 			#
-			# The hold is modelled by ageing the stamp between the press and
-			# the release, which is what a long press does to it. It must be
-			# aged HERE and not after the release: the release re-stamps, so
-			# winding the clock back afterwards puts the echo inside the window
-			# no matter how the window is measured -- and an assertion written
-			# that way passes against the very bug it is named for. Verified by
-			# restoring ECHO_WINDOW_MS to 250, where this check must fail.
-			pads._touch_at_ms -= ECHO_HOLD_MS
+			# No clock is wound here any more, and that is the point: the guard
+			# is a latch on having seen a finger, so HOW LONG the gesture takes
+			# cannot affect it. Two timestamp schemes were beaten in play
+			# before this -- the echo is synthesized inside the engine and
+			# delivered on whatever frame it reaches, which is late exactly
+			# when the phone is busiest.
 			pads._on_pad_input(pads._pads["left"], _touch_event(false),
 				func() -> void: pass, -1)
-			# The release re-stamped from `now`, so age it again by the gap the
-			# browser actually leaves between the lift and its synthesized
-			# mousedown. Measured on production: the same millisecond. A guard
-			# that covers this passes; the 250ms press-stamped window did not.
-			pads._touch_at_ms -= ECHO_LIFT_GAP_MS
+			# A DELAYED echo, which is what beat both timestamp schemes: the
+			# emulated event is synthesized inside the engine and delivered on
+			# whatever frame it reaches, so under load it can arrive long after
+			# any window has shut. Modelled by simply letting real time pass.
+			OS.delay_msec(900)
 			pads._on_pad_input(pads._pads["left"], _mouse_event(true),
 				func() -> void: pads._steer(-1), -1)
 			pads._on_pad_input(pads._pads["left"], _mouse_event(false),
 				func() -> void: pass, -1)
-			check("a HELD tap is still one turn",
+			check("a HELD tap with a DELAYED echo is still one turn",
 				int(seen["turns"]) == 1 and int(seen["reverses"]) == 0,
 				"turns %d reverses %d" % [seen["turns"], seen["reverses"]])
 			pads.held_direction_changed.disconnect(counter)

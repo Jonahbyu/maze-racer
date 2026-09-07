@@ -118,23 +118,6 @@ const ARROW_H_FRAC := 0.44
 
 const MARGIN := 18.0
 
-# How long after a real touch a mouse event is treated as that touch's
-# emulated echo rather than a genuine click.
-#
-# Measured on the live page, the browser emits its synthesized mousedown in the
-# same millisecond as touchend -- but the stamp is refreshed by BOTH touch
-# events, so what this window has to cover is only the gap from the lift, not
-# from the press. That gap is a few milliseconds.
-#
-# 600 rather than something tight against the measurement, because the cost is
-# asymmetric and both directions were checked. Too SHORT and a real tap fires
-# twice, which is the bug this exists to stop -- a second turn, or a pause that
-# toggles straight back off. Too LONG and a genuine mouse click is ignored for
-# an extra fraction of a second, but only on a device that has just delivered a
-# touch, where a mouse click within 600ms of a finger lift is not a thing that
-# happens. On a desktop no touch ever arrives, so the window is never open and
-# the mouse path is untouched.
-const ECHO_WINDOW_MS := 600
 
 var _pads: Dictionary = {}
 
@@ -150,21 +133,24 @@ var _held_dirs: Dictionary = {}
 # browser does the same on top of it, so a phone delivers each tap twice. This
 # is how the echo is told from a genuine click.
 #
-# ONE STAMP FOR THE WHOLE OVERLAY, not one per pad, and the difference is the
-# whole bug. Measured on production, a single finger raises:
-#     touchstart@10963  touchend@11115  mousedown@11115  mouseup@11115
-# -- the synthesized mousedown arrives AFTER touchend, at the position the
-# finger LIFTED from. A thumb that lands on one pad and lifts slightly to the
-# side sends its echo to a DIFFERENT pad, and a per-pad stamp cannot recognise
-# it there: that pad was never touched, so its window was never open. The echo
-# was passed through as a genuine click and turned the racer a second time --
-# which on a straight corridor arms a turn with no opening to take and expires
-# into the -0.5x slowdown (section 5.2) a second later. A phantom penalty,
-# arriving well after the thumb left the glass.
+# Whether this overlay has ever seen a real finger.
 #
-# A device delivering touches is not also being clicked by a mouse, so
-# suppressing mouse input briefly across the whole overlay costs nothing real.
-var _touch_at_ms: int = -1000000
+# It replaces a TIMESTAMP, and the difference is the difference between a bet
+# and a fact. Godot's emulate_mouse_from_touch synthesizes a mouse event from
+# every touch inside the engine, so one tap arrives twice and the second must
+# be dropped -- but it is delivered on whatever frame the engine reaches it,
+# which is prompt when idle and late under load. Every timestamp scheme is
+# therefore racing the frame rate, and the phone at 8x is the loaded case: the
+# window was beaten in play at 250ms and again at 600ms, each time letting one
+# tap turn the racer twice.
+#
+# A latch cannot be beaten by a slow frame. Once a finger has landed, this is a
+# touch device and every mouse button event it delivers is a synthesized twin.
+#
+# It is deliberately never cleared. A player does not stop having a touchscreen
+# part-way through a run, and clearing it on any phase change is what would let
+# the first tap after a gate double-fire again.
+var _seen_touch := false
 
 
 func _ready() -> void:
@@ -207,10 +193,10 @@ func clear_held() -> void:
 
 func _release_all() -> void:
 	_held_dirs.clear()
-	# _touch_at_ms is deliberately NOT cleared here. It is a timestamp used to
-	# spot an emulated echo, not a gesture in progress -- and the echo of a
-	# touch that happened just before a gate opened can still be in flight.
-	# It expires on its own after ECHO_WINDOW_MS.
+	# _seen_touch is deliberately NOT cleared here. It records what KIND of
+	# device this is, not a gesture in progress -- and the device does not
+	# change when a gate opens. Clearing it would re-open the mouse path for
+	# the next tap, which is the double turn coming straight back.
 	# Hiding the overlay must release the held direction too, or a Deep Breath
 	# extension bought on the way out lasts forever -- the same latch the chord
 	# comment below is about, reaching a second consumer.
@@ -421,44 +407,40 @@ func _on_pad_input(pad: Panel, event: InputEvent, handler: Callable,
 	if event is InputEventScreenTouch:
 		pressed = event.pressed
 		released = not event.pressed
-		# Stamp on EVERY touch event, press and release alike, so the mouse
-		# event synthesized from this touch is recognised as an echo below.
+		# Latch the device as a TOUCH device on the first real finger.
 		#
-		# Stamping only the PRESS is what made this fail, and it failed in
-		# proportion to how long the player held the pad. Measured on the live
-		# page with a realistic 450ms thumb rest:
-		#
-		#   touchstart@10388   touchend@10871   mousedown@10871
-		#
-		# The browser emits the echo from the LIFT, so it lands 483ms after the
-		# press -- outside any window measured from the press that is still
-		# short enough to be safe. Every hold longer than ECHO_WINDOW_MS
-		# therefore escaped the guard entirely and was taken for a real click:
-		# a second turn on every deliberate press, and a pause that toggled
-		# straight back off, which reads as "I have to press pause twice".
-		#
-		# The earlier fix appeared to work only because the probe held for
-		# 120ms. A tap that brief is not what a thumb does.
-		#
-		# Stamped from the release, the window measures the gap the echo
-		# actually has to cross, which is a few milliseconds however long the
-		# finger stayed down.
-		#
-		# A TIMESTAMP rather than a sticky flag, and both simpler schemes were
-		# tried and are wrong. Clearing the flag on the touch release lets the
-		# emulated mouse RELEASE -- which arrives after it -- run the release
-		# branch a second time and emit held_direction_changed twice. Never
-		# clearing it makes the pad permanently deaf to a real mouse, which
-		# breaks the pads on desktop, where they are the only way to test this
-		# without a phone in hand.
-		_touch_at_ms = Time.get_ticks_msec()
+		# Set on press and release alike, because either may be the first event
+		# this overlay sees -- a finger already down when the pads appear
+		# delivers only its release here.
+		_seen_touch = true
 	elif event is InputEventMouseButton \
 			and event.button_index == MOUSE_BUTTON_LEFT:
-		# Within the echo window of a touch ANYWHERE on the overlay, so this is
-		# that touch's synthesized twin rather than a click. Checked globally
-		# because the echo is delivered at the position the finger LIFTED from,
-		# which is not necessarily the pad it landed on.
-		if Time.get_ticks_msec() - _touch_at_ms <= ECHO_WINDOW_MS:
+		# A DEVICE THAT DELIVERS TOUCH IS NEVER ALSO CLICKED.
+		#
+		# This was a time window, and a time window cannot be made correct --
+		# it is racing the frame rate. Godot synthesizes the mouse event INSIDE
+		# the engine from the touch, so it arrives on whatever frame the engine
+		# gets to it: prompt when idle, late under load. A phone at 8x is
+		# precisely the loaded case, so the window failed exactly where the
+		# game is hardest, and it failed by letting one real tap turn TWICE.
+		#
+		# Measured: an echo delayed past the window produces 2 turns from one
+		# tap. Widening the window only moves the threshold -- no value is both
+		# long enough never to be beaten by a slow frame and short enough to
+		# keep a desktop's genuine clicks responsive. Two earlier fixes tuned
+		# this number (250, then 600) and both were beaten in play.
+		#
+		# So the guard is a LATCH on a fact rather than a bet on a clock. Once
+		# this overlay has seen a real InputEventScreenTouch, the device steers
+		# by finger, and every mouse button event it will ever deliver here is
+		# a synthesized twin of one. Dropping them all is correct and costs
+		# nothing -- a touchscreen player has no mouse to lose.
+		#
+		# Desktop is untouched: no touch ever arrives, so the latch never
+		# closes. A laptop with both still works -- it takes the mouse until a
+		# finger lands, and steers by finger from then on, which is the input
+		# the player just chose.
+		if _seen_touch:
 			accept_event()
 			return
 		pressed = event.pressed
