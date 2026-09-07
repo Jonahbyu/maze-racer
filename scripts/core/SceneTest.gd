@@ -242,6 +242,8 @@ func _run() -> void:
 	_check_quadrant_box(game)
 	_check_gate_names_survive_a_rebuild()
 	_check_marker_shapes()
+	_check_state_overrides_player_colour()
+	_check_every_shape_builds_with_every_decal()
 	_check_run_summary()
 
 	_finish()
@@ -1733,6 +1735,144 @@ func _check_marker_shapes() -> void:
 
 	host.queue_free()
 
+
+
+# The state read survives a player-chosen colour
+# (docs/plans/marker-colour-and-decals.md).
+#
+# This is the assertion the free colour picker rests on. CLAUDE.md section 12
+# made near-white mandatory precisely because amber and red only read as STATE
+# while the resting marker carries no hue of its own -- so with colour now
+# choosable, what has to hold is that state OVERRIDES the choice, on BOTH
+# surfaces.
+#
+# Checked with the worst possible choice: a player whose colour IS crash red. If
+# the read survives that, no other colour can break it. The property being
+# asserted is that the read is a TRANSITION rather than a hue.
+func _check_state_overrides_player_colour() -> void:
+	var host := Node3D.new()
+	get_root().add_child(host)
+
+	# A colour that is NOT a state colour, and the earlier version of this check
+	# got that wrong in a way that made it unfalsifiable. It set the player
+	# colour to crash red, so code that wrote player_colour to the mark and code
+	# that wrote the crash colour to it produced the SAME value -- the check
+	# passed against the exact regression it is named for. Verified by
+	# reintroducing that regression: 335 passed, unchanged.
+	#
+	# Green is picked deliberately: it is maze 3's wall colour, so it is also
+	# the worst case for the visibility objection section 12 raised.
+	var chosen := Color(0.2, 0.9, 0.35)
+
+	var marker := PlayerMarker.new()
+	# Before add_child, for the reason the shape is: _ready builds the
+	# materials on entry to the tree.
+	marker.player_colour = chosen
+	host.add_child(marker)
+
+	var maze := Maze.new()
+	maze.generate(24, 24, 909, 0.15, 0.03, 5)
+	var racer := Racer.new()
+	racer.setup(maze, Upgrades.new(1))
+
+	var ring := marker.get_node_or_null("Ring") as MeshInstance3D
+	var mark := marker.get_node_or_null("Arrow") as MeshInstance3D
+	check("the marker builds both surfaces", ring != null and mark != null)
+	if ring == null or mark == null:
+		host.queue_free()
+		return
+
+	# At rest the mark carries the player's colour and the ring does not: the
+	# ring is the state channel and is never player-coloured.
+	racer.state = Racer.State.RUNNING
+	racer.scraping = false
+	marker.update_state(racer, 1.0 / 60.0)
+	var resting_ring: Color = ring.material_override.albedo_color
+	var resting_mark: Color = mark.material_override.albedo_color
+	check("at rest the ring is not state-coloured",
+		not resting_ring.is_equal_approx(PlayerMarker.COL_CRASH))
+	check("at rest the mark carries the player colour",
+		resting_mark.is_equal_approx(chosen))
+
+	# Parked, BOTH surfaces must read crash -- including the inner mark, which
+	# section 12 records as staying pure white through a scrape today. That is
+	# the larger surface and the one the trailing camera actually sees, so the
+	# defect and this feature have the same fix.
+	racer.state = Racer.State.PARKED
+	marker.update_state(racer, 1.0 / 60.0)
+	var crashed_ring: Color = ring.material_override.albedo_color
+	check("a crash colours the ring",
+		crashed_ring.is_equal_approx(PlayerMarker.COL_CRASH))
+	check("a crash colours the inner mark too",
+		mark.material_override.albedo_color.is_equal_approx(
+			PlayerMarker.COL_CRASH))
+
+	# THE READ IS A TRANSITION, on BOTH surfaces. The mark check is the one that
+	# actually bites: the ring has carried state since long before colour was
+	# choosable, so a ring-only implementation passes every assertion above.
+	# This is the one that fails against it.
+	check("the crash changes the ring",
+		not resting_ring.is_equal_approx(crashed_ring))
+	check("the crash changes the mark too",
+		not resting_mark.is_equal_approx(
+			mark.material_override.albedo_color))
+
+	# And a SCRAPE reads as well, which is the more common event and the one
+	# section 5.1 calls load-bearing -- a crash is already unmistakable because
+	# the racer stops.
+	racer.state = Racer.State.RUNNING
+	racer.scraping = true
+	marker.update_state(racer, 1.0 / 60.0)
+	check("a scrape changes the mark",
+		not resting_mark.is_equal_approx(
+			mark.material_override.albedo_color))
+
+	host.queue_free()
+
+
+# Every shape builds with every decal
+# (docs/plans/marker-colour-and-decals.md).
+#
+# The cross product again, this time through the real mesh builder rather than
+# the polygon generator. RulesTest asserts the geometry is valid; this asserts
+# the marker actually BUILDS it -- a decal producing good polygons that then
+# failed to triangulate would pass there and fail here.
+func _check_every_shape_builds_with_every_decal() -> void:
+	var host := Node3D.new()
+	get_root().add_child(host)
+
+	for shape in Tuning.MARKER_SHAPES:
+		for decal in Tuning.MARKER_DECALS:
+			var sid: String = String(shape["id"])
+			var did: String = String(decal["id"])
+			var label := "%s + %s" % [sid, did]
+
+			var marker := PlayerMarker.new()
+			# Both before add_child: _ready builds on entry to the tree, so a
+			# value assigned afterwards would build the default and this check
+			# would pass for every pairing while testing only one.
+			marker.shape_id = sid
+			marker.decal_id = did
+			host.add_child(marker)
+
+			# A decal must never replace the shape it decorates, nor the ring.
+			check("%s keeps its mark" % label,
+				marker.get_node_or_null("Arrow") != null)
+			check("%s keeps its ring" % label,
+				marker.get_node_or_null("Ring") != null)
+
+			var patch := marker.get_node_or_null("Arrow/Decal") \
+				as MeshInstance3D
+			if did == Tuning.MARKER_DECAL_DEFAULT:
+				check("%s draws no decal" % label, patch == null)
+			else:
+				check("%s draws its decal" % label, patch != null)
+				if patch != null:
+					check("%s decal has a mesh" % label, patch.mesh != null)
+
+			marker.queue_free()
+
+	host.queue_free()
 
 
 # The divergence theorem applied to F = position: the summed triple products of

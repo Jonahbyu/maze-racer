@@ -16,6 +16,8 @@ extends Node
 signal touch_controls_changed(enabled: bool)
 signal music_changed(volume: float, muted: bool)
 signal marker_shape_changed(id: String)
+signal marker_decal_changed(id: String)
+signal marker_colour_changed(colour: Color)
 
 const CONFIG_PATH := "user://settings.cfg"
 const SECTION := "controls"
@@ -57,6 +59,28 @@ var music_muted := false
 # nobody expects to alter anyone's settings. An id that no longer exists falls
 # back to the arrow (Tuning.marker_shape), rather than failing.
 var marker_shape := Tuning.MARKER_SHAPE_DEFAULT
+
+# Which decal patterns the inner mark, by Tuning.MARKER_DECALS id. Stored by
+# NAME for the same reason the shape is, and normalised through Tuning on the
+# way in and out.
+var marker_decal := Tuning.MARKER_DECAL_DEFAULT
+
+# The marker's colour.
+#
+# FREE, deliberately, and this reverses a rule CLAUDE.md section 12 stated as
+# hard: near-white was mandatory because maze 3 turned the walls green and the
+# thing the player steers with matched the scenery. Jonah asked for the picker
+# after that objection was put, so it is a decision rather than an oversight,
+# and the cost is real -- a colour close to a maze's neon is harder to see in
+# that maze.
+#
+# What is NOT given away is the state read. PlayerMarker applies this to the
+# inner mark only and lets scrape-amber and crash-red override both surfaces,
+# so the read is a TRANSITION rather than a hue (see PlayerMarker.player_colour).
+#
+# Near-white by default: a player who never opens the picker gets exactly the
+# marker the game had before it existed.
+var marker_colour := PlayerMarker.COL_ARROW
 
 
 func _ready() -> void:
@@ -117,6 +141,29 @@ func set_marker_shape(id: String) -> void:
 	emit_signal("marker_shape_changed", marker_shape)
 
 
+# Same shape as set_marker_shape, and separate rather than one combined setter:
+# the two are chosen independently and a combined one would force a caller to
+# restate the value it is not changing.
+func set_marker_decal(id: String) -> void:
+	var resolved: String = String(Tuning.marker_decal(id)["id"])
+	if resolved == marker_decal:
+		return
+	marker_decal = resolved
+	_save()
+	emit_signal("marker_decal_changed", marker_decal)
+
+
+func set_marker_colour(colour: Color) -> void:
+	# Alpha is not offered: a translucent marker is a marker that is harder to
+	# see, which is the one thing this file must never let a player choose.
+	var opaque := Color(colour.r, colour.g, colour.b, 1.0)
+	if opaque.is_equal_approx(marker_colour):
+		return
+	marker_colour = opaque
+	_save()
+	emit_signal("marker_colour_changed", marker_colour)
+
+
 func _load() -> void:
 	var config := ConfigFile.new()
 	# No file on first run is the normal case, not an error -- fall through to
@@ -133,6 +180,15 @@ func _load() -> void:
 	# lands the player on the arrow instead of on nothing.
 	marker_shape = String(Tuning.marker_shape(String(config.get_value(
 		SECTION_LOOK, "marker_shape", Tuning.MARKER_SHAPE_DEFAULT)))["id"])
+	marker_decal = String(Tuning.marker_decal(String(config.get_value(
+		SECTION_LOOK, "marker_decal", Tuning.MARKER_DECAL_DEFAULT)))["id"])
+	# Stored as a hex string rather than four floats, so the config file stays
+	# readable and a hand-edited value is obvious. An unparseable one falls back
+	# rather than leaving the player with an invisible marker.
+	var hex := String(config.get_value(SECTION_LOOK, "marker_colour",
+		PlayerMarker.COL_ARROW.to_html(false)))
+	marker_colour = Color.from_string(hex, PlayerMarker.COL_ARROW)
+	marker_colour.a = 1.0
 
 
 func _save() -> void:
@@ -142,4 +198,6 @@ func _save() -> void:
 	config.set_value(SECTION_AUDIO, "music_volume", music_volume)
 	config.set_value(SECTION_AUDIO, "music_muted", music_muted)
 	config.set_value(SECTION_LOOK, "marker_shape", marker_shape)
+	config.set_value(SECTION_LOOK, "marker_decal", marker_decal)
+	config.set_value(SECTION_LOOK, "marker_colour", marker_colour.to_html(false))
 	config.save(CONFIG_PATH)

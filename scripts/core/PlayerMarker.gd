@@ -34,6 +34,15 @@ const COL_ARROW := Color(1.0, 1.0, 1.0)
 const COL_CRASH := Color(1.0, 0.25, 0.20)
 const COL_SCRAPE := Color(1.0, 0.72, 0.15)
 
+# How far the decal sits above the mark's top face.
+#
+# Geometric separation rather than a depth bias, because StandardMaterial3D
+# has no polygon-offset property in 4.7 (section 12). That section also records
+# two coplanar-surface failures -- the wall band and the wall-top cap -- which
+# were both fixed by separating generously rather than by a hairline: 0.05 was
+# still interleaving at grazing angles.
+const DECAL_LIFT := 0.006
+
 # Which shape the inner mark is drawn as, by Tuning.MARKER_SHAPES id.
 #
 # Empty means "ask Settings" -- which is what the game does. It is settable so
@@ -46,18 +55,62 @@ const COL_SCRAPE := Color(1.0, 0.72, 0.15)
 # whichever shape is drawn.
 var shape_id := ""
 
+# Which decal patterns the inner mark, by Tuning.MARKER_DECALS id. Same
+# treatment as shape_id: empty means "ask Settings", settable so a preview or a
+# harness can build one without writing the player's saved choice, and read
+# ONLY here.
+var decal_id := ""
+
+# The player's chosen colour, applied to the INNER MARK only.
+#
+# The ring is deliberately excluded, and that split is what makes a free colour
+# picker safe. The ring is the STATE channel (see update_state): it carries
+# scrape-amber and crash-red, which section 5.1 calls the most important read on
+# screen. A player-coloured ring would put that read on a surface the player can
+# set to any colour they like -- including the state colours themselves.
+#
+# CLAUDE.md section 12 refused a colour picker outright on this reasoning. The
+# picker was asked for anyway, after the objection was put, so what changed is
+# the answer and not the argument: state OVERRIDES this on both surfaces, which
+# makes the read a TRANSITION rather than a hue. A player who picks crash red
+# still sees their marker change on a scrape.
+#
+# Near-white by default, which is what every marker was before the choice
+# existed.
+var player_colour := COL_ARROW
+
 var _ring: MeshInstance3D
 var _arrow: MeshInstance3D
+var _decal: MeshInstance3D
 var _ring_material: StandardMaterial3D
 var _arrow_material: StandardMaterial3D
+var _decal_material: StandardMaterial3D
 
 # Bobs gently so the marker reads as alive rather than pasted on the floor.
 var _bob := 0.0
 
 
 func _ready() -> void:
+	_resolve_colour()
 	_build_ring()
 	_build_shape()
+
+
+# Take the saved colour, unless one was set explicitly before entry to the tree.
+#
+# Guarded rather than assumed: Settings is absent in every harness that
+# instantiates Game.tscn bare, and a missing preference must never be what stops
+# the game starting -- the same treatment the shape and the decal get.
+#
+# An explicit assignment WINS, so a preview or a shot can build a specific
+# colour without writing the player's saved choice. A tool must not write the
+# state it is inspecting (section 12, TouchShot).
+func _resolve_colour() -> void:
+	if not player_colour.is_equal_approx(COL_ARROW):
+		return
+	var settings := get_node_or_null("/root/Settings")
+	if settings != null:
+		player_colour = settings.marker_colour
 
 
 # A flat annulus on the floor. Drawn as a triangle strip between an inner and
@@ -197,7 +250,11 @@ func _build_shape() -> void:
 
 	st.generate_normals()
 
-	_arrow_material = _make_material(COL_ARROW, 3.0)
+	# Built in the PLAYER'S colour rather than the constant. update_state
+	# overwrites this every frame in play, but a marker built for a preview
+	# or a shot is never stepped -- so building white here would make every
+	# still frame of a coloured marker come out white.
+	_arrow_material = _make_material(player_colour, 3.0)
 
 	_arrow = MeshInstance3D.new()
 	# Named "Arrow" whatever shape is drawn. The name is what the scene and its
@@ -208,6 +265,104 @@ func _build_shape() -> void:
 	_arrow.material_override = _arrow_material
 	_arrow.position.y = 0.06
 	add_child(_arrow)
+
+	_build_decal(flat, min_z, span, h, r)
+
+
+# The decal, laid on the mark's own sloped top face.
+#
+# The polygons come from Tuning.decal_polygons, which CLIPS the shape's outline
+# rather than looking a drawing up per pairing -- so a shape added later is
+# decorated by construction. See the table's own comment.
+#
+# It is lifted by the SAME _lift as the mark beneath it, not laid flat: the mark
+# is a prism whose top face rises toward the direction it points, so a flat
+# decal would sink through it along most of its length.
+func _build_decal(flat: PackedVector2Array, min_z: float, span: float,
+		h: float, r: float) -> void:
+	var id := _decal_id()
+	if id == Tuning.MARKER_DECAL_DEFAULT:
+		return
+
+	# Generated from the SCALED outline the mark was actually built from, so
+	# the decal lands on the shape as drawn rather than on the table's unit
+	# version of it.
+	var outline: Array = []
+	for v in flat:
+		outline.append(v)
+	var polys: Array = Tuning.decal_polygons(id, outline)
+	if polys.is_empty():
+		return
+
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var emitted := 0
+
+	for poly in polys:
+		var points := PackedVector2Array(poly)
+		if points.size() < 3:
+			continue
+		# TRIANGULATED, not fanned -- a clipped polygon can be concave (the
+		# chevron's stripe is), and a fan would fill the notch. The same trap
+		# the inner mark itself hit (section 12).
+		var indices := Geometry2D.triangulate_polygon(points)
+		if indices.is_empty():
+			continue
+		var i := 0
+		while i < indices.size():
+			var a: Vector2 = points[indices[i]]
+			var b: Vector2 = points[indices[i + 1]]
+			var c: Vector2 = points[indices[i + 2]]
+			# Reversed against the triangulator's own order, for the reason the
+			# mark's top face is: Geometry2D winds in 2D screen convention,
+			# which maps to INWARD once y becomes +Z with +Y up.
+			_tri(st,
+				_lift_decal(c, min_z, span, h),
+				_lift_decal(b, min_z, span, h),
+				_lift_decal(a, min_z, span, h))
+			i += 3
+			emitted += 1
+
+	if emitted == 0:
+		return
+
+	st.generate_normals()
+
+	_decal_material = _make_material(_decal_colour(player_colour), 3.4)
+
+	_decal = MeshInstance3D.new()
+	_arrow.add_child(_decal)
+	# Named AFTER add_child: a name assigned before entry to the tree is
+	# overwritten by a generated one (section 12, the gate markers).
+	_decal.name = "Decal"
+	_decal.mesh = st.commit()
+	_decal.material_override = _decal_material
+
+
+# A decal vertex, on the mark's top face plus a small lift.
+#
+# The lift is geometric rather than a depth bias, because StandardMaterial3D has
+# no polygon-offset property in 4.7 -- section 12 records that, and records two
+# coplanar-surface failures (the wall band, the wall-top cap) that were both
+# fixed by real separation and generously rather than by a hairline.
+func _lift_decal(v: Vector2, min_z: float, span: float, h: float) -> Vector3:
+	var lifted := _lift(v, min_z, span, h)
+	return Vector3(lifted.x, lifted.y + DECAL_LIFT, lifted.z)
+
+
+# The chosen decal's id.
+#
+# Settings is absent in every harness that instantiates Game.tscn bare, so the
+# lookup is guarded rather than assumed -- the same treatment _shape_outline
+# gives, and for the same reason: a missing preference must never be what stops
+# the game starting.
+func _decal_id() -> String:
+	var id := decal_id
+	if id == "":
+		var settings := get_node_or_null("/root/Settings")
+		if settings != null:
+			id = String(settings.marker_decal)
+	return String(Tuning.marker_decal(id)["id"])
 
 
 # The outline for the shape this marker was built with.
@@ -240,6 +395,28 @@ func _tri(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3) -> void:
 	st.add_vertex(c)
 
 
+# The decal's colour, DERIVED from whatever the mark is currently showing.
+#
+# It has to contrast or it is not a pattern -- a decal drawn in the mark's own
+# colour is invisible, which is the same failure as not building it at all and
+# far harder to notice. And it cannot be a fixed colour either: a fixed dark
+# patch vanishes on a dark marker, and a fixed white one vanishes on the
+# near-white default.
+#
+# So it is derived: darkened against a light mark, lightened against a dark one,
+# with the switch on the mark's own luminance. That holds for every colour a
+# player can pick AND for the state colours, which is why it is computed here on
+# every update rather than once at build time.
+func _decal_colour(base: Color) -> Color:
+	# Rec. 601 luma -- the same weighting the eye applies, so a saturated yellow
+	# counts as light and a saturated blue as dark, which a plain average gets
+	# wrong in both directions.
+	var luma := base.r * 0.299 + base.g * 0.587 + base.b * 0.114
+	if luma > 0.42:
+		return base.darkened(0.62)
+	return base.lightened(0.68)
+
+
 func _make_material(colour: Color, energy: float) -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = colour
@@ -264,13 +441,39 @@ func update_state(racer: Racer, delta: float) -> void:
 	if _ring_material == null:
 		return
 
-	var colour := COL_RING
+	# STATE OVERRIDES THE PLAYER'S COLOUR, on both surfaces.
+	#
+	# That is what makes the free colour picker safe: the read is a TRANSITION
+	# rather than a hue, so a player who picked crash red still sees their
+	# marker change on a scrape. Leaving the resting colour showing through is
+	# what section 12 refused a colour picker over.
+	#
+	# Writing the MARK as well as the ring also fixes the defect section 12
+	# records: update_state used to recolour only the ring, so a scrape left the
+	# inner mark pure white and a frame with the barrier visibly half-drained
+	# was pixel-identical to a clean one -- on the larger of the two surfaces,
+	# and the one the trailing camera actually sees.
+	var ring_colour := COL_RING
+	var mark_colour := player_colour
 	if racer.state == Racer.State.PARKED:
-		colour = COL_CRASH
+		ring_colour = COL_CRASH
+		mark_colour = COL_CRASH
 	elif racer.scraping:
 		# Warms toward red as the barrier drains, so the marker shows how close
 		# the scrape is to becoming a crash.
-		colour = COL_SCRAPE.lerp(COL_CRASH, 1.0 - racer.barrier_fraction())
+		var warm := COL_SCRAPE.lerp(COL_CRASH, 1.0 - racer.barrier_fraction())
+		ring_colour = warm
+		mark_colour = warm
 
-	_ring_material.albedo_color = colour
-	_ring_material.emission = colour
+	_ring_material.albedo_color = ring_colour
+	_ring_material.emission = ring_colour
+	if _arrow_material != null:
+		_arrow_material.albedo_color = mark_colour
+		_arrow_material.emission = mark_colour
+	# The decal follows the mark, CONTRASTED against it -- so a patterned marker
+	# still reads as one object changing colour rather than as a mark with a
+	# stuck patch on it, while the pattern stays visible at every colour.
+	if _decal_material != null:
+		var patch := _decal_colour(mark_colour)
+		_decal_material.albedo_color = patch
+		_decal_material.emission = patch
