@@ -343,6 +343,64 @@ func _test_unlocks() -> void:
 	check("the seeded second colour grants no table colour",
 		not seeded_in_table)
 
+	# NO TWO ACHIEVEMENTS FIRE ON THE SAME CONDITION.
+	#
+	# Two goals with one condition unlock as a pair, which spends two entries to
+	# ask one question -- and it is invisible, because both look correct on
+	# their own. Found by sweep: the four authored-palette grants duplicated the
+	# four maze-progress SHAPE achievements exactly, and "clear a run without
+	# crashing" duplicated FLAWLESS.
+	#
+	# Randomised run shapes rather than a grid, because a field held CONSTANT
+	# makes everything reading it look identical: a first version pinned time,
+	# per-maze score and gate progress and reported 116 false pairs. Seeded, so
+	# this is a fixture and not a "did we get lucky" sample (section 12).
+	var overlap_rng := RandomNumberGenerator.new()
+	overlap_rng.seed = 20260907
+	var fired := {}
+	for aid in UnlocksScript.ACHIEVEMENTS:
+		fired[aid] = []
+	var judge := UnlocksScript.new()
+	var runs := 600
+	for c in runs:
+		# A run that REACHES the last maze without clearing it is ordinary play
+		# -- the player died there -- so mazes and cleared vary independently.
+		var mazes := overlap_rng.randi_range(0, Tuning.MAZES.size())
+		var won := mazes == Tuning.MAZES.size() and overlap_rng.randf() < 0.55
+		var sc := Score.new()
+		sc.crashes = overlap_rng.randi_range(0, 14)
+		sc.scraped_turns = overlap_rng.randi_range(0, 130)
+		sc.clean_turns = overlap_rng.randi_range(0, 1200)
+		sc.repeat_cells = overlap_rng.randi_range(0, 600)
+		sc.peak_speed = overlap_rng.randf_range(1.0, 10.0)
+		for i in mazes:
+			var msc := overlap_rng.randf_range(0.0, 260000.0)
+			sc.banked += msc
+			sc.maze_results.append({
+				"index": i, "name": "M", "subtotal": msc,
+				"time": overlap_rng.randf_range(35.0, 260.0),
+				"multiplier": overlap_rng.randf_range(0.2, 6.0),
+				"progress": 1.0 if overlap_rng.randf() < 0.6 					else overlap_rng.randf(),
+				"score": msc})
+		var up := Upgrades.new()
+		for i in overlap_rng.randi_range(0, 24):
+			up.ranks[i] = overlap_rng.randi_range(1, 7)
+		var life := overlap_rng.randi_range(0, Tuning.MAX_HP)
+		for aid in UnlocksScript.ACHIEVEMENTS:
+			if judge._met(aid, sc, up, mazes - 1, life, won):
+				fired[aid].append(c)
+	var aids: Array = UnlocksScript.ACHIEVEMENTS.keys()
+	for i in aids.size():
+		for j in range(i + 1, aids.size()):
+			var fa: Array = fired[aids[i]]
+			var fb: Array = fired[aids[j]]
+			# An achievement this model never triggers says nothing either way.
+			if fa.is_empty() or fb.is_empty():
+				continue
+			check("%s and %s ask different questions" % [aids[i], aids[j]],
+				fa != fb)
+	judge.free()
+
 	var fresh := UnlocksScript.new()
 
 	# No achievement grants something a fresh profile ALREADY HAS.

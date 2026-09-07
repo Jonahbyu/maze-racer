@@ -1479,6 +1479,39 @@ const MARKER_SHAPES := [
 			Vector2(-0.20, -0.70),
 		],
 	},
+	{
+		"id": "spear",
+		"label": "SPEAR",
+		# A long narrow head on a slim shaft. The most extreme aspect ratio in
+		# the table, which is the point: where KITE points by proportion and
+		# ARROW by a barb, this points by being unmistakably longer than wide
+		# even after the trailing camera compresses its length axis -- the
+		# failure that defeated the lightcycle's first outline.
+		"outline": [
+			Vector2(0.0, -1.40),
+			Vector2(0.34, -0.42),
+			Vector2(0.13, -0.30),
+			Vector2(0.16, 0.90),
+			Vector2(-0.16, 0.90),
+			Vector2(-0.13, -0.30),
+			Vector2(-0.34, -0.42),
+		],
+	},
+	{
+		"id": "wedge",
+		"label": "WEDGE",
+		# A broad flat-backed triangle with the rear corners drawn out past the
+		# base. Reads as pointing from its bulk rather than from a fine nose,
+		# so it holds up where SPEAR is thinnest -- the two are deliberately
+		# opposite answers to the same requirement.
+		"outline": [
+			Vector2(0.0, -1.15),
+			Vector2(0.86, 0.55),
+			Vector2(0.52, 0.92),
+			Vector2(-0.52, 0.92),
+			Vector2(-0.86, 0.55),
+		],
+	},
 ]
 
 
@@ -1579,6 +1612,14 @@ const MARKER_COLOURS := [
 	{"id": "jade", "label": "JADE", "colour": Color(0.20, 0.85, 0.65)},
 	{"id": "steel", "label": "STEEL", "colour": Color(0.75, 0.78, 0.85)},
 	{"id": "rust", "label": "RUST", "colour": Color(0.85, 0.42, 0.20)},
+	{"id": "amber", "label": "AMBER", "colour": Color(1.0, 0.68, 0.18)},
+	{"id": "rose", "label": "ROSE", "colour": Color(1.0, 0.55, 0.70)},
+	{"id": "mint", "label": "MINT", "colour": Color(0.60, 1.0, 0.80)},
+	{"id": "sky", "label": "SKY", "colour": Color(0.55, 0.80, 1.0)},
+	{"id": "plum", "label": "PLUM", "colour": Color(0.55, 0.30, 0.70)},
+	{"id": "sand", "label": "SAND", "colour": Color(0.90, 0.82, 0.62)},
+	{"id": "teal", "label": "TEAL", "colour": Color(0.20, 0.70, 0.72)},
+	{"id": "crimson", "label": "CRIMSON", "colour": Color(0.80, 0.15, 0.25)},
 ]
 
 
@@ -1647,6 +1688,27 @@ const MARKER_DECALS := [
 		# The forward third. The only decal that REINFORCES facing, which is
 		# the one thing every shape in the table must say (section 12, "Every
 		# shape has to point").
+	},
+	{
+		"id": "chevrons",
+		"label": "CHEVRONS",
+		# Three shallow Vs pointing the way the mark points. STRIPE's bands are
+		# flat and say nothing about direction; these repeat the shape's own
+		# facing, so the pattern reinforces the one property every marker must
+		# keep.
+	},
+	{
+		"id": "bars",
+		"label": "BARS",
+		# Two lengthways slots either side of centre -- the lateral counterpart
+		# to SPLIT, which cuts one slot down the middle.
+	},
+	{
+		"id": "tail",
+		"label": "TAIL",
+		# A band just ahead of the trailing edge, mirroring TIP at the nose.
+		# The two are deliberately a pair: on a shape where the nose reads
+		# strongly the tail is the quieter choice, and vice versa.
 	},
 	{
 		"id": "split",
@@ -1768,6 +1830,54 @@ static func decal_polygons(id: String, outline: Array) -> Array:
 				Vector2(slot, min_y - height),
 				Vector2(slot, max_y + height),
 				Vector2(-slot, max_y + height),
+			])]
+		"chevrons":
+			# Three shallow Vs pointing the way the mark points, cut across the
+			# body. Where STRIPE is two flat bands, these carry direction --
+			# they read as motion rather than as decoration.
+			#
+			# Each is a cutter and must SPAN the shape, so the arms run out to
+			# +/-reach and the V is formed by the notch between them.
+			var out4: Array = []
+			var arm: float = height * 0.085
+			for frac in [0.34, 0.54, 0.74]:
+				var y: float = min_y + height * frac
+				out4.append(PackedVector2Array([
+					Vector2(-reach, y),
+					Vector2(0.0, y - arm),
+					Vector2(reach, y),
+					Vector2(reach, y + arm * 0.85),
+					Vector2(0.0, y - arm + arm * 0.85),
+					Vector2(-reach, y + arm * 0.85),
+				]))
+			return out4
+		"bars":
+			# Two slots either side of the centre line, running lengthways --
+			# the lateral counterpart to SPLIT's single central slot.
+			#
+			# Offset far enough out that the centre survives between them: a
+			# mark cut into three thin ribbons stops reading as a solid shape,
+			# which is the same failure SPLIT's thin-slot note records.
+			var out5: Array = []
+			var barw: float = maxf(max_x * 0.09, 0.003)
+			for side in [-1.0, 1.0]:
+				var cx: float = max_x * 0.42 * side
+				out5.append(PackedVector2Array([
+					Vector2(cx - barw, min_y - height),
+					Vector2(cx + barw, min_y - height),
+					Vector2(cx + barw, max_y + height),
+					Vector2(cx - barw, max_y + height),
+				]))
+			return out5
+		"tail":
+			# A band cut just ahead of the trailing edge, mirroring TIP at the
+			# other end. Facing is -Y, so the tail is the HIGH end.
+			var hi: float = max_y - height * 0.26
+			return [PackedVector2Array([
+				Vector2(-reach, hi),
+				Vector2(reach, hi),
+				Vector2(reach, hi + height * 0.10),
+				Vector2(-reach, hi + height * 0.10),
 			])]
 	return []
 

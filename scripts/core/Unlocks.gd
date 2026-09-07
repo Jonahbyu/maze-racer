@@ -158,7 +158,7 @@ const ACHIEVEMENTS := {
 	},
 	"palette_acid": {
 		"label": "THE TANGLE",
-		"requirement": "Reach maze 3",
+		"requirement": "Clear two mazes under 120 seconds each",
 		"grants": "palette:acid",
 	},
 	"palette_ember": {
@@ -168,7 +168,7 @@ const ACHIEVEMENTS := {
 	},
 	"palette_violet": {
 		"label": "THE VAULT",
-		"requirement": "Reach maze 5",
+		"requirement": "Take 750 clean turns in one run",
 		"grants": "palette:violet",
 	},
 	# These four moved OFF "reach maze N" when the authored colourways took
@@ -187,17 +187,17 @@ const ACHIEVEMENTS := {
 	},
 	"palette_cobalt": {
 		"label": "COBALT",
-		"requirement": "Bank a maze without crashing once",
+		"requirement": "Reach 4x speed crashing at most once",
 		"grants": "palette:cobalt",
 	},
 	"palette_indigo": {
 		"label": "INDIGO",
-		"requirement": "Clear three mazes in one run",
+		"requirement": "Bank a maze at a x3 time multiplier or better",
 		"grants": "palette:indigo",
 	},
 	"palette_orchid": {
 		"label": "ORCHID",
-		"requirement": "Clear all five mazes",
+		"requirement": "Clear all five mazes banking 400,000 points",
 		"grants": "palette:orchid",
 	},
 	"palette_plum": {
@@ -274,6 +274,88 @@ const ACHIEVEMENTS := {
 		"label": "ASH",
 		"requirement": "Re-cross 100 cells in one run",
 		"grants": "palette:ash",
+	},
+
+	# --- Speed of SOLVING, an axis nothing else asks about ----------------
+	#
+	# maze_results already records per-maze time and multiplier, and until now
+	# nothing read either. Every other achievement here measures how the player
+	# drove; these measure how quickly they got OUT, which section 8b calls the
+	# routing skill the score exists to reward. A player can be fast and scruffy
+	# or clean and slow, so these do not fall out of the existing set.
+	"quick_study": {
+		"label": "QUICK STUDY",
+		"requirement": "Clear a maze in under 90 seconds",
+		"grants": "colour:sky",
+	},
+	"pathfinder": {
+		"label": "PATHFINDER",
+		"requirement": "Clear a maze in under 60 seconds",
+		"grants": "colour:mint",
+	},
+	"trailblazer": {
+		"label": "TRAILBLAZER",
+		"requirement": "Bank a maze at a x4 time multiplier or better",
+		"grants": "shape:spear",
+	},
+	"the_shortcut": {
+		"label": "THE SHORTCUT",
+		"requirement": "Clear three mazes under 90 seconds each",
+		"grants": "decal:chevrons",
+	},
+
+	# --- Consistency, rather than a single best moment --------------------
+	#
+	# Every threshold above fires on a PEAK -- one fast maze, one high score.
+	# These ask for the same standard held across a whole run, which is a
+	# different skill and a much harder one: a player who spikes to 8x once
+	# will not necessarily average well.
+	"steady_hand": {
+		"label": "STEADY HAND",
+		"requirement": "Clear all five mazes with no maze over 150 seconds",
+		"grants": "shape:wedge",
+	},
+	"metronome": {
+		"label": "METRONOME",
+		"requirement": "Bank every maze of a full run above 50,000 points",
+		"grants": "colour:amber",
+	},
+	"unbroken": {
+		"label": "UNBROKEN",
+		"requirement": "Clear all five mazes finishing above half health",
+		"grants": "decal:bars",
+	},
+	"purist": {
+		"label": "PURIST",
+		"requirement": "Clear a run holding 3 upgrade lines or fewer",
+		"grants": "colour:sand",
+	},
+
+	# --- The extremes of the damage economy -------------------------------
+	"last_stand": {
+		"label": "LAST STAND",
+		"requirement": "Clear the run with 1 HP left",
+		"grants": "colour:crimson",
+	},
+	"untouchable": {
+		"label": "UNTOUCHABLE",
+		"requirement": "Bank 100,000 points in a single maze",
+		"grants": "decal:tail",
+	},
+	"deep_pockets": {
+		"label": "DEEP POCKETS",
+		"requirement": "Take a line to rank 5 or higher",
+		"grants": "colour:teal",
+	},
+	"generalist": {
+		"label": "GENERALIST",
+		"requirement": "Finish a run holding 20 upgrade lines",
+		"grants": "colour:plum",
+	},
+	"the_scenic_route": {
+		"label": "THE SCENIC ROUTE",
+		"requirement": "Re-cross 500 cells in one run",
+		"grants": "colour:rose",
 	},
 
 	# --- Decals: earned by what you BUILD ---------------------------------
@@ -449,13 +531,13 @@ func _met(aid: String, score: Score, upgrades: Upgrades, maze_index: int,
 		"the_vault": return maze_index >= 4 or cleared
 		"palette_ice": return score.banked >= 50000.0
 		"palette_azure": return score.peak_speed >= 5.0
-		"palette_cobalt": return drove and score.crashes == 0
-		"palette_indigo": return score.maze_results.size() >= 3
+		"palette_cobalt": return drove and score.crashes <= 1 and score.peak_speed >= 4.0
+		"palette_indigo": return _best_multiplier(score) >= 3.0
 		"palette_magenta": return maze_index >= 1 or cleared
-		"palette_acid": return maze_index >= 2 or cleared
+		"palette_acid": return _mazes_under(score, 120.0) >= 2
 		"palette_ember": return maze_index >= 3 or cleared
-		"palette_violet": return maze_index >= 4 or cleared
-		"palette_orchid": return cleared
+		"palette_violet": return score.clean_turns >= 750
+		"palette_orchid": return cleared and score.banked >= 400000.0
 		"palette_plum": return score.banked >= 250000.0
 		"palette_fuchsia": return score.banked >= 750000.0
 		"palette_rose": return score.banked >= 1000000.0
@@ -471,10 +553,6 @@ func _met(aid: String, score: Score, upgrades: Upgrades, maze_index: int,
 		"palette_aqua": return drove and upgrades.started_line_count() >= 16
 		"palette_slate": return cleared and hp >= Tuning.MAX_HP
 		"palette_ash": return score.repeat_cells >= 100
-		"palette_magenta": return maze_index >= 1 or cleared
-		"palette_acid": return maze_index >= 2 or cleared
-		"palette_ember": return maze_index >= 3 or cleared
-		"palette_violet": return maze_index >= 4 or cleared
 		"clear_run": return cleared
 		"flawless": return drove and score.crashes == 0
 		"ton_up": return score.peak_speed >= 6.0
@@ -491,7 +569,100 @@ func _met(aid: String, score: Score, upgrades: Upgrades, maze_index: int,
 		"maxed": return _has_a_maxed_line(upgrades)
 		"specialist": return upgrades.started_line_count() >= 12
 		"the_long_way": return _took_every_gate(score)
+		"quick_study": return _fastest_maze(score) < 90.0
+		"pathfinder": return _fastest_maze(score) < 60.0
+		"trailblazer": return _best_multiplier(score) >= 4.0
+		"the_shortcut": return _mazes_under(score, 90.0) >= 3
+		"steady_hand": return cleared and _slowest_maze(score) <= 150.0
+		"metronome": return cleared and _worst_maze_score(score) > 50000.0
+		"unbroken": return cleared and hp >= Tuning.MAX_HP / 2
+		"purist": return cleared and upgrades.started_line_count() <= 3
+		"last_stand": return cleared and hp == 1
+		"untouchable": return _best_maze_score(score) >= 100000.0
+		"deep_pockets": return _deepest_rank(upgrades) >= 5
+		"generalist": return drove and upgrades.started_line_count() >= 20
+		"the_scenic_route": return score.repeat_cells >= 500
 	return false
+
+
+# --- Helpers over maze_results ----------------------------------------------
+#
+# These read per-maze time, multiplier and score, which the Score class has
+# recorded since section 8b and which no achievement previously touched. Adding
+# a field to Score to satisfy an achievement is forbidden (section 10) -- the
+# rule is to pick a requirement the EXISTING data supports, and this is that
+# data.
+#
+# An empty run must never satisfy a "fastest" or "lowest" test by vacuous truth,
+# which is the same trap `drove` guards for the clean-driving achievements. Each
+# helper below returns a value that FAILS its comparison when nothing was
+# banked, rather than one that passes.
+
+
+# The quickest banked maze, in seconds. INF when nothing was banked, so every
+# "under N seconds" test fails on an empty run rather than passing.
+func _fastest_maze(score: Score) -> float:
+	var best := INF
+	for result in score.maze_results:
+		best = minf(best, float(result.get("time", INF)))
+	return best
+
+
+# The slowest banked maze. Returns INF when nothing was banked, so a "no maze
+# over N seconds" test cannot be satisfied by having driven no mazes.
+func _slowest_maze(score: Score) -> float:
+	var worst := INF
+	for result in score.maze_results:
+		if worst == INF:
+			worst = 0.0
+		worst = maxf(worst, float(result.get("time", 0.0)))
+	return worst
+
+
+func _mazes_under(score: Score, seconds: float) -> int:
+	var n := 0
+	for result in score.maze_results:
+		if float(result.get("time", INF)) < seconds:
+			n += 1
+	return n
+
+
+func _best_multiplier(score: Score) -> float:
+	var best := 0.0
+	for result in score.maze_results:
+		best = maxf(best, float(result.get("multiplier", 0.0)))
+	return best
+
+
+# The lowest score banked by any single maze. Zero when nothing was banked, so
+# an "every maze above N" test fails on an empty run.
+func _worst_maze_score(score: Score) -> float:
+	if score.maze_results.is_empty():
+		return 0.0
+	var worst := INF
+	for result in score.maze_results:
+		worst = minf(worst, float(result.get("score", 0.0)))
+	return worst
+
+
+# The best single maze SCORE, where _worst_maze_score is the floor. Per-maze
+# rather than the run total, so it rewards one exceptional maze rather than
+# five ordinary ones -- CENTURY already asks the latter.
+func _best_maze_score(score: Score) -> float:
+	var best := 0.0
+	for result in score.maze_results:
+		best = maxf(best, float(result.get("score", 0.0)))
+	return best
+
+
+# The highest rank held in any single line -- depth, where started_line_count()
+# measures width. The two pull in opposite directions, which is what makes
+# DEEP POCKETS and GENERALIST different goals rather than the same one twice.
+func _deepest_rank(upgrades: Upgrades) -> int:
+	var best := 0
+	for line in upgrades.ranks:
+		best = maxi(best, int(upgrades.ranks[line]))
+	return best
 
 
 func _has_a_maxed_line(upgrades: Upgrades) -> bool:
