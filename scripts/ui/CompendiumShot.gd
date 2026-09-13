@@ -51,6 +51,17 @@ func _run() -> void:
 		Upgrades.Line.QUADRANT: "05_panel",
 		Upgrades.Line.FLYING_VISION: "06_still",
 		Upgrades.Line.WALL_SMASHER: "07_legendary_smash",
+		# The GATE overlay, which draws two things at once -- the collection
+		# footprint AND the marker's own size. The marker half was a fixed-width
+		# bar until the line was found not to widen the gate in the world, so
+		# this frame is what keeps the demo and the card from disagreeing again.
+		Upgrades.Line.GATE_SIZE: "11_gate_overlay",
+		# The LONGEST caption in the table, which is a different question from
+		# the longest demo. A caption that overflows its box clips silently --
+		# no assertion sees it, and every other CORRIDOR frame is drawn from a
+		# short one. Deep Breath's grew when the line became an early-press
+		# gesture and had to explain which turns qualify.
+		Upgrades.Line.DEEP_BREATH: "10_corridor_longest_caption",
 	}
 
 	for line in wanted:

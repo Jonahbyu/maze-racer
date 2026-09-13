@@ -199,9 +199,9 @@ const DEFINITIONS := {
 		"name": "Quadrant",
 		"max_rank": 3,
 		"desc": [
-			"A corner box splits the maze in four and lights the quarter you are in.",
+			"A corner box splits the maze in four and lights the quarter you are in. The start and the exit are both outlined.",
 			"Nine regions instead of four. A finer read on how far you have come.",
-			"Sixteen regions. The exit is always the highest.",
+			"Sixteen regions. The finest read on how far between the two ends you are.",
 		],
 	},
 	Line.COMPASS: {
@@ -260,9 +260,9 @@ const DEFINITIONS := {
 		"name": "Gate Size",
 		"max_rank": 3,
 		"desc": [
-			"Gates stand taller. See them coming from further off.",
-			"Gates spread to the four cells around them. Collect one from the next corridor over.",
-			"Gates spread wider still.",
+			"Gates stand taller and wider. See them coming from further off.",
+			"Bigger still, and gates spread to the four cells around them. Collect one from the next corridor over.",
+			"Bigger again, and the spread reaches further.",
 		],
 	},
 	Line.EXTRA_CARD: {
@@ -404,8 +404,9 @@ func next_rank_description(line: int) -> String:
 		if r + 1 >= dt.size():
 			return ""
 		if r == 0:
-			return "Hold a turn key through a corner to hold still %.2fs longer and read ahead." % float(dt[r + 1])
-		return "Hold up to %.2fs longer." % float(dt[r + 1])
+			return "Keep holding a turn and it stops %.2fs longer so you can read ahead. Every %ds." % [
+				float(dt[r + 1]), int(Tuning.DEEP_BREATH_COOLDOWN)]
+		return "Stop up to %.2fs longer." % float(dt[r + 1])
 
 	if line == Line.OVERCLOCK:
 		var ot: Array = Tuning.OVERCLOCK_HP_PER_SEC_BY_RANK
@@ -628,6 +629,16 @@ func deep_breath_extension() -> float:
 	return float(Tuning.DEEP_BREATH_BY_RANK[r])
 
 
+# Deep Breath: whether the line is held at all.
+#
+# Spelled out rather than left to `deep_breath_extension() > 0.0`, because the
+# racer has to arm the COOLDOWN as well as the extension and a rate of zero is
+# not the same statement as an absent line -- the same reason has_overclock()
+# exists beside overclock_hp_per_sec().
+func has_deep_breath() -> bool:
+	return rank(Line.DEEP_BREATH) > 0
+
+
 # Overclock: HP burned per second while the gesture is held. Zero without the
 # line, which is what makes has_overclock() and this agree by construction.
 func overclock_hp_per_sec() -> float:
@@ -650,6 +661,15 @@ func gate_reach() -> int:
 func gate_height_scale() -> float:
 	var r := mini(rank(Line.GATE_SIZE), Tuning.GATE_SIZE_HEIGHT_BY_RANK.size() - 1)
 	return float(Tuning.GATE_SIZE_HEIGHT_BY_RANK[r])
+
+
+# And its GIRTH multiplier. Separate from the height because the two are bounded
+# by different things -- height by nothing much, girth by the corridor the
+# marker stands in -- and because the exit marker takes the height path and must
+# never widen.
+func gate_girth_scale() -> float:
+	var r := mini(rank(Line.GATE_SIZE), Tuning.GATE_SIZE_GIRTH_BY_RANK.size() - 1)
+	return float(Tuning.GATE_SIZE_GIRTH_BY_RANK[r])
 
 
 # Extra Card: how many cards a pick offers. Read by roll_cards() and by the

@@ -136,7 +136,7 @@ const DEMOS := {
 	Upgrades.Line.QUADRANT: {
 		"kind": Kind.PANEL,
 		"panel": "quadrant",
-		"caption": "Splits the maze into regions and lights the one you are in. Quadrant 1 holds the start; the highest holds the exit.",
+		"caption": "Splits the maze into regions and lights the one you are in. The start and the exit are both outlined, so the lit region says how far through you are.",
 	},
 	Upgrades.Line.COMPASS: {
 		"kind": Kind.PANEL,
@@ -162,7 +162,7 @@ const DEMOS := {
 		"kind": Kind.CORRIDOR,
 		"overlay": Overlay.FREEZE,
 		"extends_freeze": true,
-		"caption": "Hold the turn key through a corner to stay still longer and read ahead. The speed ramp pauses, so what you spend is the clock.",
+		"caption": "Keep holding your turn and the corner stops still longer so you can read ahead. Any turn qualifies, on a cooldown of a few seconds. What you spend is the clock.",
 	},
 	Upgrades.Line.OVERCLOCK: {
 		"kind": Kind.BAR,
@@ -499,6 +499,22 @@ func _draw_panel_box(rect: Rect2, which: String, rank: int) -> void:
 				draw_rect(cell, COL_ACCENT if i == lit \
 					else Color(0.12, 0.16, 0.22), true)
 				draw_rect(cell, Color(0.05, 0.07, 0.11), false, 1.0)
+			# The two ends, outlined the way the real box outlines them. The
+			# demo's whole job is to show what the widget does, and a grid with
+			# only a travelling light shows the position half of the mechanic and
+			# not the progress half. First and last cell, derived from n rather
+			# than written out, so a rank added later marks the right corners on
+			# its own.
+			var ends := [[0, QuadrantBox.COL_START],
+				[n * n - 1, QuadrantBox.COL_EXIT]]
+			for pair in ends:
+				var at := int(pair[0])
+				if at == lit:
+					continue
+				draw_rect(Rect2(
+					rect.position + Vector2(cw * float(at % n),
+						ch * float(at / n)),
+					Vector2(cw, ch)), pair[1], false, 2.0)
 		"compass":
 			var dirs := ["N", "E", "S", "W"]
 			var idx := int(_phase() * 4.0) % 4
@@ -661,9 +677,18 @@ func _draw_overlay(overlay: int, entry: Dictionary) -> void:
 						_origin() + Vector2(cell * (gate_at + dx - 0.5), 0.0),
 						Vector2(cell, cell)),
 						Color(0.95, 0.8, 0.25, 0.20), true)
+			# The marker itself widens with the rank too, not only its footprint.
+			# Drawn at the rank's real girth so the demo cannot contradict the
+			# card, which now promises a bigger gate as well as a wider reach.
+			# The demo alternates unupgraded against MAX rank, the same `wide`
+			# phase the footprint uses -- so the two halves of the mechanic are
+			# always shown in the same state as each other.
+			var girth: float = Tuning.GATE_SIZE_GIRTH_BY_RANK[
+				Tuning.GATE_SIZE_GIRTH_BY_RANK.size() - 1] if wide else 1.0
 			draw_rect(Rect2(
-				_marker_pos(gate_at) - Vector2(cell * 0.07, cell * 0.5),
-				Vector2(cell * 0.14, cell)), Color(0.95, 0.8, 0.25), true)
+				_marker_pos(gate_at) - Vector2(cell * 0.07 * girth, cell * 0.5 * girth),
+				Vector2(cell * 0.14 * girth, cell * girth)),
+				Color(0.95, 0.8, 0.25), true)
 			draw_string(_font(),
 				_marker_pos(gate_at) + Vector2(-cell * 1.0, -cell * 0.66),
 				"wider footprint" if wide else "one cell",

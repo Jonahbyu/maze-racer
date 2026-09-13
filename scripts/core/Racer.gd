@@ -45,6 +45,11 @@ signal died()              # HP reached 0 with Tuning.DEATH_ENABLED
 signal wall_smashed(cell: Vector2i, direction: int)
 signal legendary_ready()   # a legendary cooldown finished
 signal second_wind_spent(remaining: int)  # a banked crash save absorbed a crash
+# A coin was collected. Carries the cell so the mesh can retire that coin's
+# node, and the new purse so the HUD needs no second read.
+signal coin_taken(cell: Vector2i, held: int)
+# A crash took half the purse and a point off the cap.
+signal coins_lost(held: int, cap: int)
 
 enum State { RUNNING, PARKED }
 
@@ -144,6 +149,43 @@ var crash_count := 0
 var scrape_count := 0
 var slowdown_count := 0
 
+# --- Coins (CLAUDE.md section 5b) --------------------------------------------
+
+# Coins currently held. Each raises the speed floor by COIN_SPEED_BONUS.
+#
+# Carried ACROSS the mazes of a run, like upgrades -- setup() deliberately does
+# not reset it, and Game seeds a new maze's racer from the outgoing one. A purse
+# that emptied at every maze boundary would make the cap unreachable and the
+# crash penalty meaningless, since a maze boundary would wipe more than a crash
+# ever could.
+var coins := 0
+
+# The live cap, which only ever falls. Every crash takes COIN_CAP_LOST_PER_CRASH
+# off it for the REST OF THE RUN, floored at COIN_CAP_MIN.
+#
+# This is the one part of the coin economy a player cannot drive back. Halving
+# the purse is a setback they recover from in a minute of clean travel; a cap
+# that never returns means a crash-heavy run is permanently capable of less, and
+# the twentieth coin belongs only to someone who has not crashed at all.
+var coin_cap := Tuning.COIN_CAP
+
+# Coins BANKED to the shop wallet, accumulated per maze rather than per run.
+#
+# Finishing a maze commits whatever is held at that moment, and banked coins can
+# never be taken back -- not by a crash, not by dying in a later maze. A player
+# who clears maze 1 holding 10 and then dies in maze 2 with an empty purse still
+# owns those 10.
+#
+# That separation is the whole reason the field exists. `coins` is a live,
+# volatile driving resource; this is money already earned. Collapsing them would
+# mean the shop balance swung with every wall the player clipped, which makes
+# saving for anything impossible.
+var coins_banked := 0
+
+# Cells whose coin has been taken this maze, so a re-crossed corridor does not
+# pay twice. Per maze, since each maze scatters its own.
+var _coins_collected := {}
+
 var gates_taken := 0
 var _gate_cells: Array[Vector2i] = []
 
@@ -230,16 +272,28 @@ var momentum_bonus := 0.0
 # resource to the pacing beat that already exists rather than to a new timer.
 var second_wind := 0
 
-# Deep Breath: how much extension the held direction has already bought on the
-# freeze currently running. Capped by the rank's allowance, so holding the key
-# across several corners cannot bank it.
-var _breath_spent := 0.0
+# Deep Breath: seconds of driving time until the extension may fire again.
+#
+# The COOLDOWN is the line's only limiter, and it replaced an early-press gate.
+# That gate required the turn to have resolved out of the BUFFER, because
+# without some limiter the line fired on essentially every corner: the key that
+# requests a turn is still down when the 0.10s freeze ends, since nobody
+# releases an arrow inside a tenth of a second, so `held_direction != 0` was
+# true at every turn the player made.
+#
+# A cooldown bounds uses per MINUTE directly rather than by inferring intent
+# from when the press landed, so the extension is a decision at every junction
+# instead of only at the ones read early -- which is what makes it an ability
+# rather than a property of how you happened to press.
+#
+# Counted in the racer's own accumulated driving time, so it does not run down
+# during an upgrade pick or a pause.
+var _breath_cooldown := 0.0
 
-# How much Deep Breath extension is still to be spent, in seconds, and therefore
-# how much ramp is still owed back. A DEBT rather than a flag: the extension is
-# bought in one frame and consumed over the ~27 that follow at a 1/60s step, so
-# what has to be undone is those frames' ramp, not the buying frame's.
-var _breath_owed := 0.0
+# How much extension the held direction has already bought on the freeze
+# currently running. Capped by the rank's allowance, so holding the key across
+# several corners cannot bank it.
+var _breath_spent := 0.0
 
 # True while the racer is overclocking. Set by Game from the held gesture; the
 # racer never reads input itself.
@@ -281,7 +335,7 @@ func setup(p_maze: Maze, p_upgrades: Upgrades, p_maze_index: int = 0) -> void:
 		var open := maze.open_directions(cell)
 		facing = open[0] if not open.is_empty() else Maze.E
 
-	speed = upgrades.speed_floor()
+	speed = speed_floor()
 	barrier = upgrades.barrier_capacity()
 	pending_turn = -1
 	pending_buffer = 0.0
@@ -311,13 +365,24 @@ func setup(p_maze: Maze, p_upgrades: Upgrades, p_maze_index: int = 0) -> void:
 	gates_cleared.clear()
 	gates_taken = 0
 
+	# Per maze: each maze scatters its own coins, so what has been taken from
+	# the last one says nothing about this one.
+	#
+	# `coins`, `coin_cap` and `coins_banked` are deliberately NOT reset here --
+	# all three are run-scoped. Game seeds them from the outgoing racer when it
+	# builds the next maze's, which is what makes the purse, the ratchet and the
+	# wallet survive a maze boundary.
+	_coins_collected.clear()
+
 	# A full bank at the start of each maze. Second Wind is refilled by clearing a
 	# gate, and a maze the player walks into with an empty bank would spend its
 	# first eight gates merely restoring what the last maze ended with.
 	second_wind = upgrades.second_wind_charges()
 	momentum_bonus = 0.0
 	_breath_spent = 0.0
-	_breath_owed = 0.0
+	# A fresh maze opens with the ability ready. The cooldown is a within-maze
+	# pacing limit, not a resource carried across the boundary.
+	_breath_cooldown = 0.0
 	overclocking = false
 	_overclock_fraction = 0.0
 
@@ -383,8 +448,12 @@ func request_reverse() -> void:
 	_turned_in_cell = false
 	_entry_lockout = -1
 	freeze = upgrades.reverse_freeze()
-	_breath_spent = 0.0
-	_breath_owed = 0.0
+	# A 180 does not extend. Its freeze is already the longest in the game --
+	# REVERSE_FREEZE is 1.6x a corner's, because the view swings through a full
+	# half-turn -- and the corridor behind is ground the player has just driven,
+	# so there is nothing new to read. The allowance is cleared; the cooldown is
+	# deliberately left alone, since a reversal spends nothing.
+	_breath_spent = upgrades.deep_breath_extension()
 	reversed.emit()
 
 
@@ -415,6 +484,16 @@ func step(delta: float) -> void:
 	_regen_hp(delta)
 	_tick_legendary(delta)
 
+	# Deep Breath's cooldown, on the same clean-travel clock as the legendaries:
+	# it sits below the PARKED early-return, so a crashed racer is not quietly
+	# recharging the ability while it waits to be un-stuck.
+	#
+	# Ticked BEFORE the freeze block, so a cooldown expiring inside this frame is
+	# spendable on this frame's corner. Ticking after would delay every use by a
+	# frame, which is invisible at 1x and a whole cell at 10x.
+	if _breath_cooldown > 0.0:
+		_breath_cooldown = maxf(0.0, _breath_cooldown - delta)
+
 	# Held on a turn. The speed ramp above still runs -- the freeze is a pause in
 	# POSITION, not in the systemic pressure section 3 describes, and stopping
 	# the ramp would make cornering a way to duck the game's central mechanic.
@@ -437,37 +516,41 @@ func step(delta: float) -> void:
 		# frame's worth at a time. `delta` is one frame (~0.0167s) against an
 		# allowance of up to 0.45s, so capping the grant by `delta` bought the
 		# extension a sliver per frame and the freeze never actually lengthened.
-		if held_direction != 0 and freeze <= delta:
+		# Fires on ANY turn whose direction is still held, gated only by the
+		# cooldown. It needed no early press: the cooldown is what stops the
+		# extension being automatic, and it does that job better, since it bounds
+		# uses per minute rather than inferring intent from when the press landed.
+		#
+		# Granted in FULL the moment the ordinary freeze is about to lapse, not a
+		# frame's worth at a time. `delta` is one frame (~0.0167s) against an
+		# allowance of up to 0.75s, so capping the grant by `delta` bought the
+		# extension a sliver per frame and the freeze never actually lengthened.
+		if held_direction != 0 and freeze <= delta \
+				and _breath_cooldown <= 0.0 and upgrades.has_deep_breath():
 			var allowance := upgrades.deep_breath_extension()
 			var extra := allowance - _breath_spent
 			if extra > 0.0:
 				_breath_spent += extra
 				freeze += extra
-				# Booked as a DEBT: the extension is consumed over the frames that
-				# follow, and it is THOSE frames whose ramp has to be undone.
-				# _advance_speed runs at the top of every one of them, so rewinding
-				# only the buying frame left the rest ramping -- measured as +0.058x
-				# gained across an extension that must gain nothing.
-				_breath_owed += extra
+				# Armed the moment the extension is GRANTED, not when it finishes, so
+				# the cooldown covers the pause itself rather than starting after it.
+				_breath_cooldown = Tuning.DEEP_BREATH_COOLDOWN
 
 		var spent := minf(freeze, delta)
 		freeze -= spent
 		delta -= spent
 
-		# The ramp is UNDONE for the extension, a deliberate exception to section
-		# 2's rule that the freeze runs the ramp. Left running, holding the key at
-		# every corner would gain speed for free and a turn-heavy maze would become
-		# a pump -- the extension would pay MORE than it costs. What the player
-		# spends instead is the clock, the section 8b currency Snap Turn buys back.
+		# The ramp RUNS through the extension, including the part Deep Breath
+		# bought. This reverses the rule that held until the cooldown existed: the
+		# ramp used to be rewound for the extension, because an unlimited hold at
+		# every corner would have made a turn-heavy maze a speed pump -- the
+		# extension paying more than it cost. The 10s cooldown is what makes that
+		# safe, capping the gain at roughly +0.075x per use and ~6 uses a minute
+		# instead of one per corner. The clock still runs throughout, so the pause
+		# is paid for in the section 8b currency either way.
 		#
-		# Charged against the part of `spent` that came out of the EXTENSION rather
-		# than out of the ordinary freeze, since the frame crossing from one to the
-		# other contains both.
-		if _breath_owed > 0.0 and spent > 0.0:
-			var from_extension := minf(_breath_owed, spent)
-			_breath_owed -= from_extension
-			_rewind_ramp(from_extension)
-
+		# Jonah's call, made against that objection: the line reads as relief
+		# rather than as a toll, which is what it is bought for.
 		if delta <= 0.0:
 			return
 
@@ -572,7 +655,7 @@ func _regen_hp(delta: float) -> void:
 # Speed accrues with time-not-crashing. Recovery from a crash climbs at 2.5x
 # until it reaches the floor (CLAUDE.md section 3).
 func _advance_speed(delta: float) -> void:
-	var floor_speed := upgrades.speed_floor()
+	var floor_speed := speed_floor()
 	var rate := Tuning.SPEED_RAMP_PER_SEC
 
 	# Momentum. The bonus rebuilds on CLEAN travel, so it is advanced here rather
@@ -591,20 +674,6 @@ func _advance_speed(delta: float) -> void:
 
 	speed = minf(speed + rate * delta, Tuning.SPEED_CAP)
 
-
-# Undo `seconds` worth of this frame's speed ramp.
-#
-# Deep Breath's extension must not accrue speed (see step()), and the cleanest
-# way to express that is to subtract exactly what _advance_speed just added for
-# that slice -- rather than duplicating the ramp's own rate calculation here and
-# leaving two places to keep in step.
-func _rewind_ramp(seconds: float) -> void:
-	var rate := Tuning.SPEED_RAMP_PER_SEC
-	if upgrades.has_momentum():
-		rate *= lerpf(1.0, upgrades.momentum_ramp_scale(), momentum_bonus)
-	if speed < upgrades.speed_floor():
-		rate *= Tuning.RECOVERY_RAMP_MULTIPLIER
-	speed = maxf(upgrades.speed_floor(), speed - rate * seconds)
 
 
 # Overclock: HP for pace, while the gesture is held.
@@ -890,7 +959,11 @@ func _crash() -> void:
 	crash_count += 1
 
 	hp = maxi(0, hp - upgrades.wall_damage(maze_index))
-	speed = upgrades.speed_floor()
+	# Before the speed reset, so the reset lands on the floor the DIMINISHED
+	# purse buys. Halving after it would leave the racer accelerating away from
+	# a crash at the speed its coins no longer pay for.
+	_crash_cost_coins()
+	speed = speed_floor()
 	pending_turn = -1
 	pending_buffer = 0.0
 	# A crash is a hard stop: recentre in the corridor rather than leaving the
@@ -901,7 +974,6 @@ func _crash() -> void:
 	# eat the first frames after un-stick.
 	freeze = 0.0
 	_breath_spent = 0.0
-	_breath_owed = 0.0
 	# The gesture cannot survive the crash: DOWN on a parked racer means un-stick
 	# (section 2), so the player is about to press it for a different reason.
 	overclocking = false
@@ -930,7 +1002,7 @@ func _unstick() -> void:
 	# Start the climb back from below the floor so the 2.5x recovery ramp has
 	# something to do -- otherwise un-sticking would restore full base speed
 	# instantly and the crash would cost only the parked time.
-	speed = upgrades.speed_floor() * 0.5
+	speed = speed_floor() * 0.5
 	barrier = upgrades.barrier_capacity()
 
 	unstuck.emit()
@@ -972,6 +1044,13 @@ func _on_enter_cell() -> void:
 	trail.visit(cell, trail_clock)
 	cell_entered.emit(cell, repeat, first_repeat)
 
+	# BEFORE the exit and gate early-returns below, for the reason `visited` is
+	# written before them: those return before the end of this function, so a
+	# coin sharing a cell with a gate could never be collected. Gates sit on the
+	# solve path and coin placement ignores the solve path entirely, so the two
+	# land on the same cell regularly rather than as an edge case.
+	_collect_coin()
+
 	if cell == maze.exit_cell:
 		finished = true
 		exit_reached.emit()
@@ -1003,6 +1082,94 @@ func _on_enter_cell() -> void:
 		return
 
 
+# Take the coin in the current cell, if there is one still here.
+#
+# Membership in the cell, never a radius. A radius would fire diagonally through
+# wall corners and collect through solid geometry, which is the reason section 7
+# gives for the gate footprint being a cardinal plus -- and a coin is the
+# smaller, more numerous object, so it would misfire more often.
+func _collect_coin() -> void:
+	if _coins_collected.has(cell):
+		return
+	if not maze.coins.has(cell):
+		return
+
+	_coins_collected[cell] = true
+
+	# BANKED UNCONDITIONALLY, even past the cap.
+	#
+	# The cap governs the speed bonus, which is a driving resource; the wallet is
+	# money. A coin collected on a full purse still went into the player's hands,
+	# and refusing to bank it would make a crash-shrunk cap quietly cost shop
+	# progress too -- punishing the same mistake twice in two different
+	# currencies. Banking is committed per maze, so this is provisional until the
+	# maze is cleared; bank_coins() is what commits it.
+	coins += 1
+
+	coin_taken.emit(cell, coins)
+
+
+# The speed floor contributed by the purse.
+#
+# Reads against the LIVE cap, not COIN_CAP, so a crash that drops the cap below
+# what is held immediately costs the bonus for the surplus. Without that the cap
+# would be a claim the game did not enforce -- a player at 20 coins whose cap
+# fell to 17 would keep the full +1.00x and the ratchet would do nothing.
+#
+# The surplus is not destroyed, only unpaid: it stays in `coins` and stays
+# bankable, because it is money the player genuinely collected.
+func coin_speed_bonus() -> float:
+	return mini(coins, coin_cap) * Tuning.COIN_SPEED_BONUS
+
+
+# The speed floor this racer actually holds: the upgrade floor plus the purse.
+#
+# ONE place, and every rule that needs a floor reads it here rather than calling
+# upgrades.speed_floor() directly. The distinction matters because the two
+# answers differ the moment a coin is held, and a rule still reading the upgrade
+# floor would let speed bleed BELOW what the coins pay for -- the crash reset and
+# the turn cost both clamp against it, so either one reading the wrong number
+# would silently make coins worth nothing on exactly the frames they matter.
+#
+# Upgrades keeps its own speed_floor() untouched: it knows nothing about coins,
+# which are a Racer-owned run resource rather than an upgrade line. The card
+# text and the compendium bar both read the upgrade floor and are still right to.
+func speed_floor() -> float:
+	return upgrades.speed_floor() + coin_speed_bonus()
+
+
+# What a crash does to the purse: halve it, and take a permanent bite out of the
+# cap (CLAUDE.md section 5b).
+#
+# Rounded DOWN, the harsh read -- 9 becomes 4, not 5. A crash is the event the
+# whole barrier system exists to avoid, and this is its fifth cost alongside HP,
+# the parked time, the speed reset and the 1000 points. It is the only one the
+# player watches accumulate BEFORE they pay it, which is what makes a full purse
+# feel worth protecting.
+func _crash_cost_coins() -> void:
+	coin_cap = maxi(Tuning.COIN_CAP_MIN,
+		coin_cap - Tuning.COIN_CAP_LOST_PER_CRASH)
+	coins = int(floor(coins * Tuning.COIN_CRASH_KEEP))
+	coins_lost.emit(coins, coin_cap)
+
+
+# Commit the purse to the shop wallet. Called by Game when a maze is CLEARED,
+# and never on a death.
+#
+# Per maze rather than per run, which is what makes a run's earnings survive the
+# run ending badly: clearing maze 1 with 10 coins banks those 10 for good, so
+# dying in maze 2 with an empty purse still leaves the player 10 better off than
+# they started. Banking only at the end of a run would mean a death wiped
+# everything four mazes of driving had earned.
+#
+# The purse is NOT emptied by banking. Coins keep paying their speed bonus for
+# the rest of the run -- they are spent money in the shop's ledger and a live
+# resource in the maze, and the whole point of banking per maze is that the
+# player does not have to choose between the two.
+func bank_coins() -> void:
+	coins_banked += coins
+
+
 # Is `at` inside the gate's collection footprint?
 #
 # A cardinal PLUS, never a box and never a radius. A radius would fire
@@ -1022,7 +1189,7 @@ func _within_gate_footprint(at: Vector2i, gate_cell: Vector2i, reach: int) -> bo
 
 
 func _apply_speed_cost(cost: float) -> void:
-	speed = maxf(speed - cost, upgrades.speed_floor())
+	speed = maxf(speed - cost, speed_floor())
 
 
 # --- Helpers -----------------------------------------------------------------
@@ -1102,9 +1269,10 @@ func _turn_into(direction: int) -> void:
 	_apply_speed_cost(upgrades.turn_cost())
 	freeze = upgrades.turn_freeze()
 	# A fresh allowance per corner: holding the key across several turns must
-	# not bank the extension.
+	# not bank the extension. The COOLDOWN is deliberately not reset here -- it
+	# is what limits the line, and clearing it on the very event it gates would
+	# leave it no job at all.
 	_breath_spent = 0.0
-	_breath_owed = 0.0
 	turned.emit(facing)
 
 

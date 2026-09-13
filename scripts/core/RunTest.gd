@@ -98,6 +98,12 @@ func _go() -> void:
 	print("slowdowns     : %d" % _game.racer.slowdown_count)
 	print("final speed   : %.2fx" % _game.racer.speed)
 	print("hp remaining  : %d" % _game.racer.hp)
+	# Coins, so a full run says whether the economy actually fires in play. An
+	# optimal router never detours, so it collects only what happens to sit on
+	# its route -- a LOW number here is correct and expected, and zero is the one
+	# that would mean the feature is inert.
+	print("coins held    : %d / %d" % [_game.racer.coins, _game.racer.coin_cap])
+	print("coins banked  : %d" % _game.racer.coins_banked)
 	print("upgrades      : %s" % str(_game.upgrades.snapshot()))
 
 	# The score breakdown (CLAUDE.md section 8b). Printed per maze because the

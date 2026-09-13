@@ -1,4 +1,4 @@
-# The picture half of the marker picker (CLAUDE.md, "The marker's shape is the
+﻿# The picture half of the marker picker (CLAUDE.md, "The marker's shape is the
 # player's to pick"): one frame per shape, from the game's own trailing camera.
 #
 # Not a test. RulesTest asserts that every outline points and SceneTest asserts
@@ -19,6 +19,9 @@ var _frame := 0
 var _shape_index := 0
 var _last_cell := Vector2i(-999, -999)
 var _scrape_shot := false
+# How many times the run has been rebuilt because it finished before the table
+# did. Bounded, so a game that cannot start fails loudly instead of looping.
+var _restarts := 0
 # True when a shape has been built and is waiting for the NEXT frame to draw it.
 var _armed := false
 
@@ -32,6 +35,19 @@ const SETTLE := 100
 # a missing frame reads as the tool failing rather than as the shape being fine.
 const PATIENCE := SETTLE * 8
 
+# A fresh run per five-or-so shapes is ample; this is a guard against a game
+# that will not start, not a budget the ordinary path is expected to spend.
+#
+# DERIVED from the table rather than a literal, because that literal was set
+# when the table held 24 entries and the tool needs roughly one restart per five
+# shapes -- so a fixed 12 would have quietly run out partway through a 44-entry
+# table and reported "out of runs", which reads as the game failing to start
+# rather than as the budget being stale. It is the hard-coded-band trap in an
+# instrument, and the table is the thing that grows.
+# A var rather than a const: MARKER_SHAPES.size() is not a constant expression,
+# so a const cannot be derived from the table it is meant to track.
+var _max_restarts: int = 6 + Tuning.MARKER_SHAPES.size() / 3
+
 
 func _init() -> void:
 	_setup.call_deferred()
@@ -42,6 +58,23 @@ func _setup() -> void:
 	_game = scene.instantiate()
 	root.add_child(_game)
 	process_frame.connect(_on_frame)
+
+
+# Tear the finished run down and start another, so the shot loop keeps its place
+# in the table across as many runs as the table needs.
+#
+# remove_child BEFORE queue_free, for the reason _apply_shape already records:
+# the free is deferred, so the outgoing Game is still in the tree when the new
+# one is added and the incoming node would be silently renamed.
+func _restart() -> void:
+	root.remove_child(_game)
+	_game.queue_free()
+	var scene: PackedScene = load("res://scenes/Game.tscn")
+	_game = scene.instantiate()
+	root.add_child(_game)
+	_frame = 0
+	_armed = false
+	_last_cell = Vector2i(-999, -999)
 
 
 func _on_frame() -> void:
@@ -65,6 +98,38 @@ func _on_frame() -> void:
 			await _capture_scrape()
 			print("RESULT: PASS")
 			quit(0)
+		return
+
+	# A FINISHED RUN IS A STALL, and it is the failure mode this tool is most
+	# likely to hit as the table grows. The autopilot routes optimally, so it
+	# clears all five mazes in a few thousand frames -- and once the summary is
+	# up there is no racer, no corridor and no phase 0, so every guard below
+	# returns forever. The loop can only end at the last shape, so the tool
+	# simply runs to the launcher's timeout having printed nothing since its
+	# last capture: no RESULT line, no error, and a partial set of files that
+	# looks like the remaining shapes failed to build.
+	#
+	# Measured at 24 shapes: it stopped after 17, exit 0, no PASS. That is the
+	# section 12 rule about an unguarded wait being a hang rather than a failing
+	# assertion, arriving in an instrument -- so the wait is now guarded and
+	# says so, and the run is restarted so the remaining shapes still get shot.
+	# Asked as "is the run OVER" rather than by naming COMPLETE and DEAD as
+	# integers. Game carries no class_name, so the enum is not reachable by
+	# identifier from here, and transcribing its values would be the section
+	# 12 restatement trap -- a literal that goes silently wrong the moment a
+	# phase is inserted ahead of it. `finished` and `dead` are the racer's own
+	# flags and are what the phases are set FROM.
+	var racer: Racer = _game.racer
+	var over: bool = racer == null or racer.finished or racer.dead
+	if over:
+		if _restarts >= _max_restarts:
+			printerr("MarkerShot: out of runs with %d of %d shapes shot"
+				% [_shape_index, Tuning.MARKER_SHAPES.size()])
+			quit(1)
+			return
+		_restarts += 1
+		print("run ended at shape %d -- restarting" % (_shape_index + 1))
+		_restart()
 		return
 
 	if _frame < SETTLE:

@@ -70,6 +70,8 @@ var _slider: HSlider = null
 var _mute_button: Button = null
 var _touch_button: Button = null
 var _volume_label: Label = null
+var _cam_slider: HSlider = null
+var _cam_label: Label = null
 
 
 # The viewport-to-screen scale, guarded exactly as MainMenu's is.
@@ -130,10 +132,14 @@ func _row_height() -> float:
 	return clampf(want, ROW_HEIGHT, maxf(room, ROW_HEIGHT))
 
 
-# The rows this panel builds: music, mute, mobile controls, close, and the quit
-# row when the mount has a run to leave.
+# The rows this panel builds: music, camera, mute, mobile controls, close, and
+# the quit row when the mount has a run to leave.
+#
+# Read by _row_height rather than restated there, so adding a row here shrinks
+# the rows to fit instead of pushing CLOSE off the bottom edge -- the section 8c
+# overrun, which this panel has already paid for once.
 func _row_count() -> int:
-	return 5 if allow_quit else 4
+	return 6 if allow_quit else 5
 
 
 func _font_px(base: float) -> int:
@@ -254,6 +260,46 @@ func _build_panel() -> void:
 	_volume_label.custom_minimum_size = Vector2(64, _row_height())
 	_volume_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	music_row.add_child(_volume_label)
+
+	# --- Camera sensitivity ---
+	#
+	# Directly under MUSIC and built the same way, because it is the same kind
+	# of control: a continuous value with a number beside it. A dial that looked
+	# different from the slider above it would imply it behaved differently.
+	var cam_row := HBoxContainer.new()
+	cam_row.add_theme_constant_override("separation", 14)
+	cam_row.custom_minimum_size = Vector2(0, _row_height())
+	rows.add_child(cam_row)
+
+	cam_row.add_child(_row_label("CAMERA"))
+
+	_cam_slider = HSlider.new()
+	_cam_slider.min_value = Tuning.CAM_SENSITIVITY_MIN
+	_cam_slider.max_value = Tuning.CAM_SENSITIVITY_MAX
+	# Whole notches. A camera lag is not something anyone tunes to a decimal
+	# place, and a 0..10 dial that lands on 6.37 reads as a bug rather than a
+	# choice.
+	_cam_slider.step = 1.0
+	_cam_slider.custom_minimum_size = Vector2(220, _row_height())
+	_cam_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_cam_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_cam_slider.focus_mode = Control.FOCUS_ALL
+	_style_slider(_cam_slider)
+	# value_changed, not drag_ended, for the reason the volume slider uses it:
+	# the panel is mounted over a live game on pause, so the camera can be seen
+	# responding while the slider moves. Adjusting a view setting blind, then
+	# closing the panel to find out what you picked, is the thing this avoids.
+	_cam_slider.value_changed.connect(_on_cam_changed)
+	cam_row.add_child(_cam_slider)
+
+	# The ends are named rather than numbered, because "0" and "10" say nothing
+	# about which end is which -- and the dial's whole subject is a direction of
+	# travel, not a magnitude. The number is still shown, so a player can
+	# describe or return to a setting.
+	_cam_label = _row_label("SNAP")
+	_cam_label.custom_minimum_size = Vector2(64, _row_height())
+	_cam_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	cam_row.add_child(_cam_label)
 
 	# --- Mute ---
 	_mute_button = _make_button("", _on_toggle_mute)
@@ -390,6 +436,15 @@ func _refresh() -> void:
 		_slider.set_block_signals(true)
 		_slider.value = volume
 		_slider.set_block_signals(false)
+	if _cam_slider != null:
+		var dial: float = (float(settings.cam_sensitivity) if settings != null
+			else Tuning.cam_sensitivity_default())
+		# Blocked for the reason the volume slider is: without it the assignment
+		# re-enters the handler and writes straight back to Settings, so merely
+		# opening the panel rewrites the config file.
+		_cam_slider.set_block_signals(true)
+		_cam_slider.value = dial
+		_cam_slider.set_block_signals(false)
 	_refresh_labels()
 
 
@@ -411,6 +466,10 @@ func _refresh_labels() -> void:
 		_mute_button.text = "SOUND:  %s" % ("MUTED" if muted else "ON")
 	if _touch_button != null:
 		_touch_button.text = "MOBILE CONTROLS:  %s" % ("ON" if touch else "OFF")
+	if _cam_label != null:
+		var dial: float = (float(settings.cam_sensitivity) if settings != null
+			else Tuning.cam_sensitivity_default())
+		_cam_label.text = _cam_text(dial)
 
 
 # --- Handlers ----------------------------------------------------------------
@@ -425,6 +484,31 @@ func _on_volume_changed(value: float) -> void:
 		if value > 0.0 and bool(settings.music_muted):
 			settings.set_music_muted(false)
 	_refresh_labels()
+
+
+func _on_cam_changed(value: float) -> void:
+	var settings := _settings()
+	if settings != null:
+		settings.set_cam_sensitivity(value)
+	_refresh_labels()
+
+
+# The readout beside the camera slider.
+#
+# The ends are NAMED, because a bare 0 and 10 do not say which way the dial
+# runs -- and the two ends are opposite behaviours rather than more and less of
+# one thing. The number rides along so a setting can be described or returned
+# to. Thresholds are derived from the dial's own bounds rather than written as
+# literals, so a future re-scale cannot leave the labels pointing at the wrong
+# end of the range.
+func _cam_text(dial: float) -> String:
+	var lo: float = Tuning.CAM_SENSITIVITY_MIN
+	var hi: float = Tuning.CAM_SENSITIVITY_MAX
+	if dial <= lo:
+		return "SNAP"
+	if dial >= hi:
+		return "%d LAG" % int(round(dial))
+	return "%d" % int(round(dial))
 
 
 func _on_toggle_mute() -> void:

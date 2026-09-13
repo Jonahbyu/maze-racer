@@ -8,6 +8,9 @@ extends SceneTree
 # Preloaded rather than referenced by class_name: Unlocks is an autoload, so it
 # deliberately has none (see the note in that file).
 const UnlocksScript := preload("res://scripts/core/Unlocks.gd")
+# For INLAY_INSET: the inlay check below has to measure against the same seam
+# the marker actually builds with, not a copy of the number.
+const PlayerMarkerScript := preload("res://scripts/core/PlayerMarker.gd")
 
 var _passed := 0
 var _failed := 0
@@ -33,6 +36,9 @@ func _init() -> void:
 	_test_score()
 	_test_visited_cells()
 	_test_trail_memory()
+	_test_coins()
+	_test_coin_placement_ignores_routing()
+	_test_shop()
 	_test_trail_memory_does_not_move_the_racer()
 	_test_seeded_boards()
 	_test_legendaries()
@@ -59,6 +65,7 @@ func _init() -> void:
 	_test_achievement_evaluation()
 	_test_demo_table()
 	_test_maze_palettes()
+	_test_cam_sensitivity()
 
 	print("")
 	print("passed: %d   failed: %d" % [_passed, _failed])
@@ -134,7 +141,8 @@ func _test_marker_shapes() -> void:
 	for i in 900:
 		ra.step(1.0 / 60.0)
 		rb.step(1.0 / 60.0)
-		if ra.cell != rb.cell or absf(ra.progress - rb.progress) > 0.0001 				or ra.facing != rb.facing or absf(ra.speed - rb.speed) > 0.0001:
+		if ra.cell != rb.cell or absf(ra.progress - rb.progress) > 0.0001 \
+				or ra.facing != rb.facing or absf(ra.speed - rb.speed) > 0.0001:
 			diverged += 1
 
 	check_eq("the marker shape never moves the racer", diverged, 0)
@@ -264,6 +272,79 @@ func _test_marker_decals() -> void:
 						absf(point.x) <= max_x + 0.001
 							and point.y >= min_y - 0.001
 							and point.y <= max_y + 0.001)
+
+			# A DECAL HAS TO BE VISIBLE, which "produces geometry" and "leaves
+			# something to draw" together do not say.
+			#
+			# NOTCH shipped drawing NOTHING and passed every check above. Its
+			# wedge was a triangle with a base out at +/-reach and an apex
+			# inside the mark, so it had narrowed to a needle by the time it
+			# crossed the flank: measured, it removed 0.0-1.7% of the shape,
+			# left the mark in ONE piece, and produced a sliver too thin to
+			# survive the inlay's seam inset -- so on seven of eight shapes the
+			# second colour was not drawn at all. The cut RESULT did change, by
+			# a hair, which is exactly what the assertions above test for.
+			#
+			# Two things are asserted, because they fail independently: the cut
+			# must remove a real share of the mark, and what it removes must
+			# still be there after INLAY_INSET shrinks it. A decal can cut a
+			# perfectly good hole and still fill none of it.
+			var full_area := _polygon_area(PackedVector2Array(outline))
+			var left := 0.0
+			for piece in pieces:
+				left += _polygon_area(piece)
+			var removed: float = (1.0 - left / maxf(full_area, 0.0001)) * 100.0
+			# 4% is well under the 5.9% the weakest pairing measures and far
+			# above the ~1% a decal that does nothing lands at, so it separates
+			# the two cases without pinning any decal to its current tuning.
+			check("%s removes a visible share of the mark (%.1f%%)"
+				% [label, removed], removed >= 4.0)
+
+			# The seam inset is in METRES, so this has to be measured at the
+			# size the marker is really built at -- an outline-space check would
+			# pass on geometry that vanishes in play.
+			var scale: float = Tuning.MARKER_RADIUS * 0.46
+			var scaled := PackedVector2Array()
+			for v in outline:
+				scaled.append(Vector2(v.x * scale, v.y * scale))
+			var filled := 0
+			for cut in Tuning.decal_polygons(did, _scaled_outline(outline,
+					scale)):
+				for part in Geometry2D.intersect_polygons(
+						PackedVector2Array(cut), scaled):
+					if part.size() < 3:
+						continue
+					for inner in Geometry2D.offset_polygon(part,
+							-PlayerMarkerScript.INLAY_INSET):
+						if inner.size() >= 3:
+							filled += 1
+			check("%s fills at least one inlay piece" % label, filled >= 1)
+
+
+# The area of a closed polygon, by the shoelace formula.
+#
+# Used to assert a decal REMOVES something, which is the property that separates
+# a pattern from a scratch -- see the cross-product check above.
+func _polygon_area(poly: PackedVector2Array) -> float:
+	var a := 0.0
+	for i in poly.size():
+		var p := poly[i]
+		var q := poly[(i + 1) % poly.size()]
+		a += p.x * q.y - q.x * p.y
+	return absf(a) * 0.5
+
+
+# The outline scaled to the size the marker is really built at.
+#
+# decal_polygons sizes its cutters off the outline it is handed, so measuring
+# the inlay at play scale means handing it a scaled outline rather than scaling
+# its output -- the two are not the same once a cutter clamps against a minimum
+# width in metres.
+func _scaled_outline(outline: Array, scale: float) -> Array:
+	var out: Array = []
+	for v in outline:
+		out.append(Vector2(v.x * scale, v.y * scale))
+	return out
 
 
 # The unlock tables (docs/plans/cosmetic-unlocks.md).
@@ -603,7 +684,8 @@ func _test_maze_palettes() -> void:
 	for i in 900:
 		ra.step(1.0 / 60.0)
 		rb.step(1.0 / 60.0)
-		if ra.cell != rb.cell or absf(ra.progress - rb.progress) > 0.0001 				or ra.facing != rb.facing or absf(ra.speed - rb.speed) > 0.0001:
+		if ra.cell != rb.cell or absf(ra.progress - rb.progress) > 0.0001 \
+				or ra.facing != rb.facing or absf(ra.speed - rb.speed) > 0.0001:
 			diverged += 1
 	check_eq("the maze palette never moves the racer", diverged, 0)
 
@@ -862,6 +944,213 @@ func _test_lanes() -> void:
 # is what keeps the rule headlessly testable (CLAUDE.md section 12) and what
 # lets the floor and the minimap agree by construction rather than by two
 # implementations happening to match.
+# Coins: collection, the cap, the crash halving and the cap ratchet, and banking
+# (CLAUDE.md section 5b).
+func _test_coins() -> void:
+	var m := _make_corridor(12)
+	# Coins are placed by hand rather than generated, so the fixture states
+	# exactly which cells carry one -- a generated scatter would make every
+	# assertion below depend on a seed.
+	m.coins = [Vector2i(2, 0), Vector2i(4, 0), Vector2i(6, 0)]
+
+	var r := Racer.new()
+	r.setup(m, Upgrades.new(1))
+
+	check_eq("a fresh racer holds no coins", r.coins, 0)
+	check_eq("the cap starts at COIN_CAP", r.coin_cap, Tuning.COIN_CAP)
+	check_near("no coins is no bonus", r.coin_speed_bonus(), 0.0)
+	# The floor with no coins is exactly the upgrade floor, which is what makes
+	# the coin term additive rather than a replacement.
+	check_near("the floor with no coins is the upgrade floor",
+		r.speed_floor(), r.upgrades.speed_floor())
+
+	var guard := 0
+	while r.cell.x < 3 and guard < 3000:
+		r.step(1.0 / 60.0)
+		guard += 1
+	check("the drive to the first coin did not hang", guard < 3000)
+	check_eq("driving over a coin collects it", r.coins, 1)
+	check_near("one coin is one bonus step",
+		r.coin_speed_bonus(), Tuning.COIN_SPEED_BONUS)
+	check_near("the floor rose by the coin bonus", r.speed_floor(),
+		r.upgrades.speed_floor() + Tuning.COIN_SPEED_BONUS)
+
+	# A re-crossed cell must not pay twice. Reversing back over a collected coin
+	# is ordinary play in a maze full of loops, and a coin that re-armed would
+	# make one corridor an infinite purse.
+	r.request_reverse()
+	guard = 0
+	while r.cell.x > 1 and guard < 3000:
+		r.step(1.0 / 60.0)
+		guard += 1
+	check("the reverse did not hang", guard < 3000)
+	check_eq("a collected coin does not pay twice", r.coins, 1)
+
+	# --- The crash: halve the purse, ratchet the cap -------------------------
+	var c := Racer.new()
+	c.setup(_make_corridor(8), Upgrades.new(1))
+	c.coins = 9
+	var cap_before: int = c.coin_cap
+	c._crash_cost_coins()
+	# Rounded DOWN, deliberately: 9 -> 4, not 5.
+	check_eq("a crash halves the purse, rounding down", c.coins, 4)
+	check_eq("a crash costs a point of cap", c.coin_cap,
+		cap_before - Tuning.COIN_CAP_LOST_PER_CRASH)
+
+	# The cap floors rather than running to zero, or a crash-heavy run would
+	# reach a state where every coin still drawn in the world is uncollectable.
+	var f := Racer.new()
+	f.setup(_make_corridor(8), Upgrades.new(1))
+	for i in 100:
+		f._crash_cost_coins()
+	check_eq("the cap never falls below COIN_CAP_MIN", f.coin_cap,
+		Tuning.COIN_CAP_MIN)
+
+	# The bonus reads against the LIVE cap, so a crash that drops the cap below
+	# what is held immediately stops paying for the surplus. Without this the
+	# ratchet would be a claim the game never enforced.
+	var o := Racer.new()
+	o.setup(_make_corridor(8), Upgrades.new(1))
+	o.coins = 20
+	o.coin_cap = 12
+	check_near("the bonus is capped by the live cap",
+		o.coin_speed_bonus(), 12 * Tuning.COIN_SPEED_BONUS)
+	# The surplus is unpaid, never destroyed -- it is money the player collected
+	# and must still bank.
+	check_eq("the surplus stays in the purse", o.coins, 20)
+
+	# --- Banking -------------------------------------------------------------
+	var b := Racer.new()
+	b.setup(_make_corridor(8), Upgrades.new(1))
+	b.coins = 10
+	check_eq("nothing is banked before a maze is cleared", b.coins_banked, 0)
+	b.bank_coins()
+	check_eq("clearing a maze banks the purse", b.coins_banked, 10)
+	# Banking does not SPEND: the coins keep paying their speed bonus for the
+	# rest of the run. It records what has been earned.
+	check_eq("banking leaves the purse intact", b.coins, 10)
+	check_near("banking leaves the bonus intact",
+		b.coin_speed_bonus(), 10 * Tuning.COIN_SPEED_BONUS)
+
+	# The scenario the rule exists for: clear maze 1 with 10, then lose
+	# everything in maze 2. The 10 must survive.
+	b._crash_cost_coins()
+	b._crash_cost_coins()
+	b.coins = 0
+	check_eq("a later wipe cannot touch banked coins", b.coins_banked, 10)
+
+
+# Coin placement must not leak ROUTING.
+#
+# The same separation landmarks have (section 6), and it matters more here
+# because a coin is worth detouring for: a currency that clustered on the solve
+# path would be a free Path Indicator, which is a PAID line.
+func _test_coin_placement_ignores_routing() -> void:
+	var m := Maze.new()
+	m.generate(40, 40, 9090, 0.15, 0.03, 4, 0.5, 0.2, 0.0, 0.6, 0.02)
+
+	check("coins were placed", m.coins.size() > 0)
+
+	var seen := {}
+	var on_path := 0
+	var path := {}
+	for c in m.solve_path:
+		path[c] = true
+	for c in m.coins:
+		check("no coin is duplicated", not seen.has(c))
+		seen[c] = true
+		check("no coin sits on the start", c != m.start_cell)
+		# A coin on the exit could never be banked -- the maze ends on contact.
+		check("no coin sits on the exit", c != m.exit_cell)
+		# A sealed pocket cannot be driven into, so a coin there is one the
+		# player can see and never take.
+		check("no coin sits in a sealed pocket",
+			not m.open_directions(c).is_empty())
+		if path.has(c):
+			on_path += 1
+
+	# The solve path is a small share of the grid, and coins must not prefer it.
+	# Asserted as a BOUND rather than as equality: placement is random, so the
+	# share varies, and what is being ruled out is a bias large enough to route
+	# by. A generous ceiling still fails a placement that walked the path.
+	var path_share := float(m.solve_path.size()) / float(m.width * m.height)
+	var coin_share := float(on_path) / float(m.coins.size())
+	check("coins do not prefer the solve path",
+		coin_share < path_share * 4.0 + 0.05,
+		"coins on path %.3f vs path share %.3f" % [coin_share, path_share])
+
+	# The knob is honoured: a maze asked for no coins has none, so the feature
+	# can be switched off entirely.
+	var none := Maze.new()
+	none.generate(20, 20, 9090, 0.15, 0.03, 3)
+	check("no density means no coins", none.coins.is_empty())
+
+
+# The shop: prices, affordability, and that buying is a SECOND path to a
+# cosmetic rather than a replacement for the achievement that grants it.
+func _test_shop() -> void:
+	var U := preload("res://scripts/core/Unlocks.gd")
+
+	# Every lockable cosmetic must be purchasable, or the shop would display a
+	# chip that can only ever refuse. Walked rather than named, so a cosmetic
+	# added later is covered by construction.
+	for id in U.lockable_ids():
+		check("%s has a price" % id, U.price_of(String(id)) > 0, String(id))
+
+	# Something that is not a cosmetic has no price, which is what stops a typo
+	# being sold for free.
+	check_eq("a non-cosmetic has no price", U.price_of("nonsense"), 0)
+	check_eq("a malformed id has no price", U.price_of("colour"), 0)
+
+	# The wallet is spent through a real Unlocks instance rather than the
+	# autoload, which is absent in every harness.
+	var w = U.new()
+	# Nothing here may touch the player's real profile.
+	w.suppress_save = true
+	var target := String(U.lockable_ids()[0])
+
+	check("a cosmetic starts locked", not w.is_unlocked(target))
+	check("an empty wallet affords nothing", not w.can_afford(target))
+	check("buying with no coins is refused", not w.buy(target))
+	check("a refused buy unlocks nothing", not w.is_unlocked(target))
+
+	var price: int = U.price_of(target)
+	w.coins = price
+	check("the wallet now affords it", w.can_afford(target))
+	check("buying succeeds", w.buy(target))
+	check("a bought cosmetic is unlocked", w.is_unlocked(target))
+	check_eq("buying spends exactly the price", w.coins, 0)
+
+	# Buying something already owned is REFUSED rather than charged. Taking
+	# money for an item the player holds is the one outcome a shop must never
+	# produce -- and it is reachable, since achievements grant for free.
+	w.coins = price * 2
+	check("re-buying is refused", not w.buy(target))
+	check_eq("a refused re-buy charges nothing", w.coins, price * 2)
+
+	# A default can never be bought, because it is never locked. It is also
+	# never offered: lockable_ids() excludes it.
+	var default_shape := U.id_for(U.KIND_SHAPE, Tuning.MARKER_SHAPE_DEFAULT)
+	check("a default is not on the shelf",
+		not U.lockable_ids().has(default_shape))
+	check("a default cannot be bought", not w.buy(default_shape))
+
+	# A typo cannot be bought at any price, which is what stops the shop
+	# granting an id nothing resolves.
+	w.coins = 9999
+	check("a non-existent cosmetic cannot be bought", not w.buy("colour:puce"))
+
+	# Crediting the wallet.
+	var w2 = U.new()
+	w2.suppress_save = true
+	w2.add_coins(30)
+	check_eq("banked coins credit the wallet", w2.coins, 30)
+	w2.add_coins(0)
+	check_eq("crediting nothing changes nothing", w2.coins, 30)
+	w2.add_coins(-5)
+	check_eq("a negative credit is ignored", w2.coins, 30)
+
+
 func _test_trail_memory() -> void:
 	var t := TrailMemory.new()
 
@@ -3630,8 +3919,14 @@ func _test_second_wind() -> void:
 	check("without the line it crashes", bare.crash_count > 0)
 
 
-# Deep Breath extends the freeze while a direction is held, and must not let
-# the player farm speed by holding it (section 7).
+# Deep Breath extends the freeze while a direction is held, on ANY turn, gated
+# by a cooldown rather than by an early press (section 7).
+#
+# The early-press gate and the ramp rewind were both REMOVED when the cooldown
+# landed, and the assertions below invert the ones that encoded them. The gate
+# existed only because the line had no other limiter; the rewind existed because
+# an unlimited hold would have made a turn-heavy maze a speed pump. A cooldown
+# limits uses per minute directly, which makes both unnecessary.
 func _test_deep_breath() -> void:
 	var u := Upgrades.new(1)
 	for i in 3:
@@ -3639,46 +3934,167 @@ func _test_deep_breath() -> void:
 	check("the line grants an extension", u.deep_breath_extension() > 0.0)
 	check_near("an untaken line grants none", Upgrades.new(1).deep_breath_extension(), 0.0)
 
-	var m := _make_maze(20, 20)
+	# Driven through REAL turns rather than by assigning `freeze` directly. The
+	# previous version set the field by hand, which bypasses eligibility
+	# entirely -- against the current rule it would report an extension that can
+	# no longer happen, and against the old one it proved nothing about how a
+	# turn actually arrives. The whole subject is now WHICH KIND of turn it was.
+	#
+	# _make_branch is the fixture: a corridor with one opening south at
+	# `branch_x`, so a press made before reaching it has to wait in the buffer,
+	# and a press made standing on it resolves immediately.
+	var early_frames := _breath_turn_frames(u, true, true)
+	var early_loose := _breath_turn_frames(u, true, false)
+	var late_frames := _breath_turn_frames(u, false, true)
+	var late_loose := _breath_turn_frames(u, false, false)
 
-	# Held: the freeze lasts longer.
-	var held := _make_racer(m, u)
-	held.held_direction = 1
-	held.freeze = u.turn_freeze()
-	var held_frames := 0
-	while held.freeze > 0.0 and held_frames < 600:
-		held.step(1.0 / 60.0)
-		held_frames += 1
-
-	var loose := _make_racer(m, u)
-	loose.held_direction = 0
-	loose.freeze = u.turn_freeze()
-	var loose_frames := 0
-	while loose.freeze > 0.0 and loose_frames < 600:
-		loose.step(1.0 / 60.0)
-		loose_frames += 1
-
-	check("holding a direction extends the freeze", held_frames > loose_frames,
-		"%d frames vs %d" % [held_frames, loose_frames])
+	check("holding through a buffered turn extends the freeze",
+		early_frames > early_loose,
+		"%d frames vs %d" % [early_frames, early_loose])
 
 	# The extension must be the FULL allowance, not merely non-zero. "It lasted
 	# longer" is satisfied by a single extra frame, and the first implementation
 	# capped the grant by `delta` -- so it bought a 1/60s sliver per frame and the
 	# freeze barely lengthened at all, while every assertion about it still passed.
-	var held_seconds := float(held_frames) / 60.0
-	var loose_seconds := float(loose_frames) / 60.0
 	check_near("the extension is the whole allowance",
-		held_seconds - loose_seconds, u.deep_breath_extension(), 0.02)
+		float(early_frames - early_loose) / 60.0,
+		u.deep_breath_extension(), 0.02)
 
-	# And the ramp is UNDONE for the extension, so the hold cannot be farmed.
-	# Without this, holding at every corner gains speed for free and a
-	# turn-heavy maze becomes a pump -- the extension would pay more than it
-	# costs. Compared per FRAME, since the held racer ran for more of them.
-	var held_gain := held.speed - Tuning.SPEED_FLOOR
-	var loose_gain := loose.speed - Tuning.SPEED_FLOOR
-	check("the extension does not pay speed", held_gain <= loose_gain + 0.001,
-		"held +%.4f over %d frames vs loose +%.4f over %d" % [
-			held_gain, held_frames, loose_gain, loose_frames])
+	# An IMMEDIATE turn extends too, which is the inversion. The early-press gate
+	# used to refuse this case; the cooldown replaced it, so a junction read late
+	# is still a junction the player may stop and look at.
+	check("holding through an immediate turn also extends it",
+		late_frames > late_loose,
+		"%d frames vs %d" % [late_frames, late_loose])
+
+	# ...and that the immediate case is a real turn rather than a racer that
+	# never turned at all, which would satisfy the check above vacuously.
+	check("the immediate turn actually froze", late_loose > 0,
+		"%d frames" % late_loose)
+
+	# The ramp RUNS through the extension, the other inversion. Asserted as a
+	# real GAIN rather than merely "not less", since the old rewind would satisfy
+	# an inequality phrased loosely and this is the rule that replaced it.
+	var held := _breath_racer(u, false, true)
+	var loose := _breath_racer(u, false, false)
+	check("the extension accrues speed", held.speed > loose.speed + 0.001,
+		"held %.4f vs loose %.4f" % [held.speed, loose.speed])
+
+	# THE COOLDOWN, which is now the line's only limiter -- so this is the
+	# assertion the whole design rests on. A second turn taken immediately after
+	# an extension must get the ORDINARY freeze, however long the key is held.
+	var pair := _breath_two_turns(u, true)
+	check("a second turn inside the cooldown does not extend",
+		pair[1] < pair[0],
+		"first %d frames, second %d" % [pair[0], pair[1]])
+
+	# ...and that the second turn is a real turn, not a racer that stopped. A
+	# cooldown check is trivially satisfied by a racer that never turned twice.
+	check("the second turn actually froze", pair[1] > 0, "%d frames" % pair[1])
+
+	# The cooldown must EXPIRE, or it is a one-shot rather than a cooldown. Driven
+	# past DEEP_BREATH_COOLDOWN of accumulated driving time between the two turns.
+	var spaced := _breath_two_turns(u, false)
+	check_near("past the cooldown it extends again",
+		float(spaced[1] - pair[1]) / 60.0,
+		u.deep_breath_extension(), 0.02)
+
+	# An untaken line never extends, whatever is held. The grant is gated on
+	# has_deep_breath() rather than on the allowance being non-zero, so a rank-0
+	# racer must be identical held or loose.
+	var none := Upgrades.new(1)
+	check("an untaken line does not extend",
+		_breath_turn_frames(none, false, true) == _breath_turn_frames(none, false, false),
+		"%d vs %d" % [_breath_turn_frames(none, false, true),
+			_breath_turn_frames(none, false, false)])
+
+
+# Drives one turn and returns how many frames the freeze lasted.
+#
+# `early` chooses the gesture: true presses well before the opening so the turn
+# resolves out of the buffer, false drives onto the opening and presses there so
+# it resolves immediately. `hold` leaves the direction key down afterwards.
+func _breath_turn_frames(u: Upgrades, early: bool, hold: bool) -> int:
+	var r := _breath_racer(u, early, hold)
+	return r.get_meta("breath_frames", 0)
+
+
+func _breath_racer(u: Upgrades, early: bool, hold: bool) -> Racer:
+	var branch_x := 6
+	var m := _make_branch(20, branch_x)
+	var r := _make_racer(m, u)
+
+	if early:
+		# Press while still short of the opening, so the input buffers. The
+		# buffer is a full cell (section 4), so pressing one cell out lands.
+		while r.cell.x < branch_x - 1:
+			r.step(1.0 / 60.0)
+		r.request_turn(1)
+	else:
+		# Drive onto the opening and press there, which takes the immediate path.
+		while r.cell.x < branch_x:
+			r.step(1.0 / 60.0)
+		r.request_turn(1)
+
+	r.held_direction = 1 if hold else 0
+
+	# A BUFFERED turn does not freeze on the press -- it resolves at the next
+	# boundary, tens of frames later. Measuring from the press therefore read
+	# zero frames for the very case the gate exists to allow, which looked
+	# exactly like the extension failing to fire. Drive until the freeze starts,
+	# then measure it.
+	var waited := 0
+	while r.freeze <= 0.0 and waited < 600:
+		r.step(1.0 / 60.0)
+		waited += 1
+
+	var frames := 0
+	while r.freeze > 0.0 and frames < 600:
+		r.step(1.0 / 60.0)
+		frames += 1
+	r.set_meta("breath_frames", frames)
+	return r
+
+
+# Drives TWO turns with the direction held throughout and returns how many frames
+# each freeze lasted, as [first, second].
+#
+# `inside` chooses the spacing: true takes the second turn immediately, while the
+# cooldown is still running, and false drives past DEEP_BREATH_COOLDOWN of
+# accumulated driving time in between so the ability has recharged.
+#
+# Driven in an open ROOM rather than _make_branch, which is two rows tall and has
+# exactly one opening -- it cannot host a second turn at all. In a room every
+# direction is open, so each press takes the immediate path and both turns are
+# the same kind, which is what makes the two freezes comparable: a difference
+# between them is then the cooldown and nothing else.
+func _breath_two_turns(u: Upgrades, inside: bool) -> Array:
+	var m := _make_room(40, 40)
+	var r := _make_racer(m, u)
+	r.held_direction = 1
+
+	var out: Array = []
+	for turn in 2:
+		# Space the second turn past the cooldown when asked. Driven as real
+		# frames rather than by writing the field, so the tick under test is the
+		# one that actually runs.
+		if turn == 1 and not inside:
+			var settle := int(Tuning.DEEP_BREATH_COOLDOWN * 60.0) + 10
+			for i in settle:
+				r.step(1.0 / 60.0)
+
+		r.request_turn(1)
+		var waited := 0
+		while r.freeze <= 0.0 and waited < 600:
+			r.step(1.0 / 60.0)
+			waited += 1
+
+		var frames := 0
+		while r.freeze > 0.0 and frames < 600:
+			r.step(1.0 / 60.0)
+			frames += 1
+		out.append(frames)
+	return out
 
 
 # Overclock burns HP for pace, and can never kill.
@@ -3735,6 +4151,36 @@ func _test_gate_footprint() -> void:
 	check_eq("unupgraded reach is the gate's own cell", u0.gate_reach(), 0)
 	check("rank 2 reaches further", u2.gate_reach() > 0)
 	check("rank 1 raises the marker", u2.gate_height_scale() > u0.gate_height_scale())
+
+	# And WIDENS it. Height alone was measured not to read: the camera is capped
+	# below WALL_HEIGHT (section 12), so everything a taller marker adds lands
+	# above the wall line at the far end of a corridor, while the part at eye
+	# level -- the part the player looks at while collecting it -- stayed
+	# pixel-identical at every rank. Measured on a controlled pair, the mesh AABB
+	# went 5.55 -> 9.16 on Y and held a flat 3.0 x 3.0 on XZ.
+	check("rank 1 also WIDENS the marker",
+		u2.gate_girth_scale() > u0.gate_girth_scale())
+	check_eq("unupgraded girth is the marker's base width",
+		u0.gate_girth_scale(), 1.0)
+
+	# EVERY rank widens, and the table rises monotonically. A rank that added
+	# reach without girth would be the case the player reports as "my gate did
+	# not get bigger" -- which is the whole fault this pair of checks exists for.
+	var prev := 0.0
+	for r in range(Tuning.GATE_SIZE_GIRTH_BY_RANK.size()):
+		var g := float(Tuning.GATE_SIZE_GIRTH_BY_RANK[r])
+		check("girth rank %d is larger than rank %d" % [r, r - 1] if r > 0
+			else "girth rank 0 is the base", g > prev)
+		prev = g
+
+	# BOUNDED BY THE CORRIDOR. The widest slab must not reach the side walls: a
+	# marker drawn intersecting a wall reads as a rendering fault at 0.55 alpha,
+	# not as a bigger gate. Derived from the constants rather than restated, so
+	# a rank added to the table is checked against the real corridor.
+	var widest: float = Tuning.CELL_SIZE * 0.75 * float(
+		Tuning.GATE_SIZE_GIRTH_BY_RANK[Tuning.GATE_SIZE_GIRTH_BY_RANK.size() - 1])
+	check("the widest gate marker still clears the corridor walls",
+		widest <= Tuning.CELL_SIZE - 2.0 * Tuning.GATE_MARKER_WALL_CLEARANCE)
 
 	# A plus, never a box: the diagonal must NOT collect. A radius would fire
 	# through wall corners, collecting a gate through solid geometry -- which
@@ -3816,3 +4262,186 @@ func _test_extra_card() -> void:
 			check_eq("no duplicate card on one screen", dupes, 0)
 			return
 	check("no duplicate card on one screen, over 40 rolls", true)
+
+
+# The camera sensitivity dial (CLAUDE.md, "The camera's catch-up is the
+# player's to set").
+#
+# Asserts the MAPPING and the SEPARATION. The mapping matters because both ends
+# of the dial are claims about behaviour -- 0 must be a snap, not merely quick,
+# and 10 must lag far enough to still be swinging after the freeze -- and a
+# monotonic curve is what makes every notch between them mean something.
+#
+# The separation matters more: this is a VIEW setting, and the racer must pivot,
+# freeze and resume identically at every value. The preference is reachable from
+# the simulation and must never be read by it, which is the same trap landmarks,
+# Trail Memory and the marker shape all have, and it gets the same assertion.
+func _test_cam_sensitivity() -> void:
+	# The ends are what the dial promises.
+	check_near("sensitivity 0 is the snap rate",
+		Tuning.cam_yaw_rate(Tuning.CAM_SENSITIVITY_MIN),
+		Tuning.CAM_YAW_RATE_SNAP)
+	check_near("the top of the dial is the slow rate",
+		Tuning.cam_yaw_rate(Tuning.CAM_SENSITIVITY_MAX),
+		Tuning.CAM_YAW_RATE_SLOW)
+
+	# Out of range clamps rather than extrapolating -- a negative dial must not
+	# produce a rate faster than the snap, and a curve that ran off either end
+	# would be a settings file able to break the camera.
+	check_near("below the dial clamps to snap", Tuning.cam_yaw_rate(-5.0),
+		Tuning.CAM_YAW_RATE_SNAP)
+	check_near("above the dial clamps to slow",
+		Tuning.cam_yaw_rate(Tuning.CAM_SENSITIVITY_MAX * 10.0),
+		Tuning.CAM_YAW_RATE_SLOW)
+
+	# Strictly monotonic, so every notch is a real change. A curve with a flat
+	# stretch would give the player settings that do nothing, which is worse
+	# than having fewer of them.
+	#
+	# The sweep's bound is READ from the dial, never written out. A literal
+	# range(1, 11) was correct while the dial ended at 10 and would have gone
+	# silently half-blind the moment it was lengthened -- covering the notches
+	# that already worked and none of the new ones. The transcription trap
+	# section 12 records for tests, in a loop bound.
+	var previous: float = Tuning.cam_yaw_rate(Tuning.CAM_SENSITIVITY_MIN)
+	var monotonic := true
+	var notches := int(Tuning.CAM_SENSITIVITY_MAX - Tuning.CAM_SENSITIVITY_MIN)
+	var walked := 0
+	var reached: float = Tuning.CAM_SENSITIVITY_MIN
+	for i in range(1, notches + 1):
+		reached = Tuning.CAM_SENSITIVITY_MIN + float(i)
+		var rate: float = Tuning.cam_yaw_rate(reached)
+		if rate >= previous:
+			monotonic = false
+		previous = rate
+		walked += 1
+	check("the sensitivity curve descends at every notch", monotonic)
+	# The guard reads what the LOOP actually walked, not what the dial says it
+	# should have -- a guard phrased against CAM_SENSITIVITY_MAX passes happily
+	# while the loop beside it still stops at a stale literal, which is the
+	# check-that-cannot-fail trap section 12 records. Verified by restoring the
+	# literal range(1, 11): it fails here at 10 notches and reached 10.0.
+	check("the sweep walked the whole dial",
+		walked == notches and is_equal_approx(reached, Tuning.CAM_SENSITIVITY_MAX),
+		"walked %d of %d, reached %.1f" % [walked, notches, reached])
+
+	# The default dial position round-trips to the rate the game shipped with.
+	# Derived rather than transcribed, so the two cannot drift apart -- and this
+	# is what asserts the derivation actually works.
+	# EXACT, not approximate. CAM_YAW_RATE_SNAP is derived so the shipped rate
+	# lands on a whole notch, so a loose tolerance here would hide the very
+	# thing that derivation exists to guarantee -- the first version allowed 0.6
+	# and still failed, at 10.48 against 12.0, because the ends had been picked
+	# independently and the default fell between two notches.
+	check_near("the default dial is the shipped rate",
+		Tuning.cam_yaw_rate(Tuning.cam_sensitivity_default()),
+		Tuning.CAM_YAW_RATE_DEFAULT, 0.001)
+
+	# The default is a position ON the dial, not off the end of it. A default
+	# that landed at 0 or 10 would give the player nowhere to go in one
+	# direction.
+	var default_dial: float = Tuning.cam_sensitivity_default()
+	check("the default dial is inside the range",
+		default_dial > Tuning.CAM_SENSITIVITY_MIN
+			and default_dial < Tuning.CAM_SENSITIVITY_MAX)
+
+	# The default lands on a WHOLE notch, which is the entire job of deriving
+	# CAM_YAW_RATE_SNAP rather than picking it. The rate check above proves the
+	# round trip; this proves the position is one the slider can actually stop
+	# on, since the slider steps by 1. A default at 19.4 would round-trip to the
+	# right rate and still be unreachable by the control the player uses.
+	check("the default dial is a whole notch",
+		is_equal_approx(default_dial, round(default_dial)),
+		"%.6f" % default_dial)
+
+	# And it sits where CAM_DEFAULT_DIAL_FRACTION says it should. Derived from
+	# the fraction rather than written as 20, so moving the default along the
+	# dial is one edit in Tuning and not a literal here to fall out of step --
+	# the transcription trap section 12 records for tests.
+	var expected_notch: float = Tuning.CAM_SENSITIVITY_MIN + Tuning.CAM_DEFAULT_DIAL_FRACTION 		* (Tuning.CAM_SENSITIVITY_MAX - Tuning.CAM_SENSITIVITY_MIN)
+	check_near("the default dial sits at the declared fraction of the travel",
+		default_dial, expected_notch, 0.001)
+
+	# The SLOW end is still reachable and still means what section 11.3 bounds
+	# it to. The dial grew from 20 notches to 30 by moving the default, not by
+	# clipping the lag off the top -- so the slowest setting must still be the
+	# slowest rate, at the last notch.
+	check_near("the last notch is the slow end",
+		Tuning.cam_yaw_rate(Tuning.CAM_SENSITIVITY_MAX),
+		Tuning.CAM_YAW_RATE_SLOW, 0.001)
+
+	# THE SEPARATION. Two racers on one seed, driven identically. Nothing about
+	# the camera may reach the simulation, so the two must never diverge -- and
+	# in particular the FREEZE must be untouched, since the freeze is a rule
+	# (it costs run time, and Snap Turn buys it down) rather than a view.
+	var ma := Maze.new()
+	ma.generate(24, 24, 9182, 0.15, 0.03, 5)
+	var mb := Maze.new()
+	mb.generate(24, 24, 9182, 0.15, 0.03, 5)
+
+	var ra := Racer.new()
+	ra.setup(ma, Upgrades.new(1))
+	var rb := Racer.new()
+	rb.setup(mb, Upgrades.new(1))
+
+	var diverged := 0
+	var freeze_diverged := 0
+	var turned := 0
+	for i in 900:
+		# Routed toward the exit, and routed through request_turn rather than by
+		# assigning `facing` -- which is what _run_clean does and is exactly wrong
+		# here. Setting facing directly rotates the racer without resolving a turn,
+		# so it never freezes, and the freeze is the whole thing this dial
+		# interacts with.
+		#
+		# A blind periodic press does not work either: the racer parks against the
+		# first wall it meets, and request_turn returns immediately on a PARKED
+		# racer -- so the loop ran 900 frames with ZERO freezes. The 'was
+		# exercised' guard below is what caught that; without it this check would
+		# have passed while asserting nothing at all.
+		_steer_toward_exit(ma, ra)
+		_steer_toward_exit(mb, rb)
+		ra.step(1.0 / 60.0)
+		rb.step(1.0 / 60.0)
+		if ra.freeze > 0.0:
+			turned += 1
+		if absf(ra.freeze - rb.freeze) > 0.0001:
+			freeze_diverged += 1
+		if ra.cell != rb.cell or absf(ra.progress - rb.progress) > 0.0001 \
+				or ra.facing != rb.facing or absf(ra.speed - rb.speed) > 0.0001:
+			diverged += 1
+
+	check("the separation check actually froze", turned > 0)
+	check_eq("camera sensitivity never moves the racer", diverged, 0)
+	check_eq("camera sensitivity never touches the freeze", freeze_diverged, 0)
+
+
+# Request a turn toward the exit, going through request_turn/request_reverse so
+# an actual pivot -- and so an actual freeze -- happens.
+#
+# Deliberately NOT _run_clean, which assigns `facing` directly. That rotates the
+# racer without ever resolving a turn, which is fine for a regen test and
+# useless here: the camera dial only touches the swing onto a new heading, so a
+# check driven that way would never exercise the thing it is named for.
+func _steer_toward_exit(m: Maze, r: Racer) -> void:
+	if r.state == Racer.State.PARKED:
+		r.request_reverse()
+		return
+	var best := m.best_direction(r.cell)
+	if best == -1 or best == r.facing:
+		return
+	var order := [Maze.N, Maze.E, Maze.S, Maze.W]
+	var from_index := order.find(r.facing)
+	var to_index := order.find(best)
+	if from_index == -1 or to_index == -1:
+		return
+	# The relative key request_turn takes. A 180 goes through request_reverse,
+	# which is the input that actually means it -- and which pays the reversal
+	# cost rather than sneaking a half-turn through the 90-degree path.
+	var step := (to_index - from_index + 4) % 4
+	if step == 1:
+		r.request_turn(1)
+	elif step == 3:
+		r.request_turn(-1)
+	elif step == 2:
+		r.request_reverse()

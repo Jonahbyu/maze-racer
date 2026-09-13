@@ -111,6 +111,7 @@ var _wall_edges: Array = []
 # The Gate Size height multiplier for the current build. 1.0 when the line is
 # untaken, which is exactly the height gates had before it existed.
 var _gate_height_scale := 1.0
+var _gate_girth_scale := 1.0
 
 # Which gate INDICES have been cleared. Tracked explicitly rather than inferred
 # from a marker's material: rescale_gates has to rebuild a marker's mesh and
@@ -118,11 +119,30 @@ var _gate_height_scale := 1.0
 # back off an albedo colour would make a display detail load-bearing.
 var _gates_spent := {}
 
+# Live coin nodes by cell, so a collected coin can be retired without walking
+# the child list. Keyed by cell rather than by index for the reason `gates_cleared`
+# is a list of cells: the collector knows WHERE it took a coin, not which one it
+# was in placement order.
+var _coins := {}
 
-func build(maze: Maze, palette_index: int = 0, gate_height_scale: float = 1.0) -> void:
+# Shared across every coin: one mesh and one material for what may be hundreds of
+# nodes. They are identical objects, and giving each its own would be hundreds of
+# materials for a single appearance.
+var _coin_mesh: ArrayMesh
+var _coin_material: StandardMaterial3D
+
+# Seconds since the mesh was built, driving the spin and the bob. Accumulated
+# rather than read off a wall clock so every coin in a maze stays in step.
+var _coin_clock := 0.0
+
+
+func build(maze: Maze, palette_index: int = 0, gate_height_scale: float = 1.0,
+		gate_girth_scale: float = 1.0) -> void:
 	_maze = maze
 	_gate_height_scale = maxf(0.1, gate_height_scale)
+	_gate_girth_scale = maxf(0.1, gate_girth_scale)
 	_gates_spent.clear()
+	_coins.clear()
 	_palette = Tuning.PALETTES[clampi(palette_index, 0, Tuning.PALETTES.size() - 1)]
 	_wall_edges.clear()
 
@@ -146,6 +166,7 @@ func build(maze: Maze, palette_index: int = 0, gate_height_scale: float = 1.0) -
 	_build_landmarks()
 	_build_gates()
 	_build_exit()
+	_build_coins()
 
 
 # --- Floor -------------------------------------------------------------------
@@ -534,7 +555,7 @@ func _build_gates() -> void:
 	for i in _maze.gates.size():
 		var gate: Vector2i = _maze.gates[i]
 		var marker := _make_marker(gate, Tuning.NEON_GATE,
-			Tuning.GATE_MARKER_HEIGHT * _gate_height_scale)
+			Tuning.GATE_MARKER_HEIGHT * _gate_height_scale, _gate_girth_scale)
 		# Named AFTER add_child, never before. Godot assigns a generated name on
 		# entry to the tree, so a name set beforehand is overwritten -- the trap
 		# CLAUDE.md section 12 already records for the Music autoload, arriving
@@ -570,7 +591,8 @@ func _build_exit() -> void:
 # below the walls is what the player drives through; the part above is the only
 # part visible from anywhere else, so it has to be tall enough to clear and wide
 # enough to read once it does.
-func _make_marker(cell: Vector2i, colour: Color, height_scale: float) -> MeshInstance3D:
+func _make_marker(cell: Vector2i, colour: Color, height_scale: float,
+		girth_scale: float = 1.0) -> MeshInstance3D:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = colour
 	mat.emission_enabled = true
@@ -584,7 +606,7 @@ func _make_marker(cell: Vector2i, colour: Color, height_scale: float) -> MeshIns
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 
 	var instance := MeshInstance3D.new()
-	instance.mesh = _marker_mesh(height_scale, 0.0)
+	instance.mesh = _marker_mesh(height_scale, 0.0, girth_scale)
 	instance.material_override = mat
 	instance.position = Vector3(
 		cell.x * Tuning.CELL_SIZE,
@@ -595,16 +617,27 @@ func _make_marker(cell: Vector2i, colour: Color, height_scale: float) -> MeshIns
 
 
 # The crossed-slab mesh, running from `base_scale` up to `height_scale` (both
-# multiples of WALL_HEIGHT).
+# multiples of WALL_HEIGHT), at `girth_scale` times the base width.
+#
+# Girth defaults to 1.0 so the EXIT marker is untouched by it. The exit takes
+# the same builder and must never widen: height is what separates a gate from
+# the exit at distance (GATE_MARKER_HEIGHT), and an exit that grew with the
+# player's Gate Size rank would blur a distinction section 7 keeps deliberately.
 #
 # The base is a parameter because a SPENT gate starts above the camera rather
 # than on the floor (Tuning.GATE_SPENT_BASE) -- it keeps the part that clears
 # the wall line and loses the part the eye would otherwise pass through.
-func _marker_mesh(height_scale: float, base_scale: float) -> ArrayMesh:
+func _marker_mesh(height_scale: float, base_scale: float,
+		girth_scale: float = 1.0) -> ArrayMesh:
 	var top := Tuning.WALL_HEIGHT * height_scale
 	var base := Tuning.WALL_HEIGHT * base_scale
-	var wide := Tuning.CELL_SIZE * 0.75
-	var thin := Tuning.CELL_SIZE * 0.14
+	# Girth scales BOTH slab axes, so the marker keeps its proportions instead of
+	# fattening into a cube. It is clamped to the corridor: the slab must not
+	# reach the side walls, or a wider gate reads as one with its ends buried in
+	# geometry rather than as a bigger gate.
+	var max_wide := Tuning.CELL_SIZE - 2.0 * Tuning.GATE_MARKER_WALL_CLEARANCE
+	var wide := minf(Tuning.CELL_SIZE * 0.75 * girth_scale, max_wide)
+	var thin := Tuning.CELL_SIZE * 0.14 * girth_scale
 
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -664,8 +697,9 @@ func _add_marker_slab(st: SurfaceTool, size: Vector3, base: float = 0.0) -> void
 # the new ones are added, so Godot renames the new nodes and clear_gate can
 # never find them again. Rescaling touches only the mesh on nodes that keep
 # their names, so a gate cleared before the rank was taken stays cleared.
-func rescale_gates(gate_height_scale: float) -> void:
+func rescale_gates(gate_height_scale: float, gate_girth_scale: float = 1.0) -> void:
 	_gate_height_scale = maxf(0.1, gate_height_scale)
+	_gate_girth_scale = maxf(0.1, gate_girth_scale)
 	if _maze == null:
 		return
 
@@ -681,7 +715,7 @@ func rescale_gates(gate_height_scale: float) -> void:
 		# cleared gate would drop back to eye level and wash the screen its colour.
 		var base: float = Tuning.GATE_SPENT_BASE if _gates_spent.has(i) else 0.0
 		instance.mesh = _marker_mesh(
-			Tuning.GATE_MARKER_HEIGHT * _gate_height_scale, base)
+			Tuning.GATE_MARKER_HEIGHT * _gate_height_scale, base, _gate_girth_scale)
 
 
 func clear_gate(index: int) -> void:
@@ -718,7 +752,8 @@ func clear_gate(index: int) -> void:
 	# Same height as the live marker, so clearing a gate changes its COLOUR and
 	# nothing else -- a spent gate that shrank would read as a different object.
 	instance.mesh = _marker_mesh(
-		Tuning.GATE_MARKER_HEIGHT * _gate_height_scale, Tuning.GATE_SPENT_BASE)
+		Tuning.GATE_MARKER_HEIGHT * _gate_height_scale, Tuning.GATE_SPENT_BASE,
+		_gate_girth_scale)
 
 
 # --- Landmarks (docs/specs/landmarks.md) -------------------------------------
@@ -735,6 +770,132 @@ func clear_gate(index: int) -> void:
 # turning it up flattens the near wall into a colour field (CLAUDE.md section
 # 12) -- scattering light sources through the maze would undo that tuning
 # everywhere at once.
+# --- Coins (CLAUDE.md section 5b) --------------------------------------------
+
+# One node per coin, because coins MOVE.
+#
+# Every other repeated object in the maze -- walls, grid lines, landmarks -- is
+# baked into a shared surface precisely because it is static. A coin spins and
+# bobs, so it needs a transform of its own each frame, and that means a node.
+# The mesh and material are shared, so the cost is one draw call per coin and
+# not one material per coin.
+#
+# A maze carries tens of coins rather than the thousands of cells the walls do,
+# so this is affordable where the same approach would not be for walls.
+func _build_coins() -> void:
+	if _maze.coins.is_empty():
+		return
+
+	_coin_mesh = _make_coin_mesh()
+	_coin_material = _make_coin_material()
+
+	for cell in _maze.coins:
+		var instance := MeshInstance3D.new()
+		instance.mesh = _coin_mesh
+		instance.material_override = _coin_material
+		instance.position = _coin_position(cell, 0.0)
+		add_child(instance)
+		_coins[cell] = instance
+
+
+# Spin and bob every live coin.
+#
+# The spin is what separates a coin from a landmark at a glance: both are small
+# bright objects standing in a corridor, and at 8x a static one is read as
+# scenery. A turning disc is read as a thing to take.
+func _process(delta: float) -> void:
+	if _coins.is_empty():
+		return
+	_coin_clock += delta
+	var yaw := _coin_clock * Tuning.COIN_SPIN_RATE
+	for cell in _coins:
+		var node: MeshInstance3D = _coins[cell]
+		node.position = _coin_position(cell, _coin_clock)
+		node.rotation.y = yaw
+
+
+# Where a coin sits this frame: the cell centre, lifted clear of the floor and
+# bobbing.
+#
+# The phase is offset by the cell so neighbouring coins are not in lockstep -- a
+# row of them rising and falling as one reads as a single animated object rather
+# than as several separate things.
+func _coin_position(cell: Vector2i, t: float) -> Vector3:
+	var phase := float(cell.x * 7 + cell.y * 13)
+	var bob: float = sin(t * Tuning.COIN_BOB_RATE + phase) * Tuning.COIN_BOB_HEIGHT
+	return Vector3(
+		cell.x * Tuning.CELL_SIZE,
+		Tuning.COIN_HOVER_HEIGHT + bob,
+		cell.y * Tuning.CELL_SIZE
+	)
+
+
+# A short cylinder standing on edge, so the trailing camera sees a disc.
+#
+# Built lying in the XY plane and spun about Y, which is what makes the coin
+# alternately face the player and present its edge -- the read that says "coin"
+# rather than "glowing pillar". A disc lying FLAT on the floor would be a line
+# from the camera's low angle, which is the same mistake the wall-mounted Path
+# Indicator panels made (section 7).
+func _make_coin_mesh() -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	var segments := 16
+	var r := Tuning.COIN_RADIUS
+	var h := Tuning.COIN_THICKNESS * 0.5
+
+	for i in segments:
+		var a0 := TAU * float(i) / float(segments)
+		var a1 := TAU * float(i + 1) / float(segments)
+		var p0 := Vector3(cos(a0) * r, sin(a0) * r, 0.0)
+		var p1 := Vector3(cos(a1) * r, sin(a1) * r, 0.0)
+
+		# Front and back faces, wound outward from their own side.
+		_add_tri(st, Vector3(0.0, 0.0, h), p0 + Vector3(0, 0, h), p1 + Vector3(0, 0, h))
+		_add_tri(st, Vector3(0.0, 0.0, -h), p1 + Vector3(0, 0, -h), p0 + Vector3(0, 0, -h))
+		# The rim.
+		_add_quad(st, p0 + Vector3(0, 0, h), p1 + Vector3(0, 0, h),
+			p1 + Vector3(0, 0, -h), p0 + Vector3(0, 0, -h))
+
+	st.generate_normals()
+	return st.commit()
+
+
+func _add_tri(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3) -> void:
+	st.add_vertex(a)
+	st.add_vertex(b)
+	st.add_vertex(c)
+
+
+# Unshaded and emissive, like every other neon object in the maze. A coin has to
+# read from down a corridor where the headlight does not reach.
+func _make_coin_material() -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Tuning.NEON_COIN
+	mat.emission_enabled = true
+	mat.emission = Tuning.NEON_COIN
+	mat.emission_energy_multiplier = 2.0
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	return mat
+
+
+# Retire a collected coin.
+#
+# Removed outright rather than dimmed like a spent gate. A spent gate is kept
+# because it is a LANDMARK -- tall, on the solve path, and the best evidence in
+# the game that a corridor has been driven (section 7). A coin is small, sits
+# anywhere, and carries no such information; a dimmed one would only be a thing
+# the player keeps trying to collect.
+func clear_coin(cell: Vector2i) -> void:
+	var node: MeshInstance3D = _coins.get(cell)
+	if node == null:
+		return
+	_coins.erase(cell)
+	remove_child(node)
+	node.queue_free()
+
+
 func _build_landmarks() -> void:
 	if _maze.landmarks.is_empty():
 		return

@@ -196,6 +196,7 @@ var _panel: SettingsPanel = null
 var _marker_picker: MarkerPicker = null
 var _compendium: UpgradeCompendium = null
 var _maze_colours: MazeColours = null
+var _shop: Shop = null
 
 
 func _ready() -> void:
@@ -463,6 +464,11 @@ const MENUS := {
 		"items": [
 			{"label": "MARKER", "action": "marker"},
 			{"label": "MAZE COLOURS", "action": "maze_colours"},
+			# The shop sells exactly what the two rows above wear, so it belongs
+			# beside them rather than in OTHER: a player who opens
+			# CUSTOMIZATION to change their marker and finds it locked is one
+			# press from the screen that sells it.
+			{"label": "SHOP", "action": "shop"},
 		],
 	},
 	# Everything that is neither a run nor a cosmetic. SETTINGS lives here, and
@@ -575,6 +581,7 @@ func _do_action(action: String) -> void:
 		"play_monthly": _on_play(Tuning.Board.MONTHLY)
 		"marker": _on_marker()
 		"maze_colours": _on_maze_colours()
+		"shop": _on_shop()
 		"upgrades": _on_upgrades()
 		"settings": _on_settings()
 		"trailer": _on_trailer()
@@ -1116,6 +1123,23 @@ func _on_maze_colours_closed() -> void:
 		_maze_colours.queue_free()
 		_maze_colours = null
 	_focus_button("MAZE COLOURS")
+
+
+func _on_shop() -> void:
+	if _shop != null:
+		return
+	var screen := Shop.new()
+	screen.closed.connect(_on_shop_closed)
+	_shop = screen
+	add_child(screen)
+	screen.focus_first()
+
+
+func _on_shop_closed() -> void:
+	if _shop != null:
+		_shop.queue_free()
+		_shop = null
+	_focus_button("SHOP")
 
 
 func _on_settings() -> void:

@@ -24,11 +24,14 @@
 extends Node
 
 signal unlocked(ids: Array)
+# The shop wallet changed -- earned at the end of a run, or spent in the shop.
+signal coins_changed(total: int)
 
 # Beside the preferences rather than in a file of its own: one place a player
 # can clear, and one file to keep in step. Settings owns the same path.
 const CONFIG_PATH := "user://settings.cfg"
 const SECTION := "unlocks"
+const WALLET_SECTION := "wallet"
 
 # Ids are NAMESPACED so one earned set covers shapes, colours and decals without
 # three parallel dictionaries to keep in step -- the failure section 6 records
@@ -379,12 +382,360 @@ const ACHIEVEMENTS := {
 		"requirement": "Collect every gate in a maze",
 		"grants": "decal:split",
 	},
+
+	# --- The six non-blade shapes -----------------------------------------
+	#
+	# Each sits on an axis no other entry uses, which is the rule the collision
+	# sweep enforces: two achievements firing on one condition unlock as a pair
+	# and spend two entries to ask one question.
+	#
+	# Two of them need a helper that did not exist -- total run time and total
+	# turn volume -- and both are DERIVED from what Score already records
+	# rather than being new fields on it. Growing Score to suit an achievement
+	# is the thing section 10 forbids outright.
+	"the_full_hour": {
+		"label": "THE FULL HOUR",
+		"requirement": "Clear all five mazes in under 8 minutes total",
+		"grants": "shape:teardrop",
+	},
+	"ironclad": {
+		"label": "IRONCLAD",
+		"requirement": "Clear all five mazes crashing no more than twice",
+		"grants": "shape:keyhole",
+	},
+	"groundwork": {
+		"label": "GROUNDWORK",
+		"requirement": "Take 2,000 turns of any kind in one run",
+		"grants": "shape:hammer",
+	},
+	"terminal_velocity": {
+		"label": "TERMINAL VELOCITY",
+		"requirement": "Reach the 10x speed cap",
+		"grants": "shape:shuttle",
+	},
+	"three_ways": {
+		"label": "THREE WAYS",
+		"requirement": "Bank a maze at a x6 time multiplier or better",
+		"grants": "shape:trident",
+	},
+	"landfall": {
+		"label": "LANDFALL",
+		"requirement": "Clear all five mazes taking every gate in each",
+		"grants": "shape:beacon",
+	},
+
+	# --- The ten object shapes --------------------------------------------
+	#
+	# Every entry sits at a threshold no other achievement uses, which the
+	# collision sweep enforces by measurement rather than by inspection. Where
+	# an axis was already occupied the bound is a genuinely different standard
+	# rather than a near-miss -- LOCKSMITH at four fully-gated mazes sits
+	# between GATECRASHER's three and LANDFALL's five, and each is a distinct
+	# statement about how completely a run was driven.
+	#
+	# None of them needed a new field on Score. That is the constraint section
+	# 10 sets: pick a requirement the existing data supports, rather than
+	# growing a rules-layer class to suit a cosmetic.
+	"locksmith": {
+		"label": "LOCKSMITH",
+		"requirement": "Collect every gate in four mazes",
+		"grants": "shape:key",
+	},
+	"holdfast": {
+		"label": "HOLDFAST",
+		"requirement": "Clear all five mazes without crashing",
+		"grants": "shape:anchor",
+	},
+	"fine_print": {
+		"label": "FINE PRINT",
+		"requirement": "Clear a maze in under 45 seconds",
+		"grants": "shape:nib",
+	},
+	"furrow": {
+		"label": "FURROW",
+		"requirement": "Re-cross 1,000 cells in one run",
+		"grants": "shape:plough",
+	},
+	"barbed": {
+		"label": "BARBED",
+		"requirement": "Escape 200 scrapes in one run",
+		"grants": "shape:hook",
+	},
+	"clean_sweep": {
+		"label": "CLEAN SWEEP",
+		"requirement": "Clear all five mazes without re-crossing a cell",
+		"grants": "shape:comb",
+	},
+	"live_wire": {
+		"label": "LIVE WIRE",
+		"requirement": "Bank a maze at a x8 time multiplier or better",
+		"grants": "shape:bolt",
+	},
+	"bulwark": {
+		"label": "BULWARK",
+		"requirement": "Clear all five mazes without touching a wall",
+		"grants": "shape:shield",
+	},
+	"pinpoint": {
+		"label": "PINPOINT",
+		"requirement": "Bank 250,000 points in a single maze",
+		"grants": "shape:pin",
+	},
+	"scaffold": {
+		"label": "SCAFFOLD",
+		"requirement": "Finish a run holding 24 upgrade lines",
+		"grants": "shape:bracket",
+	},
+
+	# --- The twenty tool, craft and mark shapes ----------------------------
+	#
+	# Forty more cosmetics need forty more achievements, and the binding
+	# constraint is not naming them -- it is that NO TWO MAY FIRE ON THE SAME
+	# CONDITION, swept over randomised runs. Sixty-odd thresholds on crashes,
+	# scrapes, turns, speed, score and HP were already spoken for, so several of
+	# these sit on quantities nothing had read yet: the WORST multiplier banked
+	# rather than the best, and the SPREAD between a run's fastest and slowest
+	# maze.
+	#
+	# Both are derived from maze_results, which Score already keeps. Section 10
+	# forbids growing Score a field to satisfy an achievement, and forty new
+	# entries is exactly the pressure that rule exists to resist.
+	"draughtsman": {
+		"label": "DRAUGHTSMAN",
+		"requirement": "Clear a run with every maze above a x2 multiplier",
+		"grants": "shape:compass",
+	},
+	"hew": {
+		"label": "HEW",
+		"requirement": "Make 1,500 clean turns in one run",
+		"grants": "shape:axe",
+	},
+	"forge": {
+		"label": "FORGE",
+		"requirement": "Clear a run scoring 600,000",
+		"grants": "shape:anvil",
+	},
+	"spanner": {
+		"label": "SPANNER",
+		"requirement": "Take a single upgrade line to rank 7",
+		"grants": "shape:wrench",
+	},
+	"firebrand": {
+		"label": "FIREBRAND",
+		"requirement": "Reach 9.5x speed",
+		"grants": "shape:torch",
+	},
+	"helm": {
+		"label": "HELM",
+		"requirement": "Clear a run with no maze over 120 seconds",
+		"grants": "shape:rudder",
+	},
+	"windward": {
+		"label": "WINDWARD",
+		"requirement": "Clear two mazes in under 75 seconds each",
+		"grants": "shape:sail",
+	},
+	"airborne": {
+		"label": "AIRBORNE",
+		"requirement": "Clear a run in under 6 minutes of driving",
+		"grants": "shape:glider",
+	},
+	"headway": {
+		"label": "HEADWAY",
+		"requirement": "Clear two mazes in under 60 seconds each",
+		"grants": "shape:prow",
+	},
+	"sounding": {
+		"label": "SOUNDING",
+		"requirement": "Clear a run re-crossing 20 cells or fewer",
+		"grants": "shape:fin",
+	},
+	"groundbreaker": {
+		"label": "GROUNDBREAKER",
+		"requirement": "Re-cross 2,000 cells in one run",
+		"grants": "shape:spade",
+	},
+	"coronation": {
+		"label": "CORONATION",
+		"requirement": "Clear a run banking 400,000 in one maze",
+		"grants": "shape:crown",
+	},
+	"vigil": {
+		"label": "VIGIL",
+		"requirement": "Clear a run finishing within 5 HP of full",
+		"grants": "shape:lantern",
+	},
+	"monument": {
+		"label": "MONUMENT",
+		"requirement": "Score 1,500,000 in one run",
+		"grants": "shape:obelisk",
+	},
+	"libation": {
+		"label": "LIBATION",
+		"requirement": "Clear a run with every maze banking over 120,000",
+		"grants": "shape:chalice",
+	},
+	"insertion": {
+		"label": "INSERTION",
+		"requirement": "Bank a maze at a x5 time multiplier",
+		"grants": "shape:caret",
+	},
+	"fastener": {
+		"label": "FASTENER",
+		"requirement": "Finish a run holding 26 upgrade lines",
+		"grants": "shape:rivet",
+	},
+	"gearwork": {
+		"label": "GEARWORK",
+		"requirement": "Make 2,000 clean turns in one run",
+		"grants": "shape:ratchet",
+	},
+	"reckoning": {
+		"label": "RECKONING",
+		"requirement": "Collect every gate in two mazes",
+		"grants": "shape:tally",
+	},
+	"warding": {
+		"label": "WARDING",
+		"requirement": "Clear a run crashing five times or fewer",
+		"grants": "shape:sigil",
+	},
+
+	# --- The twenty added patterns -----------------------------------------
+	#
+	# The decals lean on the SAME axes as the shapes above rather than new ones,
+	# at different depths -- 900 clean turns against 1,500, three crashes
+	# against six. That is deliberate: a pattern is a smaller reward than a
+	# silhouette, so it should sit at a nearer milestone on a road the player is
+	# already walking, and it keeps each axis a ladder rather than a scatter.
+	"triple_time": {
+		"label": "TRIPLE TIME",
+		"requirement": "Make 900 clean turns in one run",
+		"grants": "decal:triband",
+	},
+	"hairline": {
+		"label": "HAIRLINE",
+		"requirement": "Clear a maze in under 40 seconds",
+		"grants": "decal:pinstripe",
+	},
+	"cant": {
+		"label": "CANT",
+		"requirement": "Reach 6.5x speed",
+		"grants": "decal:wedges",
+	},
+	"rungs": {
+		"label": "RUNGS",
+		"requirement": "Finish a run holding 10 upgrade lines",
+		"grants": "decal:ladder",
+	},
+	"fluted": {
+		"label": "FLUTED",
+		"requirement": "Escape 75 scrapes in one run",
+		"grants": "decal:scallop",
+	},
+	"machined": {
+		"label": "MACHINED",
+		"requirement": "Clear a run crashing three times or fewer",
+		"grants": "decal:shoulders",
+	},
+	"toothed": {
+		"label": "TOOTHED",
+		"requirement": "Escape 150 scrapes in one run",
+		"grants": "decal:serrate",
+	},
+	"cinched": {
+		"label": "CINCHED",
+		"requirement": "Clear a run in under 7 minutes of driving",
+		"grants": "decal:waist",
+	},
+	"even_split": {
+		"label": "EVEN SPLIT",
+		"requirement": "Clear a run with under a minute between your fastest and slowest maze",
+		"grants": "decal:quarters",
+	},
+	"broad_gauge": {
+		"label": "BROAD GAUGE",
+		"requirement": "Score 300,000 in one run",
+		"grants": "decal:rails",
+	},
+	"sinistral": {
+		"label": "SINISTRAL",
+		"requirement": "Re-cross 250 cells in one run",
+		"grants": "decal:offset",
+	},
+	"backdraft": {
+		"label": "BACKDRAFT",
+		"requirement": "Crash six times in one run",
+		"grants": "decal:arrows",
+	},
+	"one_cut": {
+		"label": "ONE CUT",
+		"requirement": "Bank a maze at a x4.5 time multiplier",
+		"grants": "decal:delta_cut",
+	},
+	"fletched": {
+		"label": "FLETCHED",
+		"requirement": "Reach 7.5x speed",
+		"grants": "decal:nock",
+	},
+	"beaked": {
+		"label": "BEAKED",
+		"requirement": "Clear three mazes in under 100 seconds each",
+		"grants": "decal:beak",
+	},
+	"collared": {
+		"label": "COLLARED",
+		"requirement": "Take a single upgrade line to rank 3",
+		"grants": "decal:collar",
+	},
+	"both_ends": {
+		"label": "BOTH ENDS",
+		"requirement": "Clear a run finishing within 15 HP of full",
+		"grants": "decal:bookend",
+	},
+	"reticle": {
+		"label": "RETICLE",
+		"requirement": "Bank 180,000 points in a single maze",
+		"grants": "decal:crosshair",
+	},
+	"lattice": {
+		"label": "LATTICE",
+		"requirement": "Finish a run holding 14 upgrade lines",
+		"grants": "decal:grid",
+	},
+	"barbwork": {
+		"label": "BARBWORK",
+		"requirement": "Crash three times in one run",
+		"grants": "decal:harpoon",
+	},
 }
 
 
 # Earned cosmetic ids. Keyed by the namespaced id, never by achievement -- what
 # the picker asks is "may I offer this", and an achievement is only how it got
 # there.
+# The shop wallet: coins banked across every run ever played.
+#
+# The one piece of state here that is not a cosmetic, and it is allowed for the
+# same reason the cosmetics are: NOTHING IN THE SIMULATION MAY READ IT. A run
+# starts at zero coins held whatever the wallet says, so this can never change
+# how a run plays -- it buys colours and icons and nothing else. The line
+# section 10 draws holds: if a purchase would change a number the racer reads, it
+# does not belong here.
+#
+# Banked per MAZE rather than per run (Racer.bank_coins), so a run that ends in a
+# death still keeps what its finished mazes earned.
+var coins := 0
+
+# When true, nothing is written to disk.
+#
+# Set by harnesses and instruments, which construct this script directly rather
+# than reaching the autoload. Without it a test that buys a cosmetic writes to
+# the PLAYER's settings.cfg -- granting them items and spending coins they never
+# earned. That is the rule section 12 records for TouchShot and MarkerPickerShot
+# in a third place: a tool must not write the state it is inspecting.
+var suppress_save := false
+
 var earned := {}
 
 
@@ -582,6 +933,62 @@ func _met(aid: String, score: Score, upgrades: Upgrades, maze_index: int,
 		"deep_pockets": return _deepest_rank(upgrades) >= 5
 		"generalist": return drove and upgrades.started_line_count() >= 20
 		"the_scenic_route": return score.repeat_cells >= 500
+		"the_full_hour": return cleared and _total_time(score) < 480.0
+		"ironclad": return cleared and score.crashes <= 2
+		"groundwork": return score.clean_turns + score.scraped_turns >= 2000
+		"terminal_velocity": return score.peak_speed >= Tuning.SPEED_CAP
+		"three_ways": return _best_multiplier(score) >= 6.0
+		"landfall": return cleared and _mazes_fully_gated(score) >= 5
+		"locksmith": return _mazes_fully_gated(score) >= 4
+		"holdfast": return cleared and score.crashes == 0
+		"fine_print": return _fastest_maze(score) < 45.0
+		"furrow": return score.repeat_cells >= 1000
+		"barbed": return score.scraped_turns >= 200
+		"clean_sweep": return cleared and score.repeat_cells == 0
+		"live_wire": return _best_multiplier(score) >= 8.0
+		"bulwark": return cleared and score.scraped_turns == 0 and score.crashes == 0
+		"pinpoint": return _best_maze_score(score) >= 250000.0
+		"scaffold": return drove and upgrades.started_line_count() >= 24
+		"draughtsman": return cleared and _worst_multiplier(score) >= 2.0
+		"hew": return score.clean_turns >= 1500
+		"forge": return cleared and score.banked >= 600000.0
+		"spanner": return drove and _deepest_rank(upgrades) >= 7
+		"firebrand": return score.peak_speed >= 9.5
+		"helm": return cleared and _slowest_maze(score) <= 120.0
+		"windward": return _mazes_under(score, 75.0) >= 2
+		"airborne": return cleared and _total_time(score) < 360.0
+		"headway": return _mazes_under(score, 60.0) >= 2
+		"sounding": return cleared and score.repeat_cells <= 20
+		"groundbreaker": return score.repeat_cells >= 2000
+		"coronation": return cleared and _best_maze_score(score) >= 400000.0
+		"vigil": return cleared and hp >= Tuning.MAX_HP - 5
+		"monument": return score.banked >= 1500000.0
+		"libation": return cleared and _worst_maze_score(score) > 120000.0
+		"insertion": return _best_multiplier(score) >= 5.0
+		"fastener": return drove and upgrades.started_line_count() >= 26
+		"gearwork": return score.clean_turns >= 2000
+		"reckoning": return _mazes_fully_gated(score) >= 2
+		"warding": return cleared and score.crashes <= 5
+		"triple_time": return score.clean_turns >= 900
+		"hairline": return _fastest_maze(score) < 40.0
+		"cant": return score.peak_speed >= 6.5
+		"rungs": return drove and upgrades.started_line_count() >= 10
+		"fluted": return score.scraped_turns >= 75
+		"machined": return cleared and score.crashes <= 3
+		"toothed": return score.scraped_turns >= 150
+		"cinched": return cleared and _total_time(score) < 420.0
+		"even_split": return cleared and _maze_time_spread(score) <= 60.0
+		"broad_gauge": return score.banked >= 300000.0
+		"sinistral": return score.repeat_cells >= 250
+		"backdraft": return score.crashes >= 6
+		"one_cut": return _best_multiplier(score) >= 4.5
+		"fletched": return score.peak_speed >= 7.5
+		"beaked": return _mazes_under(score, 100.0) >= 3
+		"collared": return drove and _deepest_rank(upgrades) >= 3
+		"both_ends": return cleared and hp >= Tuning.MAX_HP - 15
+		"reticle": return _best_maze_score(score) >= 180000.0
+		"lattice": return drove and upgrades.started_line_count() >= 14
+		"barbwork": return score.crashes >= 3
 	return false
 
 
@@ -601,6 +1008,22 @@ func _met(aid: String, score: Score, upgrades: Upgrades, maze_index: int,
 
 # The quickest banked maze, in seconds. INF when nothing was banked, so every
 # "under N seconds" test fails on an empty run rather than passing.
+# The whole run's driving time, summed from the banked mazes.
+#
+# Derived rather than stored: Score already records each maze's time, and
+# section 10 forbids growing Score a field to satisfy an achievement -- pick a
+# requirement the existing data supports.
+#
+# It is a SUM of banked mazes, so a run that ended early cannot satisfy an
+# "under N total" test by having driven almost nothing; every requirement using
+# it is gated on `cleared` as well, which is what makes the bound meaningful.
+func _total_time(score: Score) -> float:
+	var total := 0.0
+	for result in score.maze_results:
+		total += float(result.get("time", 0.0))
+	return total
+
+
 func _fastest_maze(score: Score) -> float:
 	var best := INF
 	for result in score.maze_results:
@@ -700,6 +1123,105 @@ func _took_every_gate(score: Score) -> bool:
 	return false
 
 
+# The LOWEST multiplier any banked maze earned.
+#
+# _best_multiplier asks whether a run had one great maze; this asks whether it
+# had no bad one, which is a different question about the same data and is the
+# only axis left on the multiplier once the best is spoken for at 3, 4, 4.5, 5,
+# 6 and 8.
+#
+# Zero on an empty run, so a "worst above N" test fails rather than passing by
+# vacuous truth -- the rule every helper here follows.
+func _worst_multiplier(score: Score) -> float:
+	if score.maze_results.is_empty():
+		return 0.0
+	var worst := INF
+	for result in score.maze_results:
+		worst = minf(worst, float(result.get("multiplier", 0.0)))
+	return worst
+
+
+# The gap between the quickest and slowest banked maze, in seconds.
+#
+# A CONSISTENCY measure rather than a speed one: a run that solves every maze in
+# 70 seconds and one that alternates 40 and 140 can share a total, a fastest and
+# a slowest, and are not the same run. Nothing else in the table reads the two
+# together.
+#
+# INF on an empty run so a "spread under N" test cannot pass on no mazes at all.
+func _maze_time_spread(score: Score) -> float:
+	if score.maze_results.is_empty():
+		return INF
+	return _slowest_maze(score) - _fastest_maze(score)
+
+
+# What a cosmetic costs in the shop, by kind.
+#
+# Priced by how much a kind CHANGES the marker, not by how many exist. A colour
+# is a repaint; a shape is a different silhouette and is the half of the marker
+# that answers facing (section 12), so it is the dearest. A palette restyles a
+# whole maze and sits between them.
+#
+# A run banks somewhere under 20 coins when driven well, so a shape is several
+# good runs and a colour is roughly one. The shop is meant to be a reason to
+# come back, not a catalogue cleared in an evening.
+const PRICES := {
+	KIND_COLOUR: 12,
+	KIND_DECAL: 18,
+	KIND_PALETTE: 25,
+	KIND_SHAPE: 40,
+}
+
+
+# What `id` costs, or 0 if it is not purchasable.
+static func price_of(id: String) -> int:
+	var parts := id.split(":")
+	if parts.size() != 2:
+		return 0
+	return int(PRICES.get(parts[0], 0))
+
+
+# Credit the wallet. Called from Game._post_run with what the run's cleared
+# mazes banked.
+func add_coins(amount: int) -> void:
+	if amount <= 0:
+		return
+	coins += amount
+	_save()
+	coins_changed.emit(coins)
+
+
+func can_afford(id: String) -> bool:
+	var price := price_of(id)
+	return price > 0 and coins >= price
+
+
+# Buy a cosmetic. Returns whether the purchase happened.
+#
+# The shop is a SECOND path to a cosmetic, never a replacement for the
+# achievement that grants it: achievements still award for free, and buying
+# something already earned is refused rather than charged. Both routes write the
+# same `earned` set, so nothing downstream -- the pickers, the paired-table
+# assertions -- has to know which way an item arrived.
+func buy(id: String) -> bool:
+	if not cosmetic_exists(id):
+		return false
+	# Already owned, by either route. Refused rather than charged: taking money
+	# for something the player has is the one outcome a shop must never produce.
+	if is_unlocked(id):
+		return false
+	var price := price_of(id)
+	if price <= 0 or coins < price:
+		return false
+
+	coins -= price
+	earned[id] = true
+	_save()
+	coins_changed.emit(coins)
+	unlocked.emit([id])
+	return true
+
+
 func _load() -> void:
 	var config := ConfigFile.new()
 	# No file on first run is the normal case, not an error -- a fresh player
@@ -708,14 +1230,21 @@ func _load() -> void:
 		return
 	if not config.has_section(SECTION):
 		return
+	# The wallet lives in its own section rather than among the earned ids: this
+	# section is a set of id -> true, and a number sitting in it would be read
+	# back as a cosmetic called "coins" by anything walking the keys.
+	coins = int(config.get_value(WALLET_SECTION, "coins", 0))
 	for id in config.get_section_keys(SECTION):
 		if bool(config.get_value(SECTION, id, false)):
 			earned[id] = true
 
 
 func _save() -> void:
+	if suppress_save:
+		return
 	var config := ConfigFile.new()
 	config.load(CONFIG_PATH)   # keep the preference sections
 	for id in earned:
 		config.set_value(SECTION, String(id), true)
+	config.set_value(WALLET_SECTION, "coins", coins)
 	config.save(CONFIG_PATH)

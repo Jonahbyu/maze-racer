@@ -257,8 +257,27 @@ A pivot is not a continuous motion. Facing changes in one frame, and the drawn p
 move with it. Trying to *hide* that discontinuity was the wrong instinct — the scrape-escape
 measurement above shows there is no formulation that removes it. Freezing on it turns the
 jump into **a beat the player can see**: the world holds still, the camera swings onto the
-new heading at **3.5x** its normal rate, and travel resumes once the view agrees with the
-facing. A freeze the camera does not spend would just be a stutter.
+new heading at the player's own dialled rate, and travel resumes once the view agrees with
+the facing.
+
+**The camera used to swing 3.5× faster during the freeze, and that multiplier has been
+removed.** The reasoning was that a freeze the camera does not spend is just a stutter — but
+measured, the cure was far worse: at the default dial the boost closed **70% of the whole
+turn in a single frame**, and at dials 0–5 a literal 100%. The camera lurched almost the
+entire way round on frame one and then crept through the remainder, which is precisely the
+"small jolt when turning" that was reported.
+
+**It could not be smoothed, only removed.** Decaying the boost rather than switching it off
+was tried first and genuinely helped at the slow end — worst frame-to-frame slowdown 3.90×
+→ 1.14× — and did *nothing* at the default, because there the lurch **is** the boost rather
+than the way it ends. Measured at the default dial: 3.58× before, **1.25× after**, which is
+just the natural shape of an exponential ease.
+
+**The stutter it guarded against does not materialise.** On the plain dial rate the default
+still completes **73.8%** of its swing inside the freeze, so the hold is still doing the
+catching-up. The slow settings finish well after it, which is what the player chose them for.
+`SceneTest` asserts no frame breaks the swing's velocity; verified by restoring the
+multiplier, where it fails at `worst frame-to-frame slowdown 3.33x`.
 
 It also pays for itself against the ramp. At 8x a corner arrives and is gone inside 125ms;
 the freeze buys a **fixed, speed-independent** moment to read the new corridor, which is the
@@ -269,6 +288,44 @@ pressure of §3 — the speed ramp advances throughout, because a freeze that st
 make cornering a way to duck the game's central mechanic. And the run timer advances, so the
 freeze is a real cost in the currency §8 says the player is fighting. Snap Turn (§7) buys it
 back down.
+
+**The MARKER swings too, and it used to be the one thing that did not.** The camera eased
+onto a new heading from the start; the arrow under it took `racer.facing` directly, so it
+rotated 90° in a **single frame** while the view it sits in glided over many. Measured on a
+maze-1 autopilot: a worst per-frame marker step of **180.00°** against the camera's 26.25°,
+and 26 such flips in 2000 frames. So "the camera transition is smooth" was already true and
+the complaint was still right — **what teleports is the arrow, not the eye**, and a marker
+snapping under a gliding camera reads as the whole world jumping.
+
+This is the `LANE_TURN_KICK_RATE` lesson (§12) on the rotational axis. That constant exists
+because applying the lateral kick as one step made it *"a second snap stapled to the 90°
+snap"* — this is the 90° snap it was stapled to, and it is smoothed the same way: by easing
+a **display** value while `facing` still flips in one frame, so no rule can see it.
+
+**The rate scales with the angle remaining, which is what makes a 180 resolve FASTER in wall
+time than a 90** — 159ms against 186ms, despite covering twice the ground. A plain
+exponential ease is the opposite: fastest at the start and crawling at the end, so the last
+few degrees of a reversal would take as long as the first sixty, and `REVERSE_FREEZE` is only
+1.6× `TURN_FREEZE` — a 180 easing at the 90's rate would still be swinging after the hold
+released.
+
+**It deliberately does NOT take `TURN_FREEZE_CAM_MULTIPLIER`.** That 3.5× exists so the
+*camera* can catch up to a pivot it was not present for; the marker **is** the thing that
+pivoted, so it has nothing to catch up to. Applying it anyway drove the per-frame step
+straight into its own clamp — measured, a 90 closed **100% of its angle in one frame** at
+every rate from 14 upward, which is the snap the whole change removes, reintroduced by the
+multiplier.
+
+**Tuned against the FIRST FRAME's step, not the total duration**, because the first frame is
+what the eye reads as a snap. At `MARKER_YAW_RATE` 18 the opening frame of a 180 covered
+**86°** — a near-instant half-flip wearing a smaller number. At 12 it covers 49°, and the
+swing measures as a clean 22-frame deceleration: `48.6, 33.0, 23.4, 17.2, 12.9, 9.8, …, 0.2`
+degrees per frame, where it was previously one 180° step.
+
+`SceneTest` asserts it by driving real `_process` calls and reading `_marker.rotation` —
+never by re-deriving the curve locally, which is the trap the camera-dial check one function
+up already records. Verified by restoring the direct assignment: it fails at
+`biggest step 90.0 deg of a 90 deg swing`.
 
 **It consumes only as much of the frame as it needs.** Swallowing the whole `delta` and
 returning was wrong twice: a 0.10s freeze ends *inside* the frame that crosses it but still
@@ -616,6 +673,167 @@ on the route ahead, which is the same line the wall indicator was itself careful
 end may be left bare, and every dead end the seeking autopilot actually drives into must
 carry a landmark. The two halves catch different failures — the placement pass can list a
 cell the mesh builder never emits.
+
+---
+
+---
+
+## 5b. Coins
+
+Small gold discs, floating and slowly spinning, scattered through every maze.
+Each one held raises the **speed floor by +0.05x**, up to a cap of **20** — a full
+purse is +1.00x. They are also the shop's currency (§7b).
+
+| | |
+|---|---|
+| Bonus per coin | +0.05x on the speed **floor** |
+| Cap | 20 held, **falling by 1 on every crash**, floored at 5 |
+| On a crash | keep **half, rounded down** |
+| Banked | on **clearing a maze**, never on a death |
+| Placement | ignores the solve path, the distance field, the gates and the exit |
+
+### It is the FLOOR, not the ramp
+
+The ramp is the game's central pressure (§3) and Momentum is already the line
+that prices it; a currency that accelerated the climb would be a second Momentum
+with no wall-contact reset to pay for it. The floor is the number a crash
+**resets to**, so coins buy back exactly what a crash takes away — which is what
+makes losing half of them on a crash legible rather than arbitrary.
+
+It is additive on top of Base Speed ranks, so the two compound. **Every rule that
+needs a floor reads `Racer.speed_floor()`**, never `Upgrades.speed_floor()` — the
+two answers differ the moment a coin is held, and a rule still reading the
+upgrade floor would let speed bleed below what the coins pay for. `Upgrades`
+keeps its own untouched: it knows nothing about coins, and the card text and the
+compendium bar are still right to read it.
+
+### The cap ratchets down, and that is the only permanent cost
+
+Halving the purse is a setback the player drives back out of in a minute.
+**A crash also takes a point off the cap for the rest of the run**, and that never
+returns — so a crash-heavy run is permanently capable of less, and the twentieth
+coin belongs only to someone who has not crashed at all. It is the ratchet the
+rest of the coin economy lacks.
+
+**The bonus reads against the LIVE cap.** A crash that drops the cap below what is
+held stops paying for the surplus immediately; without that the cap would be a
+claim the game never enforced. The surplus is **unpaid, never destroyed** — it
+stays in the purse and stays bankable, because it is money the player genuinely
+collected. It floors at 5 rather than 0, or a run could reach a state where every
+coin still drawn in the world is uncollectable — the same "visible and
+unreachable" failure the sealed-pocket exclusion avoids.
+
+Halving rounds **down**: 9 becomes 4, not 5. A crash already costs HP, the parked
+time, the speed reset and 1000 points; coins are the fifth cost, and the only one
+the player watches accumulate **before** they pay it, which is what makes a full
+purse feel worth protecting.
+
+### Banking is per MAZE, which is what survives a bad ending
+
+**Clearing a maze commits the purse to the shop wallet.** A death never does. So a
+player who clears maze 1 holding 10 and then dies in maze 2 with an empty purse
+still keeps those 10. Banking only at the end of a run would mean a death wiped
+everything four mazes of driving had earned.
+
+**Banking does not spend.** The coins keep paying their speed bonus for the rest of
+the run — they are spent money in the shop's ledger and a live resource in the
+maze, and the whole point of banking per maze is that the player never has to
+choose between the two.
+
+Every run starts with an **empty purse** whatever the wallet holds, which is what
+keeps the shop out of the simulation entirely: banked coins buy cosmetics and can
+never make a run easier.
+
+### Placement ignores routing, exactly as landmarks do
+
+A coin is visible from a distance and is worth detouring for, so a currency that
+preferred the optimal route would be telling the player which way to go — and
+Path Indicator, Gate Compass and Golden Trail are **paid** lines sold on answering
+exactly that. Coins say *there is value here*, never *the exit is this way*.
+
+What that buys is the decision the coin exists to create: **a coin down a dead end
+is a real choice** between a speed bonus and the 180 it costs to take it. If coins
+only ever sat on the way to the exit there would be no choice in them at all —
+they would simply be collected by driving well.
+
+Measured on the shipped densities, coins land on the solve path at roughly its
+own share of the grid (0–3% against 2–4%), which is the check that no bias
+crept in. Every maze carries comfortably more than the cap — 22 to 32 — so the
+player chooses **which** to detour for; a maze holding exactly 20 would make the
+choice for them.
+
+**The start and exit cells are excluded, and that is not a routing read.** The start
+would hand out a free coin before the player had driven anywhere, and the exit
+ends the maze on contact — a coin there could never be banked, which reads as one
+that failed to collect. Sealed pockets are excluded too: a coin the player can
+see and never reach is the one thing worse than no coin.
+
+Coins draw from a **third RNG stream**, separate from both the carve and the
+landmarks. Sharing the landmark stream would mean the coin density silently
+redrew every landmark in the game, since each extra draw shifts the whole
+downstream sequence — the knobs have to be independent of each other, not merely
+of the maze.
+
+Collection is **membership in the cell, never a radius**, the reason §7 gives for
+the gate footprint: a radius fires diagonally through wall corners and collects
+through solid geometry. A collected cell does not pay twice — reversing over a
+taken coin is ordinary play in a looped maze, and one that re-armed would make a
+single corridor an infinite purse.
+
+### One node per coin, because coins MOVE
+
+Every other repeated object in the maze — walls, grid lines, landmarks — is baked
+into a shared surface precisely because it is **static**. A coin spins and bobs, so
+it needs its own transform each frame, and that means a node. The mesh and
+material are shared, so the cost is one draw call per coin and not one material
+per coin. A maze carries tens of coins rather than the thousands of cells the
+walls do, which is what makes this affordable where the same approach would not
+be for walls.
+
+**A disc standing on EDGE, spun about Y**, so it alternately faces the player and
+presents its edge — the read that says "coin" rather than "glowing pillar". A disc
+lying flat on the floor would be a line from the trailing camera's low angle,
+which is the mistake the wall-mounted Path Indicator panels made (§7).
+
+The **spin is what separates a coin from a landmark** at a glance: both are small
+bright objects standing in a corridor, and at 8x a static one is read as scenery.
+The bob is phase-offset per cell so neighbouring coins are not in lockstep — a row
+of them rising as one reads as a single animated object rather than as several.
+
+A collected coin is **removed outright rather than dimmed** like a spent gate. A
+spent gate is kept because it is a landmark: tall, on the solve path, and the best
+evidence in the game that a corridor has been driven (§7). A coin is small, sits
+anywhere, and carries no such information; a dimmed one would only be a thing the
+player keeps trying to collect.
+
+**The size and height were set from rendered frames, not calculated.** At radius 0.55
+the disc was a sliver several cells out. `COIN_HOVER_HEIGHT` is measured against
+`CAM_HEIGHT` (2.3) rather than picked: a coin at eye level is seen against the dark
+corridor mouth, where a low one competes with the floor grid lines the player is
+actually reading (§11.3).
+
+### On the HUD
+
+The counter reads **held and the live cap** — "12/20" and "12/17" are the same purse
+and very different runs, and the cap is the number that falls permanently. It sits
+in the **left group with speed**, because a coin is +0.05 on the floor and the two
+are one thought; the right group is the timer and the score, and the timer's width
+changes past a minute so nothing may share its line (the §9d collision).
+
+It is **read off the racer every frame** rather than driven by the collection signal
+alone. A counter updated only on collection goes stale the moment anything else
+moves the purse — a crash halves it and shrinks the cap, and the maze boundary
+carries both forward — so the display would disagree with the speed the player is
+actually driving at. It goes **dim at the cap**, since further coins bank for the
+shop but buy no more speed.
+
+A crash **announces** the new purse and cap. The cap falling is the one permanent
+consequence in the economy, and a number that quietly drops during a crash — when
+the camera is pulling back and a recovery prompt is held — is a rule the player
+never sees fire.
+
+`RulesTest` asserts the economy; `CoinProbe.gd` reports placement per maze and is
+how the routing-leak check is made; `CoinShot.gd` is the picture half.
 
 ---
 
@@ -1080,11 +1298,11 @@ meta-progression (§10).
 | **Cornering** | Cuts the per-turn cost: 0.03x → 0.024 → 0.018 → 0.012 | Moves the §5.3 equilibrium directly, so it changes *routing*, not a stat — a Cornering build affords turn-heavy routes that would bleed an unupgraded racer dry. Never reaches zero |
 | **Expiry Grace** | Shrinks the expired-input penalty: 0.5x → 0.38 → 0.26 → 0.15 | Pairs with Buffer Window into a real "press early, press often" build. Never zero — an expired press must always mean something |
 | **Repair Field** | Restores 0.6 / 1.2 / 2.0 HP per second of **clean** travel | The answer to scaling wall damage. Pays for the same thing the speed ramp does (§3) and cannot be farmed: no regen while parked or scraping |
-| **Quadrant** | A corner box dividing the maze 2×2 / 3×3 / 4×4, lighting the region you are in | Position, never route. Quadrant 1 holds the start, the highest holds the exit — so it says how far through you are without saying which way to turn |
-| **Compass** | A cardinal readout of the direction you face: N / E / S / W | Absolute, where Gate Compass is relative. Tells the truth — the exit is south-east, not north |
+| **Quadrant** | A corner box dividing the maze 2×2 / 3×3 / 4×4, lighting the region you are in, with the start and the exit both outlined | Position, never route. Quadrant 1 holds the start, the highest holds the exit — so a lit region between two marked ends says how far through you are without saying which way to turn |
+| **Compass** | A physical compass — a fixed dial with cardinal ticks and a red-tipped needle swinging to real north — with the cardinal letter beside it | Absolute, where Gate Compass is relative. The dial is fixed and the needle turns, the opposite of the minimap. Tells the truth — the exit is south-east, not north |
 | **Momentum** | +12% to the speed ramp rate per rank, **lost on any wall contact** and rebuilt over ~4s of clean travel | The first line on the ramp itself (§3). Prices the §11.4 skill ceiling in the game's own currency — and it moves the §5.3 equilibrium, so re-measure rather than re-derive |
 | **Second Wind** | Bank one crash save per rank, refilled by clearing a gate. Spent automatically when the barrier empties | The only non-attritional damage line: it saves the run from the crash that ends it, rather than making crashes cheaper. Does not refund the per-contact HP |
-| **Deep Breath** | Hold a direction through the turn freeze to *extend* it by up to 0.15 / 0.3 / 0.45s | The true opposite of Snap Turn. The ramp pauses during the extension, so what you spend is the clock — a deliberate exception to §2 |
+| **Deep Breath** | Keep holding a direction through a turn and that turn's freeze *extends* by up to 0.25 / 0.5 / 0.75s, on a **10s cooldown** | The true opposite of Snap Turn. Any turn qualifies — the cooldown is the limiter, which is what let the old early-press gate go. The ramp RUNS through it; measured at +0.27x and 6 uses a maze, so what you spend is ~2s of the budget |
 | **Overclock** | Hold a direction, then `↓`: burn 2.5 / 1.8 / 1.2 HP per second for +2x speed | The first line that *spends* a resource for pace. Direction-first so it can never steal the 180; floors at 1 HP so it cannot kill you |
 | **Gate Size** | Rank 1 raises the gate marker; ranks 2–3 widen its collection **footprint** to a 5-cell plus and beyond | Puts a decision in gate collection for the first time — a wide gate straddles a wall, so a parallel corridor can bank the pick |
 | **Extra Card** | 4 upgrade cards at every pick, then 5 | An investment: the cost is the pick itself, so it is only correct early. Cards narrow to fit rather than the row overflowing |
@@ -1446,7 +1664,7 @@ differently is §11.5 at its strongest, and the tree had none outside the legend
 |---|---|---|
 | **Momentum** | 4 | +12% speed ramp rate per rank, **lost on any wall contact** and rebuilt over ~4s of clean travel |
 | **Second Wind** | 3 | Bank a crash save per rank, refilled by clearing a gate. Spent automatically when the barrier empties |
-| **Deep Breath** | 3 | Hold a direction through the turn freeze to *extend* it, up to +0.15/0.3/0.45s. The ramp pauses during the extension |
+| **Deep Breath** | 3 | Keep holding a direction through a turn: that turn's freeze *extends*, up to +0.25/0.5/0.75s, on a 10s cooldown. The ramp runs |
 | **Overclock** | 3 | Hold a direction, then press `↓`: burn HP for +2x speed. Ranks cut the burn 2.5 → 1.8 → 1.2 HP/sec |
 | **Gate Size** | 3 | Rank 1 raises the gate marker; ranks 2–3 widen its **footprint** to a 5-cell plus, then further |
 | **Extra Card** | 2 | 4 cards at every pick, then 5 |
@@ -1528,15 +1746,72 @@ death is on (§5.5), that was the largest gap in the tree.
 
 #### Deep Breath is the true opposite of Snap Turn
 
-Hold a direction key through the turn freeze and the freeze *extends*, up to +0.15/0.3/0.45s.
-No speed cost. You are paying time to buy reading room.
+Keep holding a direction through a turn and the freeze on that turn *extends*, up to
++0.25/0.5/0.75s — long enough to be a **look** rather than a longer corner. On a **10s
+cooldown**. No speed cost; you are paying time to buy reading room.
 
-**The ramp must pause during the extension, and that is a deliberate exception to §2.** The
-freeze normally runs the ramp precisely so cornering cannot duck the game's central mechanic.
-Here that would invert it: hold the key at every corner, gain 0.045x a turn, and a turn-heavy
-maze becomes a speed pump — the extension would pay *more* than it costs. With the ramp held,
-what the player actually spends is the run timer and the maze budget, which is real cost in
-the §8b currency and is the same thing Snap Turn buys back.
+**The COOLDOWN is the limiter, and it is what replaced an early-press gate.** The line
+used to fire only on a turn that resolved out of the *buffer*, and that gate existed
+because the line had no other limiter at all: the key that *requests* a turn is still
+down when the 0.10s freeze ends, because nobody releases an arrow inside a tenth of a
+second — so `held_direction != 0` was true at every turn the player made, and the
+extension was automatic rather than asked for. Measured at the time: an immediate turn
+ran **34 frames of freeze against 7**, on a corner the player never asked to extend.
+
+**A cooldown does that job better, which is why the gate could go.** It bounds uses per
+minute *directly* rather than inferring intent from when the press happened to land, so
+the extension is now a decision at **every** junction instead of only at the ones read
+early. Gating on the buffer meant a junction misread — arriving without having committed
+— was also a junction you were not allowed to stop and look at, which is backwards: the
+moment you most want a beat to read is the one you did not see coming.
+
+**The allowance grew with the cooldown, because it is now a stop rather than a slow
+corner.** 0.15–0.45s against an ordinary 0.10s freeze was a corner that lasted slightly
+longer; 0.75s at max rank is a beat the player halts and reads in. Six uses a maze at that
+length is a different mechanic from sixty at the old one.
+
+**A 180 does not extend.** `REVERSE_FREEZE` is already the longest hold in the game — 1.6x
+a corner's, because the view swings through a full half-turn — and the corridor behind is
+ground the player has just driven, so there is nothing new to read. The allowance is
+cleared on a reversal and the cooldown is deliberately left alone, since a 180 spends
+nothing.
+
+**The cooldown is armed when the extension is GRANTED, not when it ends**, so the 10s
+covers the pause itself rather than starting after it. It ticks on the racer's own
+accumulated driving time and sits below the `PARKED` early return, so a crashed racer is
+not quietly recharging while it waits to be un-stuck — the same clock the legendary
+cooldowns use, and for the same reason. A fresh maze opens with it ready: it is a
+within-maze pacing limit, not a resource carried across the boundary.
+
+**The ramp RUNS through the extension, and this reverses the rule that held before the
+cooldown existed.** The ramp used to be *rewound* for the extension, on the reasoning that
+holding at every corner would gain speed for free and turn a turn-heavy maze into a speed
+pump — the extension paying *more* than it costs. That reasoning was correct for an
+**unlimited** hold and is what the cooldown removes.
+
+**Jonah's call, made against that objection, and the measurement showed the objection was
+sized wrong.** The estimate against it was ~6 uses a *minute*; `DeepBreathProbe` measures
+**6 uses a maze**, because a 62s maze at a 10s cooldown simply does not allow more.
+Measured on maze 5, an optimal router holding the direction throughout:
+
+| Rank | Final speed | Time | Uses |
+|---|---|---|---|
+| 0 (control) | 4.69x | 62s | 0 |
+| 1 | 4.78x | 63s | 6 |
+| 2 | 4.87x | 64s | 6 |
+| **3** | **4.96x** | **64s** | **6** |
+
+**+0.27x at max rank against ~2s of the 180s budget.** At the ÷30 time multiplier those 2s
+cost about −0.07x on the maze multiplier, so the trade is favourable and the line is worth
+using — but it is not free, and at six uses a maze it is nowhere near a pump. **The control
+block is what says the gesture is the whole mechanism:** every rank reads exactly 4.69x and
+**0 uses** when the direction is not held, so the line is completely inert unless asked for.
+
+> **Neither `RunTest` nor `RulesTest` could have answered that.** RunTest's autopilot never
+> *holds* a direction, so its final speed is identical with the line maxed and untaken — the
+> same blind spot §7 records for Momentum, where a full run took the line only to rank 1.
+> RulesTest asserts one extension in isolation, which says nothing about six of them
+> compounding across a maze. `DeepBreathProbe.gd` is the instrument.
 
 **Two lines on one mechanic, pulling opposite ways, is the point.** Snap Turn says *I read
 fast, give me the clock back*; Deep Breath says *let me stop and look*. They are never
@@ -1545,6 +1820,25 @@ about that build than one more +0.15.
 
 **It respects the three-key contract (§2)** because it is a *held* existing key, not a fourth
 binding — the same reasoning that made the legendary gesture a double-tap.
+
+> **The harness assertions INVERTED with the rule, and that is the point of keeping them
+> paired.** Two of them previously encoded the gate ("an immediate turn does NOT extend") and
+> the rewind ("the extension does not pay speed"); both now assert the opposite, and the
+> cooldown got the assertions it had none of. Verified in both directions, because a test that
+> cannot fail is not evidence: disabling the cooldown arm fails at `first 51 frames, second 51`
+> — the two turns identical because nothing limits them — and restoring the early-press gate
+> fails six checks at `7 frames vs 7`.
+
+> **A buffered turn does not freeze on the press.** It resolves at the next boundary, tens of
+> frames later — measured at 43. A harness that starts measuring the freeze immediately after
+> `request_turn` reads **zero frames**, which looks exactly like the extension failing to fire.
+> Drive until the freeze starts, then measure it.
+
+> **The cooldown check needs a maze that can host TWO turns.** `_make_branch` is two rows tall
+> with a single opening, so a second turn is geometrically impossible in it — the fixture is
+> `_make_room`, where every direction is open and both turns are therefore the same kind, which
+> is what makes the two freezes comparable. A difference between them is then the cooldown and
+> nothing else.
 
 #### Overclock spends HP for pace, and the gesture is direction-first
 
@@ -1571,8 +1865,58 @@ that the tree could not previously express.
 
 #### Gate Size finally puts a decision in gate collection
 
-Rank 1 raises the marker. Ranks 2 and 3 widen the **footprint**: the gate is collected from a
-5-cell plus, then wider still.
+Rank 1 raises and widens the marker. Ranks 2 and 3 widen the **footprint** as well: the gate
+is collected from a 5-cell plus, then wider still.
+
+**The marker used to grow only UPWARD, and that made the line read as doing nothing.**
+Reported as *"the increase gate size upgrade isn't visually making the gates bigger"*, and the
+fault was geometric rather than a matter of degree. `_marker_mesh` scaled only its `top`; the
+crossed slabs' `wide` and `thin` were fixed multiples of `CELL_SIZE`. Measured on a controlled
+pair — one seed, one gate, one camera pose, varying only the rank — the mesh AABB ran
+**5.55 → 9.16 on Y and held a flat 3.0 × 3.0 on XZ at every rank.**
+
+**The camera is what turns that into invisibility.** It is capped below `WALL_HEIGHT` (§12), so
+everything a taller marker adds is added *above the wall line*, at the far end of a corridor,
+where perspective compresses it to a few pixels. The part of the marker at eye level — the part
+the player is looking at while collecting it — was pixel-identical at every rank. So the line
+was buying its whole effect in the one band the player least looks at, and none of it in the
+band where "my gate got bigger" is actually asked.
+
+**So a rank now widens as well as raises**, `GATE_SIZE_GIRTH_BY_RANK` beside the height table.
+Girth scales *both* slab axes, so the marker keeps its proportions rather than fattening into a
+cube.
+
+**Bounded by the corridor, and that bound sets the top of the table.** The base slab is
+`CELL_SIZE * 0.75` = 3.0m in a 4.0m cell, so the widest rank leaves 8cm of clearance each side.
+A marker reaching the wall is not a wider gate — it is a gate with its ends buried, and at 0.55
+alpha that reads as a rendering fault rather than as an upgrade. **1.30 was tried first and
+sits exactly ON the bound**, which `RulesTest` rejects deliberately: a top rank resting on the
+limit has no margin for a later change to `CELL_SIZE` or to the 0.75 base, and would start
+intersecting on the first tweak to either rather than failing a test.
+
+**Girth defaults to 1.0 through the mesh builder so the EXIT is untouched.** The exit takes the
+same `_marker_mesh`, and height is what separates a gate from the exit at distance (§7) — an
+exit that grew with the player's Gate Size rank would blur a distinction the markers keep on
+purpose.
+
+**The card text and the compendium demo both had to move with it.** The card said "Gates stand
+taller", which was accurate before and incomplete after; the demo drew the marker as a
+fixed-width bar while its footprint widened, so the picture would have contradicted the card.
+
+> **`AddedLinesShot` already shot this line and could not have caught it.** It restarts the run
+> per rank, so its two frames land at different distances on different mazes — which shows a
+> marker is *there* and can never show one is *bigger*. `GateSizeShot.gd` is the controlled
+> instrument: one seed, one gate, one camera pose, at **two distances**, because the two halves
+> fail differently. Far is the "can I see it coming" question `GateShot` asks; near is where
+> the fault actually lived, since at 1.5 cells the added height is off the top of the frame
+> entirely and only width can read.
+
+> **It must SEEK a gate with clear corridor behind it.** Its own first version took `gates[0]`,
+> which on the fixture seed sits hard against the maze's west edge — so the camera parked 5
+> cells back sat inside the boundary wall and produced a frame with **no marker in it at all**,
+> which reads exactly like the upgrade having failed. The one thing this instrument must never
+> be able to say by accident. It now walks all four approaches and fails loudly when no gate
+> has one, rather than shooting whatever is in front of it.
 
 **The wide gate can straddle a wall, and that is the feature.** Collection is a cell-membership
 test, so a footprint reaching into the corridor *next door* means a parallel route banks the
@@ -1782,7 +2126,7 @@ otherwise answers.
 | Line | Ranks | Effect |
 |---|---|---|
 | **Quadrant** | 3 | A small box in the corner drawing the maze divided into 2×2 / 3×3 / 4×4, with the region you occupy lit |
-| **Compass** | 1 | A cardinal readout: the direction you are facing, as N / E / S / W |
+| **Compass** | 1 | A physical compass: a fixed dial with a red-tipped needle pointing at real north, and the cardinal letter beside it |
 
 **They sit on the "have I been here" side of the line**, which is the only
 reason they are safe to add. Landmarks (§6), the spent gate marker (§7) and the
@@ -1819,6 +2163,53 @@ is exactly the split §11.2 asks for: routing stays the player's problem, and
 what this buys is knowing whether the last two minutes of driving actually went
 anywhere. In a maze braided to 30% that is a genuinely hard thing to know.
 
+#### Both ends are outlined, which is what makes it a PROGRESS read
+
+The start's region and the exit's region are each outlined, never filled — the
+fill is reserved for the region the player occupies.
+
+**Marking only the exit gave the player one end of a measurement.** A lit square
+at 6 of 16 says where you stand; a lit square *between a marked start and a
+marked finish* says how far along you are. The exit was outlined from the
+beginning and the start was not, so the box was doing the position half of its
+job and leaving the player to remember the other end.
+
+**It gives nothing away.** Both ends are facts the numbering already promises —
+quadrant 1 holds `start_cell` and the highest holds `exit_cell` — so this draws
+a statement the player has already been told rather than adding a new one. It
+stays on the "have I been here" side of the line and still answers nothing about
+which opening to take.
+
+**Both are read from the maze's own cells, never from the first and last quadrant
+NUMBER.** The numbering derives its ends from those two cells, so restating them
+as 1 and `total` would be a second copy of that derivation — and it would go
+quietly wrong the moment a generator moved either corner, which is exactly the
+case the derived numbering exists to survive.
+
+**An end the player is standing in is suppressed**, because the fill would sit
+under the outline and the two would read as one muddled square. The occupied
+region is the more urgent fact, and the count above the grid still says "1 of
+16", so nothing is lost.
+
+> **The start's colour separates by HUE, and the first attempt got that wrong.**
+> A cool blue-grey was the obvious "quieter than the exit" choice and measured
+> **invisible in a rendered frame**: it sits in the same hue family as the box's
+> own grid and frame, so on the two sides where the start cell borders the outer
+> frame it merged into it completely and the corner read as bare grid. The exit's
+> amber was legible instantly — because amber is a *different hue* from
+> everything around it, not because it is brighter. The start is now a **violet**,
+> the one band left once amber is the exit, green is Path Indicator, white is the
+> exit marker and the marker itself, red is the crash state (§8), and blue is this
+> widget's own frame. Only a rendered frame shows this: every headless assertion
+> was green while the outline was there and unreadable.
+
+`SceneTest` asserts the start outline sits at `start_cell`'s region, that the
+start is region 1, and that **the two ends are distinct regions** — an outline
+marking one corner twice says nothing at all. Verified by pointing the start feed
+at `exit_cell`: two named failures. The compendium's demo draws both ends too,
+for the reason the demo exists — a grid with only a travelling light shows the
+position half of the mechanic and not the progress half.
+
 #### The compass tells the truth about north, and the exit is not in it
 
 North is north: `-Y` on the grid, the direction `Maze.N` already means. **The
@@ -1844,9 +2235,46 @@ eight-point bearings would be precision nobody routes on at 8x.
 
 **It reads absolute, where Gate Compass reads relative.** Gate Compass shows an
 arrow *relative to facing* ("turn that way"), because it is a bearing to a
-target. This one shows the letter you are facing, because it is a statement
+target. This one shows the heading you are facing, because it is a statement
 about orientation itself. Two absolute readouts would be redundant; two relative
 ones could not tell you which way is north at all.
+
+#### It is drawn as a physical compass: a fixed dial and a swinging needle
+
+A ring with four cardinal ticks and a two-tone needle. **The dial is fixed and
+the needle rotates**, which is how a hand compass works.
+
+**That is the exact opposite of the minimap, deliberately.** The map rotates
+because it shows the *corridor*, and at 8x "the corridor on my left is drawn on
+the map's right" is not a translation anyone performs (§12). A compass shows the
+**world's** orientation, so its whole value is that north stays where north is.
+A dial that rotated with the player would just be the letter again, drawn larger.
+
+**The needle's north half is red**, because that is the convention every physical
+compass uses and it is worth borrowing outright — a player who has held one
+already knows which end is north, so the widget needs no legend. It is the one
+place a red is allowed here: red is the crash state (§8), but that read is on the
+**player marker, in the world**, and a needle in an instrument at the top of the
+screen is never mistaken for the racer going red. Inventing a non-red north for
+consistency's sake would throw away the only piece of shared knowledge the shape
+relies on.
+
+**Two-tone, not one.** A single-colour bar reads as an *axis* rather than a
+direction, and which end points north is the entire question.
+
+**The letter is kept alongside the needle rather than replaced by it.** The needle
+answers "which way is north" at a glance; the letter names the heading exactly. At
+8x a needle a few degrees off is ambiguous where a letter never is, so the two are
+not redundant.
+
+**The FACING is carried into the widget, not re-derived from the letter.** The
+needle needs an angle, and mapping the string back to a direction would be a
+second copy of `Maze.CARDINAL_NAMES` to keep in step. `SceneTest` asserts the
+widget carries the racer's own facing, that all four headings give **distinct**
+angles — a mapping returning a constant would agree with the racer on whichever
+heading happened to be current — and that north points **up**. A dial fed a stale
+facing renders a perfectly plausible compass pointing north forever, which no
+rendered frame would catch either, since north is a legitimate heading.
 
 #### It is a HUD element, not a world object
 
@@ -1856,17 +2284,46 @@ whole maze rather than about anywhere in it**. There is no cell a quadrant box
 belongs to, which is the same argument §7 makes for keeping Gate Compass on the
 HUD after moving Path Indicator off it.
 
-**Top-left, stacked directly under the rear-view mirror**, in the one column §12
-established as empty on both platforms. The compass letter sits inside the
-quadrant box rather than in its own slot: the two are read together, and a
-player holding only the compass gets the letter on its own with no grid under it.
+**TOP-CENTRE, under the HUD's top row, the two halves SIDE BY SIDE.** The
+compass sits beside the quadrant box rather than in its own slot: the two are
+read together, and a player holding only one gets that one alone.
 
-**It hangs off the mirror's measured bottom edge, never off a constant.** Both
-widgets size themselves from the shorter viewport edge, so a literal offset here
-would be correct at one screen size and overlapping at every other — the
-hard-coded-band trap §12 records for the upgrade card row. `SceneTest` asserts
-the two rects do not intersect **at desktop and phone sizes**; a deliberately
-wrong gap fails at both, which is what says the check is not passing trivially.
+**It used to be top-LEFT, stacked under the rear-view mirror**, which was where
+the empty space happened to be rather than where the read belongs. Both halves
+answer *where am I, and which way am I pointing* — a question about the corridor
+dead ahead — so they now sit on the axis the eye already tracks. That is the same
+argument §12 makes for the minimap moving to bottom-**centre**, under the marker:
+the cluster, the marker and the map stack vertically, so checking any of them is
+a flick along one line rather than a saccade into a corner and back.
+
+**Side by side because the top-centre band is WIDE and SHORT.** The HUD's top row
+ends at y=70 and the corridor vanishing point must stay clear, so the space
+available there is horizontal. Stacking the pair would push the compass down into
+the corridor the player is reading.
+
+**Centred on the WHOLE cluster, grid plus dial.** Centring the grid alone would
+push the compass off-axis by half its own width, which is what `SceneTest` is
+phrased to catch — a one-pixel tolerance, not a band.
+
+**It hangs off the HUD top row's measured bottom edge, never off a constant** —
+the same rule that had it hanging off the mirror before. The widget sizes itself
+from the shorter viewport edge, so a literal offset would be correct at one
+screen size and overlapping at every other: the hard-coded-band trap §12 records
+for the upgrade card row. `SceneTest` asserts clearance **at desktop and phone
+sizes**, and still asserts it does not intersect the mirror — the check that the
+move actually vacated the left column.
+
+> **The upgrade toast was drawn straight through both, and only a rendered frame
+> showed it.** The HUD's message band sat at a hard-coded `140`, which was clear
+> for as long as nothing had ever been in the top centre — so the first frame
+> after the move had *"GATE SIZE RANK 1"* written across the grid and the compass
+> dial at once, leaving all three unreadable. The band is now pushed below the
+> cluster's **measured** bottom rather than to a new literal, which would be the
+> same trap one step along, and it is pushed when the box's visibility *changes*
+> as well as on resize — the box appears the moment either line is taken, at a
+> gate, so otherwise the toast announcing that very pick is the one drawn through
+> the widget it just created. Verified by restoring the literal: it fails at both
+> sizes, `message top 140.0 vs box bottom 229.5`.
 
 Two things only a rendered frame caught, and both are the §12 lesson that *rect
 clearance is not text clearance*:
@@ -1896,6 +2353,80 @@ making a number bigger.
 maxed line. If the player has fewer than 3 lines started, guarantee at least one *new*
 line among the three — early picks should feel like they open options, not deepen one
 stat.
+
+---
+
+---
+
+## 7b. The Shop
+
+Coins banked by clearing mazes (§5b) buy cosmetics. `CUSTOMIZATION -> SHOP`.
+
+| Kind | Price |
+|---|---|
+| Colour | 12 |
+| Pattern (decal) | 18 |
+| Maze colourway | 25 |
+| Marker shape | 40 |
+
+**A SECOND path to a cosmetic, never a replacement for the achievement that grants
+it.** Achievements still award for free; the shop sells what the player has not
+earned. Both routes write the same `earned` set on `Unlocks`, so nothing
+downstream — the pickers, the paired-table assertions §10 records — has to know
+which way an item arrived.
+
+**What the shop may sell is the whole safety argument.** Cosmetics only, exactly as
+§10 narrows meta-progression: a shape, a colour, a decal, a palette. The line to
+hold is unchanged — **if a purchase would change a number the racer reads, it does
+not belong here.** Coins in the wallet buy nothing in a run, because every run
+starts with an empty purse whatever the wallet holds.
+
+**Priced by how much a kind CHANGES the marker, not by how many exist.** A colour is
+a repaint; a shape is a different silhouette and is the half of the marker that
+answers facing (§12), so it is the dearest. A palette restyles a whole maze and
+sits between. A run banks somewhere under 20 coins when driven well, so a shape is
+several good runs and a colour is roughly one — the shop is a reason to come back,
+not a catalogue cleared in an evening.
+
+**Stock is read off `Unlocks.lockable_ids()`, never off the four `Tuning` tables.**
+Listing from the tables would put the **defaults** on the shelf — items every player
+already owns and none can buy, which is a row that can only ever refuse. It also
+means a cosmetic added later is stocked by construction, rather than needing an
+edit here; `RulesTest` asserts every lockable id has a price, walking the list
+rather than naming it.
+
+**Buying something already owned is REFUSED rather than charged.** Taking money for
+an item the player holds is the one outcome a shop must never produce, and it is
+genuinely reachable since achievements grant for free. Every refusal **says why** —
+a button that silently ignores a press reads as broken, which is worse than one
+that reads as unaffordable, the same reason a locked palette chip states its
+requirement.
+
+**Three chip states, not two.** Owned, affordable, and out of reach: a chip the
+player cannot yet afford has to read differently from one they can, or the shop
+gives no sense of what to save for and becomes a wall of identical buttons that
+refuse most presses.
+
+**The rows SCROLL.** Four kinds against tables already running to 25 palettes and 19
+colours is far more than a panel holds, and the alternative is the §8c overrun — a
+panel sized to a band it outgrows, with CLOSE pushed off the screen edge.
+
+**It sits under CUSTOMIZATION, beside MARKER and MAZE COLOURS**, because it sells
+exactly what those two screens wear: a player who opens CUSTOMIZATION to change
+their marker and finds it locked is one press from the screen that sells it.
+
+**The wallet lives on `Unlocks`** — the one piece of state there that is not a
+cosmetic, allowed for the same reason the cosmetics are: nothing in the simulation
+may read it. It persists in its own `wallet` section of `settings.cfg` rather than
+among the earned ids, since that section is a set of `id -> true` and a number
+sitting in it would be read back as a cosmetic called "coins" by anything walking
+the keys.
+
+> **`Unlocks._save()` writes the player's real profile, so a harness that buys
+> anything must set `suppress_save`.** Without it, `RulesTest` grants the player
+> cosmetics and spends coins they never earned — the rule §12 records for
+> `TouchShot` and `MarkerPickerShot` arriving in a third place: a tool must not
+> write the state it is inspecting.
 
 ---
 
@@ -3641,6 +4172,161 @@ the existing clipping loop rather than a second one, since a separate pass would
 harness runtime to assert over identical play. It caught a real residual case at the
 pull-in floor, which is what the last-resort branch exists for.
 
+### The camera's catch-up is the player's to set
+
+**A `CAMERA` slider on the settings panel, 0..50.** 0 is a snap — the view is on the new
+corridor the frame the racer pivots. 50 trails so far behind that the camera is still coming
+round many cells later, so it is genuinely *not always behind you*. Default is **20**.
+
+**It went 0..10 → 0..20 → 0..30 → 0..50, and each growth bought something different.** The
+first doubling bought **resolution**: both ends held, so the dial became finer rather than
+laggier. The second moved the **DEFAULT** off the midpoint, adding ten notches of lag above
+it. The third lowered **`CAM_YAW_RATE_SLOW` itself** — the first time the dial's slowest
+camera actually got slower, rather than the dial merely reaching further along the same curve.
+
+**The old "not below about 2" bound was measured and found already breached.** That comment
+justified 2.5 on the §11.3 rule that the view must not still be swinging when the next
+junction arrives — but at 2.5 the swing takes **867ms to settle, which is 4.3 cells at 5x**.
+The number was not the edge of the rule, it was just the slowest rate anyone had asked for.
+
+**What the rule actually protects is that the corridor is READABLE when the player has to act,
+not that the swing has finished.** Measured as the share of a 90° completed after one cell:
+
+| rate | @1x | @3x | @5x | @8x |
+|---|---|---|---|---|
+| 2.50 (old slowest) | 97% | 81% | 74% | 68% |
+| **1.00 (new slowest)** | **73%** | **47%** | **41%** | **35%** |
+| 0.80 | 65% | 40% | 34% | 29% |
+
+At 1.0 the player is 41% round after a cell at 5x and the corridor is resolving — heavy lag,
+but the view is still arriving. **Below about 0.8** it stops being a lag and becomes a camera
+that never catches up, which is the fault §11.3 forbids.
+
+**The default has stayed on notch 20 across both of the last two changes**, which is what
+`CAM_DEFAULT_DIAL_FRACTION` is re-solved to preserve — it went ½ → ⅔ → ⅖ while the *notch*
+never moved. The shipped camera is the one number a player who never opens the setting is
+entitled to keep. Measured across the whole dial: 0:62.90, 1:57.90, 10:27.47, **20:12.00**,
+30:5.24, 40:2.29, 50:1.00, with notch 20 landing at exactly 12.000000.
+
+**Lowering the slow end also fixed a wasted stretch at the fast end.** On the 0..30 dial
+`SNAP` had to rise to ~276 to keep the default on notch 20, and anything above 60 closes the
+whole angle in one frame at 60fps — so **notches 0–9 were all the same rigid lock**. At
+`SLOW = 1.0` the fast end re-solves to 62.9, barely above that threshold, so notch 0 is still
+a true one-frame snap and notch 1 is already distinguishable from it.
+
+**The curve is reshaped on every one of these, not restretched, so a saved setting does NOT
+carry across at a multiple of its old number.** A `settings.cfg` holds a bare notch: a player
+on the old 0..30 maximum (notch 30, rate 2.5) lands on **rate 5.24** here — a snappier camera
+than they chose — and has to travel up the longer dial to get it back.
+
+`RulesTest` asserts the default lands on a **whole notch** — the slider steps by 1, so a
+default at 19.4 would round-trip to the right rate and still be unreachable by the control the
+player uses — that it sits at the **declared fraction** of the travel, and that the **last
+notch is still the slow end**. Verified by moving the fraction to 0.61: two failures, at
+`got 12.492489, expected 12.000000` and `got 18.000000, expected 18.300000`.
+
+**A RATE, not a duration, and that is what keeps it a view setting rather than a game rule.**
+The turn freeze is a rule: it holds the racer still, it costs run time, and Snap Turn buys it
+down (§2, §7). This dial does not touch it. What it changes is only how much of the swing the
+camera spends *inside* that hold — which is a question about the eye and nothing else.
+
+**There is no longer a freeze multiplier on top of it** (§2), which means the dial now
+governs the turn outright. It used to be multiplied past its own fast end during the one
+moment the player is actually watching the camera move — so the setting that was supposed to
+control cornering was the setting cornering ignored.
+
+**So the simulation still cannot read it.** The racer pivots, freezes and resumes identically
+at every value. `RulesTest` asserts that directly — two racers on one seed, driven the same,
+requiring they never diverge *and* that their freezes never differ — which is the same
+separation the marker shape and the maze palettes have.
+
+> That separation check's first version **ran 900 frames with zero freezes**, because it
+> pressed a direction on a fixed interval: the racer parks against the first wall it meets,
+> and `request_turn` returns immediately on a `PARKED` racer. It is now routed toward the
+> exit through `request_turn`, and un-sticks. **Not `_run_clean`**, which assigns `facing`
+> directly — that rotates the racer without ever *resolving* a turn, so it never freezes, and
+> the dial only touches the swing onto a new heading. The "was exercised" guard is what
+> caught it; without one the check would have passed while asserting nothing.
+
+**The curve is GEOMETRIC between the ends, not linear.** Rate is a reciprocal-feeling
+quantity: the visible difference between 90 and 60 is nothing, while the difference between 4
+and 2.5 is the whole top half of the dial. A linear map spends most of its travel where
+nothing changes and crams every setting anyone would pick into the last two notches.
+
+**`CAM_YAW_RATE_SNAP` is DERIVED so the shipped rate lands on a whole notch.** A hand-picked
+snap rate and a whole-number dial are two incompatible demands — with the ends chosen
+independently the nearest notch to the shipped 12.0 was **10.48**, so the setting a player
+never touches would not have been the camera the game shipped with. Solving for the **endpoint**
+fixes that by construction: `SNAP = (DEFAULT / SLOW^f)^(1/(1-f))`, where `f` is
+`CAM_DEFAULT_DIAL_FRACTION`. At f = ½ that reduces to the original `SNAP = DEFAULT² / SLOW`,
+the geometric mean of the ends. `RulesTest` asserts the round trip *exactly* rather than
+within a tolerance, because a loose one hides the thing the derivation exists to guarantee —
+verified failing at 10.48 with the ends picked by hand.
+
+**That derivation is why every dial extension needed no arithmetic.** Going to 20 kept f = ½,
+so the default simply moved from notch 5 to notch 10 and stayed the same camera. Going to 30
+moved f to ⅔, and the fast end re-solved on its own to keep the default on notch 20 — the slow
+end never had to move, which preserved the maximum lag. Going to 50 moved f to ⅖ *and* dropped
+the slow end to 1.0, and the fast end re-solved again to hold notch 20 at exactly 12.000000.
+A hand-written default would have had to be re-derived by hand three times and would have been
+the one number nobody checked.
+
+> **Two instruments restated the old maximum as a literal and would have gone silently
+> half-blind.** `RulesTest`'s monotonicity sweep ran `range(1, 11)` and `CamSensShot` shot
+> `[0, 5, 10]` — against a 20-notch dial the first covers only the notches that already
+> worked and the second photographs the fast half three times while never capturing the new
+> slow end, which is the one frame the tool exists to produce. Both now read the bound off
+> `CAM_SENSITIVITY_MAX`. The sweep's guard measures **what the loop actually walked**, not
+> what the dial says it should have: a guard phrased against the constant passes happily
+> while the loop beside it still stops at a stale literal. Verified by restoring the literal —
+> it fails at `walked 10 of 20, reached 10.0`.
+
+> **`CamSensShot` steered by indexing a `[0,1,2,3]` table, and `Maze` directions are BIT
+> FLAGS** — N=1, E=2, S=4, W=8. So `order.find(r.facing)` returned **−1 for every real
+> heading**, no turn was ever requested, and the tool only caught pivots the autopilot
+> happened to make on its own. That is why `pivot found: false` moved between runs *on the
+> same seed*: it was luck rather than the dial. It now compares against the racer's own
+> `left_direction()` / `right_direction()`, and a miss is `printerr` rather than a quiet
+> `false` printed beside a saved file — a frame with no pivot in it is indistinguishable from
+> the dial doing nothing, which is the one thing this instrument must never say by accident.
+
+**The slow end stops at 1.0.** Below about 0.8 the view has covered under a third of its swing
+by the time the next junction arrives at 5x, and a camera that never catches up stops being a
+lag and starts being a fault: §11.3 says every timing demand must be visible before it is
+demanded, and a corridor the player cannot see yet is the one thing no preference should be
+able to buy.
+
+**`SceneTest` asserts the dial is actually WIRED**, by driving `_process` and measuring the
+yaw the camera really moved. Nothing in `RulesTest` can see this: a dial that maps beautifully
+and is then ignored renders a completely plausible game.
+
+> **Its own first version could not fail.** It re-derived the swing from `game._cam_yaw_rate`
+> in a local loop, and **passed against a deliberately hard-coded `12.0`** in the yaw update —
+> it was reading the field the break did not touch, and restating arithmetic the game was no
+> longer performing. Driving the real `_process` is what makes it evidence. Verified failing at
+> `snap 0.4118 vs lag 0.4118` — the identical figure at both ends being the hard-coded rate
+> exactly.
+
+**Both camera invariants are re-asserted at the dial's extremes**, because the dial changes
+camera *geometry*: `back` is derived from `_cam_yaw`, so a lagged eye sits where a snapped one
+never does, and the default-dial pass cannot see it. Measured: zero clipped frames and zero
+blind frames at both ends over 2000 frames each.
+
+**What a lagged camera legitimately shows is more of the maze**, and that is the cost of
+picking 10 rather than a bug. Pointing across the corridor rather than down it, the eye sees
+over wall tops at a distance. `CAM_HEIGHT` is unchanged at 2.3 and still under the 3.0 wall,
+so the §12 height rule is intact — the flattening it forbids comes from *raising* the camera,
+and nothing here does.
+
+`CamSensShot.gd` is the picture half, and it **seeks a pivot** rather than shooting on a
+timer, for the reason `PaletteShot` seeks a junction: at rest both ends of the dial look
+identical, since the swing has already finished. It shoots a fixed number of frames *into* a
+turn at each end, which is the only frame pair where snap and lag are distinguishable. Its
+own first run reported `pivot found: false` on two of three shots because it did not
+un-stick a parked racer — a frame with no pivot in it is indistinguishable from the feature
+doing nothing.
+
+
 ### The marker is the player's to pick — shape, colour AND pattern
 
 **A picker on the main menu offers the inner shape, a colour and a decal.** Purely cosmetic,
@@ -3836,6 +4522,56 @@ A hole cannot be washed out: the dark floor shows through it however bright the 
 and it holds at every state colour for free, since the gap has no colour of its own to keep
 in step.
 
+**A cut is measured against the shape's width WHERE IT LANDS, never against the shape's
+widest point.** That distinction is what separates a pattern from a scratch, and it is
+the fault the whole set was reported on: *"the decals need to be a lot better"*, against a
+LIGHTCYCLE showing two hairline nicks and no pattern at all.
+
+`NOTCH` was the extreme case — **it drew nothing whatever.** Its wedge was a triangle with
+a base out at ±`reach` and an apex inside the mark, so it had narrowed almost to a needle by
+the time it crossed the flank. Measured with `DecalProbe`: it removed **0.0–1.7%** of the
+mark on every shape, left it in **one piece**, and produced a sliver too thin to survive the
+inlay's seam inset — so on **seven of eight shapes the second colour was never drawn**. A
+menu entry, an achievement to unlock it, and no geometry.
+
+The same error made `TIP` and `TAIL` 5% scrapes rather than elements: a band sized off the
+global width is thickest where the shape is widest, which is exactly where it is least
+needed. Measured before and after, as a share of the mark removed:
+
+| | STRIPE | NOTCH | TIP | TAIL | CHEVRONS |
+|---|---|---|---|---|---|
+| Before | 24–31% | **0.0–1.7%** | 4.8–11.9% | 9.2–17.9% | 21–30% |
+| After | 29–40% | **7.0–11.3%** | 8.5–21% | 11.9–23.9% | 24–35% |
+
+**`NOTCH` is placed where the shape has the most flank to lose, which is NOT its widest
+line.** The obvious target was tried and is wrong on the barbed shapes: on the arrow and the
+dart the widest line is at the very tips of the rear barbs, where there is width but almost
+no body between them, and cutting there measured **3.5% and 2.6%** against 7.6% and 9.0% at
+mid-body — worse than what it replaced, on two of the eight. The score is now half-width
+times how much shape lies behind it, which picks the shoulder of a barbed mark and the true
+widest line of a plain one. **`RulesTest` caught that regression**, which is the only reason
+it is recorded as a measurement rather than shipped as an improvement.
+
+> **"Produces geometry" and "leaves something to draw" do not add up to "is visible", and
+> `NOTCH` shipped through exactly that gap.** Both assertions passed on a decal that drew
+> nothing, because the cut *result* did change — by a hair. The harness now asserts the cut
+> **removes a real share of the mark** and that what it removes **still survives
+> `INLAY_INSET`**; those fail independently, since a decal can cut a perfectly good hole and
+> fill none of it. The inlay half must be measured at the size the marker is really built
+> at, because the seam is in metres and an outline-space check passes on geometry that
+> vanishes in play. Verified by restoring the old wedge: **15 failures naming the measured
+> percentages**, where the previous assertions stayed green.
+
+`DecalProbe.gd` is the instrument — not a test. It reports, per shape and decal, the share
+removed, how many pieces the mark ends in, and **how many inlay pieces survive the seam**.
+That last column is the one nothing else reports and the one that exposed `NOTCH`.
+
+`DecalShot.gd` is the picture half: every decal on the lightcycle, from the ordinary
+trailing camera. It reads the decal list from `MARKER_DECALS` rather than naming them, so
+one added later is photographed by construction. The shape is deliberately the one the fault
+was reported on — its long parallel flanks are the least forgiving body in the table, so a
+band that reads there reads anywhere.
+
 **A cutter must SPAN the shape.** The first working version intersected each band with the
 outline before subtracting it, so the bands stopped *at* the edge and left the flanks joined —
 and at 12% of height near the tail they bit where the mark is narrow, reading as a single nick
@@ -3872,6 +4608,185 @@ share one slope rather than each rising to full height and reading as a staircas
 taste — a symmetric mark would read as position only, and the arrow exists because a bare
 ring says nothing about direction. Each option is longer along its facing axis than across
 it, and each has a distinguishable front.
+
+#### Pointing is the rule; being an arrow is not
+
+**Six of the fourteen shapes are not blades.** The first eight all answered "which way" the
+same way — a tip at the front and a taper behind it — which is one idea drawn eight times.
+Once the table became a picker rather than a default, that made the screen a row of
+near-identical triangles: a menu where every option is a variation on the one already
+selected.
+
+The requirement is only that a shape **points**. TEARDROP points by where its mass sits,
+KEYHOLE by a wide head on a narrow stem, HAMMER by a crossbar with no forward point at all,
+SHUTTLE by rear fins, TRIDENT by three prongs, BEACON by a staircase. All six are held to the
+same acceptance test and all six pass it.
+
+**HAMMER is the strongest statement of the rule**, because its leading edge is square. It
+points purely by which end carries the crossbar — and it works for a reason worth keeping:
+the bar is the widest thing on the shape and sits at the extreme front, so the trailing
+camera sees a broad line with a tail running away from it. A blade seen at that angle is a
+sliver; this is not.
+
+**TEARDROP shipped as an EGG on its first outline, and only a rendered frame caught it.**
+Drawn convex the whole way round with the nose merely narrower than the tail, it rendered
+from the trailing camera as a featureless oval pointing nowhere — the lightcycle's original
+failure exactly, arriving through a curve instead of a shallow taper. It passed every
+headless assertion for the same reason that one did: the outline genuinely is longer than it
+is wide, and what defeats both is foreshortening compressing the length axis until a gentle
+change at one end is indistinguishable from a gentle change at the other.
+
+**So the fix is a STEP, not a sharper slope.** The nose pinches in hard and runs nearly
+parallel ahead of that, which puts a corner in the silhouette where there was only curvature.
+A corner survives compression; a curve does not. That is the same argument KEYHOLE's waist
+and BEACON's staircase rest on, and it is the general lesson: **at this camera angle a shape
+points by a discontinuity in its outline, not by a gradient.** `length > half_width × 2` is
+necessary and never sufficient, which is why `MarkerShot` is not optional for a new entry.
+
+**Each new shape needed an achievement on an axis nothing else uses**, since the tables are
+paired in both directions and no two achievements may fire on one condition. Two of the six
+needed a helper that did not exist — total run time — and it is **derived from
+`Score.maze_results` rather than stored**, because §10 forbids growing `Score` a field to
+satisfy an achievement.
+
+#### Ten of them are objects, and the table is twenty-four
+
+A key, an anchor, a nib, a plough, a hook, a comb, a bolt, a shield, a pin and a bracket.
+These are a different kind of choice from the six above: a player takes the key because it
+is a key, not because its silhouette resolves well, and the picker is better for holding
+both sorts.
+
+**They are still held to the same acceptance test**, and three of the sixteen non-blades
+failed it on the first outline — all in the same way, and none of it visible to any
+assertion:
+
+| Shape | First outline | Why it failed |
+|---|---|---|
+| TEARDROP | convex all round, nose merely narrower | read as an **egg** |
+| SHIELD | smooth taper to a rear point | read as a **rounded slab** |
+| HOOK | two equal bulges, one barbed | read as a **blob** |
+
+**The pattern is now unmistakable, and it is worth stating as the rule: at the trailing
+camera's angle a shape points by a DISCONTINUITY in its outline, never by a gradient.**
+Foreshortening compresses the length axis, and what it removes first is exactly the fine
+detail a smooth shape relies on — so a taper, a curve, or "one end slightly bigger" all
+vanish, while a step, a crossbar, a waist or a barb survive. All three were fixed the same
+way: replace the slope with a hard step. `length > half_width × 2` is necessary and never
+sufficient, which is why `MarkerShot` is not optional for a new entry.
+
+**A shape also has to leave the generated DECALS room to work**, which HOOK found the hard
+way. Every decal is a function of the outline, so an outline with no flank is one the
+pattern set cannot decorate: NOTCH bites a wedge sized against the local half-width, and
+the hook's thin shank gave it nothing to take — measured at **2.8% and then 3.8% of the
+mark removed, against the 4% floor** `RulesTest` sets, which is the band separating a real
+decal from one that silently draws nothing. Widening the shank to 0.42 cleared it. That
+check is the one NOTCH itself once shipped invisible straight through, so it earned its
+keep on a second shape.
+
+**`MarkerShot` could not photograph a table this long, and said nothing about it.** Its
+autopilot routes optimally, so it clears all five mazes in a few thousand frames — and once
+the run is over there is no racer, no corridor and no racing phase, so every guard in the
+shot loop returns forever. The loop can only end at the last shape, so the tool ran to the
+launcher's timeout having printed nothing since its last capture: **17 of 24 files, exit 0,
+no `RESULT` line.** A partial set that reads as the remaining shapes having failed to build.
+
+That is the §12 rule about an unguarded wait being a hang rather than a failing assertion,
+arriving in an instrument. The wait is now guarded and **says so**, and a finished run is
+**restarted** so the remaining shapes are still shot — bounded by `MAX_RESTARTS`, so a game
+that cannot start fails loudly instead of looping. The "is the run over" test reads the
+racer's own `finished` and `dead` flags rather than naming the phase enum's integers, which
+would be the restatement trap: `Game` carries no `class_name`, so the enum is not reachable
+by identifier from a tool.
+
+#### Forty-four shapes and twenty-eight decals, checked as a grid
+
+Twenty more of each. The shapes are tools, craft and abstract marks — COMPASS, AXE, ANVIL,
+WRENCH, TORCH, RUDDER, SAIL, GLIDER, PROW, FIN, SPADE, CROWN, LANTERN, OBELISK, CHALICE,
+CARET, RIVET, RATCHET, TALLY, SIGIL — and the decals fill the space *between* the eight that
+shipped rather than adding eight more unrelated ideas: three bands where STRIPE has two, a
+row of bites where NOTCH has one, a chevron pointing the other way, a slot off the centre
+line.
+
+**The cross product is now 1,232 pairings and that is the whole reason this was tractable.**
+A decal is a function of an outline, so every one of the twenty new patterns has to bite on
+every one of the forty-four shapes, including the awkward ones the table has accumulated —
+the concave CHEVRON, the three-vertex DELTA, HOOK's slim shank, RATCHET's asymmetry.
+`RulesTest` walks all of it: **39,051 assertions**, up from 7,375.
+
+**Five of the twenty decals failed their first tuning and one was abandoned outright.** None
+of it was visible in the drawing:
+
+| Decal | What went wrong |
+|---|---|
+| KEEL | **abandoned** — a slot stopping short of both ends is a HOLE |
+| NOCK, BEAK | a V at the extremity cannot reach the floor on a pointed shape |
+| SCALLOP, SERRATE | too shallow on HAMMER, which has least length to spend |
+| WAIST | 3.5% on HOOK — the shape that forced the floor to exist |
+| QUARTERS, RAILS | cut a fine gap and filled no inlay on NIB and SPEAR |
+
+**KEEL is the one worth keeping in the record**, because it is the removed EDGE decal's
+failure reached from a different direction. A lengthways slot that stops short of both ends
+leaves an inner loop, and `Geometry2D.clip_polygons` returns a hole as its own polygon —
+measured on the delta, the cut came back as 2 pieces totalling **more** area than the shape
+started with (2.007 against 1.805), because the inner loop's area adds. It cannot be built
+until the extrusion grows real hole support, and that is now recorded twice.
+
+**The minimum widths are what the narrow shapes needed, not larger proportions.** QUARTERS
+and RAILS both cut a healthy 21% out of the NIB and then filled nothing, because what
+survived was thinner than `INLAY_INSET`. Raising the *floor* from 0.003 to 0.010 fixed both;
+widening the proportion would have made them heavy-handed on every wide shape to rescue two
+narrow ones.
+
+**RATCHET found a real limit in the generator, and the SHAPE was redrawn rather than the
+generator changed.** It is the table's only asymmetric entry — saw teeth down one flank —
+and `NOTCH` sizes both its wedges from `_half_width_at`, which takes the **widest** crossing.
+So it measured the toothed flank at 0.506 and cut the plain flank, only 0.30 wide there,
+mostly through empty space: 2.9% removed against the 4% floor. The general rule is worth
+having: **every flank decal assumes lateral symmetry**, so an asymmetric shape has to carry
+width on both sides even where only one of them carries the detail.
+
+**Four shapes read wrong in a frame and every headless assertion was green for all four.**
+LANTERN and CHALICE were the two-broad-ends construction — and the comments written beside
+them *claimed they were safe*, on the reasoning that a narrow cap and a wide foot are
+"different objects rather than different sizes of one". That was reasoned from the drawing
+and not from a frame, which is the exact move this file keeps recording as a mistake. In the
+frame both were featureless stacks. RIVET and SPADE were milder versions of the same thing:
+a step small enough that compression closed it, reading as a plain taper.
+
+All four were fixed the same way, and it is the same fix as TEARDROP, SHIELD and HOOK before
+them: **exaggerate the step until it survives.** "There is a step in the outline" and "the
+step is visible" are different claims, and only the second one matters.
+
+**The picker now scrolls to what is already chosen**, which was a minor annoyance at eight
+shapes and a real defect at forty-four. The list opens at the top, so a player whose marker
+was the last entry opened the screen with **no lit button anywhere in view** — measured, the
+selected button sat at y 846 against a 440px viewport, 406 pixels below the fold. It reads as
+the picker having forgotten the choice. `ensure_control_visible` is deferred, because nothing
+has a rect until the frame after the card is built: the shot tools' "build on one frame, act
+on the next" rule arriving in the screen itself.
+
+`PickerScrollShot.gd` is the instrument, and it exists because **`MarkerPickerShot` cannot
+answer this question**: that tool opens the picker and *then* calls `_pick()`, so the on-open
+scroll has long since fired and its frame shows the top of the list whether the scroll works
+or not. Verified in both directions — with the deferred call commented out it reports
+`button y 846.0..892.0 within viewport 0..440.0  FAIL`, and with it, `394.0..440.0  PASS`.
+
+> **A rendered-frame tool run with `-Headless` reports PASS and saves nothing.** There is no
+> viewport texture, so `root.get_texture()` is null and every `save_png` fails — but the loop
+> still reaches its end and prints `RESULT: PASS`. Thirty stale files from an earlier session
+> sat on disk looking like a partial success, which is the OneDrive-timestamp trap and the
+> stale-log trap arriving together. **Check the frames' own timestamps, not their presence.**
+
+**Forty new achievements, and the binding constraint was never naming them.** No two may fire
+on the same condition, swept over randomised runs, and sixty-odd thresholds on crashes,
+scrapes, turns, speed, score and HP were already spoken for. Two new quantities carry the
+overflow — the **worst** multiplier banked rather than the best, and the **spread** between a
+run's fastest and slowest maze — and both are derived from `maze_results` rather than stored,
+because §10 forbids growing `Score` a field to satisfy an achievement and forty new entries is
+exactly the pressure that rule exists to resist.
+
+The sweep caught one real collision while the set was being drafted: a "collect every gate in
+one maze" entry was bit-for-bit identical to `the_long_way`. It moved onto the time spread.
 
 **It is a menu button rather than a settings-panel row**, which is a deliberate exception to
 the rule that put MOBILE CONTROLS behind the cog. That rule is about *preferences* — things
@@ -3970,6 +4885,60 @@ plus the first and last rows where placement fails. It shoots **mid-animation**,
 demo that never advances is identical to a working one in a frame taken at t=0 — the reason
 `QuadrantShot` seeks a region change.
 
+#### The card scrolls, because three tables do not fit a screen
+
+**The choice tables sit in a `ScrollContainer`; the preview and CLOSE do not.**
+
+`PANEL_SIZE` was a hard-coded `Vector2(760, 830)` and the contents measured
+**1054** — so the card laid out at 1054 whatever the constant said, and ran
+**189px off the bottom of a 900-tall viewport**. The PATTERN COLOUR swatches and
+CLOSE were simply not on screen, which is the §8c overrun for the **fourth**
+time: the summary panel, the settings card, the compendium list, and now this.
+A `PanelContainer` sizes to its CONTENTS and ignores an offset smaller than they
+need, so declaring a height it cannot honour buys nothing at all.
+
+**Raising the constant alone would have been the same trap one step along.** The
+number is right for 8 shapes, 8 decals and 19 colours, and wrong on the next
+cosmetic added — and this screen grows by design, since every entry in it is an
+achievement reward (§10). It is raised anyway, to the measured 1054, but only as
+an upper **bound**: the viewport clamp is what keeps the card on screen, and the
+old 830 merely denied a tall display the chance to show every table at once.
+
+**What scrolls is the part that grows.** The heading, preview, state and name
+answer *what am I looking at*, and CLOSE answers *how do I leave* — pinning both
+is the whole point, because CLOSE was the row that went missing. The compendium
+records the mirror of this: a list that grew until it pushed its own title off
+the top. The list's height is **derived** from the panel box minus a measured
+fixed cost (heading 42, preview 156, state 20, name 34, CLOSE 46, separations
+60, margins 48 = 406), so a shorter screen shortens the LIST rather than losing
+rows off the end of it.
+
+**A tail spacer after the last swatch row**, because a row sliced by the scroll
+boundary reads as a **clipped control** rather than as more content below — the
+exact misread this screen was reported for. The spacer is what turns a cut-off
+row into a visible bottom of the list.
+
+**The preview gave up 44px of its height (200 → 156) and none of its width.**
+The marker lies flat on the floor and the camera looks *down* at it, so the box
+was taller than the silhouette ever filled — dead space above and below. The
+shapes are longer along their facing axis than across it, so height was the
+surplus axis. That 44px goes to the list, which was the part actually short of
+room.
+
+**`_fit` is re-run on `size_changed`, not only at build.** The card is built
+once, so a height derived only at build time is correct for the window the
+screen opened on and stale for every resize after — the stale half of the
+hard-coded-band trap. Measured across eight viewport heights, 700 to 1600: the
+card scales 658 → 1054, CLOSE is on screen at every one, PATTERN COLOUR is
+reachable at every one, and at 1200+ the scrollbar disappears entirely because
+everything fits.
+
+> **Only a rendered frame showed the second half.** With the card fitting and
+> every assertion green, the first frame still had the COLOUR swatches sliced
+> mid-row at the scroll edge — a boundary that reads as broken rather than as
+> scrollable. Fitting the card and making the cut legible are two different
+> fixes, and passing the first does not imply the second.
+
 #### Four traps found while building the picker
 
 All four were found by a rendered frame, and every headless assertion was green
@@ -4005,6 +4974,14 @@ through all of them.
   calculated: the arithmetic said the marker should fill 65% of the box and it did
   not, because the aim point and the box's centre are not the same thing once the
   camera looks down at a shape lying on the floor.
+
+`PickerScrollShot.gd` answers one question `MarkerPickerShot` structurally cannot: does the
+picker OPEN on the shape the player already holds? That tool opens the screen and *then*
+moves the highlight, so the on-open scroll has already fired and its frame shows the top of
+the list either way. This one saves a late-table shape first, opens the screen once, and
+measures where the selected button actually landed against the scroll viewport -- a question
+with exactly one frame in it. It restores the preference on the way out, since `Settings`
+persists on every write.
 
 `MarkerPickerShot.gd` is the other half — the picker's SCREEN rather than the shapes in
 play. Two different failures: a shape can read perfectly in a corridor and still be
@@ -4179,16 +5156,55 @@ Six harnesses, each answering a different question:
 
 | Harness | Question it answers |
 |---|---|
-| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and the card count, and the marker shape table -- that every entry points forward and is longer than it is wide, that ids are unique, that an unknown id falls back to the arrow, and that the choice never moves the racer, the marker decal table -- every decal generated from the outline it decorates, asserted across the WHOLE cross product of shapes and decals so a shape added later is decorated by construction, and the cut RESULT bounded rather than the cutter, the cosmetic unlock tables -- paired in both directions, since a cosmetic no achievement grants is unreachable and an achievement granting a typo is a goal with no reward, that the three defaults are never lockable, that a run which drove nowhere earns nothing by vacuous truth, and peak speed surviving a maze bank, and the compendium's demo table, covering every upgrade line in both directions. and the maze palettes -- stable ids, each maze defaulting to its own authored colourway, and the assignment moving nothing about the racer, and that no achievement grants something a fresh profile already has, which is the reverse of the pairing check and the direction it missed, and the STARTING SET counted by kind rather than named -- exactly one shape, colour, decal and palette -- since a named check has to be widened every time a cosmetic is added and widening it is how the palettes reached five free entries, and that no two achievements fire on the SAME condition, swept over 600 randomised run shapes on a fixed seed, since two goals with one condition unlock as a pair and each looks correct alone. 3609 assertions. |
-| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording, and that every marker shape builds a closed, outward-wound solid inside its ring, that the steering pads stand down while an upgrade pick is open while the pause pad stays up, and that a pause press both pauses AND opens the settings panel, that closing it resumes, that the cog stands down while the pads are up, and that QUIT TO MENU reports run_dismissed rather than tearing the run down itself, that every marker shape builds with every decal and stays a closed solid once cut, and that scrape-amber and crash-red override a player-chosen colour on BOTH surfaces -- asserted with a colour that is not itself a state colour, since an earlier version used crash red and so passed against the exact regression it was named for. 481 assertions. |
+| `RulesTest.gd` | Are the rules right? Generation, distance field, turn and buffer resolution, barrier, penalties, upgrades, the turn freeze, the three-way branch classification behind the Path Indicator, the zigzag cull, landmark placement, marker heights, the per-maze damage curve, HP regen and death, the score — awards, multiplier, banking and monotonicity — the two trail lines — gate routing, the five-gate gate on Platinum, and that the two never draw at once — the legendaries, including the one-per-run cap, draw rarity, wall smashing and auto-steer, the record of gates already taken, the repeat-cell penalty charged once per cell, the suppressed earning on repeat ground and the racer's visited-cell record, the flat per-contact wall charge and that it is billed once per contact rather than per second, that a modelled farming run scores below an honest one at every lap count swept, the date-derived daily and monthly seeds, and the quadrant numbering — that the start is always quadrant 1 and the exit always the highest, at every rank — together with the assertion that a quadrant ignores the maze's routing entirely, and the Trail Memory record — visit counting, the expiry fade, the count resetting with the cell, the per-rank windows, and that none of it moves the racer, and the six added lines — Momentum's ramp and its reset on contact, Second Wind spending a charge without refunding the contact HP, Deep Breath extending the freeze by its full allowance while paying no speed for it, Overclock burning HP without ever killing and without inflating `speed` itself, the gate footprint being a cardinal plus that a diagonal never satisfies, and that every Gate Size rank WIDENS the marker as well as raising it -- the half that was missing, since height alone lands entirely above the wall line where the capped camera barely sees it -- with the widest rank asserted to still clear the corridor walls, derived from CELL_SIZE rather than restated, and the card count, and the marker shape table -- that every entry points forward and is longer than it is wide, that ids are unique, that an unknown id falls back to the arrow, and that the choice never moves the racer, the marker decal table -- every decal generated from the outline it decorates, asserted across the WHOLE cross product of shapes and decals so a shape added later is decorated by construction, and the cut RESULT bounded rather than the cutter, and that every decal actually REMOVES a visible share of the mark and still FILLS an inlay piece after the seam inset -- the pair of checks NOTCH shipped invisible straight through, since "produces geometry" is true of a cut that changes the mark by a hair, the cosmetic unlock tables -- paired in both directions, since a cosmetic no achievement grants is unreachable and an achievement granting a typo is a goal with no reward, that the three defaults are never lockable, that a run which drove nowhere earns nothing by vacuous truth, and peak speed surviving a maze bank, and the compendium's demo table, covering every upgrade line in both directions. and the maze palettes -- stable ids, each maze defaulting to its own authored colourway, and the assignment moving nothing about the racer, and that no achievement grants something a fresh profile already has, which is the reverse of the pairing check and the direction it missed, and the STARTING SET counted by kind rather than named -- exactly one shape, colour, decal and palette -- since a named check has to be widened every time a cosmetic is added and widening it is how the palettes reached five free entries, and that no two achievements fire on the SAME condition, swept over 600 randomised run shapes on a fixed seed, since two goals with one condition unlock as a pair and each looks correct alone, and the camera sensitivity dial -- the rate curve's ends and its monotonicity, the derived default landing on a whole notch -- with the monotonicity sweep's bound READ off CAM_SENSITIVITY_MAX and guarded on what the loop actually walked, since a guard phrased against the constant passes while the loop beside it stops at a stale literal -- and the separation: two racers on one seed that must never diverge and whose FREEZES must never differ, since the freeze is a rule and this dial is only a view, and Deep Breath's COOLDOWN -- driven through real turns rather than by assigning `freeze` by hand, asserting that ANY turn extends by the whole allowance (the early-press gate is gone, and the two assertions that encoded it now assert the opposite), that the extension ACCRUES speed (the ramp rewind is gone too), that a second turn inside the cooldown does NOT extend while one past it does, and that both the immediate turn and the second turn actually froze at all, since "does not extend" is trivially true of a racer that never turned -- plus that an untaken line never extends, since the grant is gated on has_deep_breath() rather than on a non-zero allowance. the COINS -- collection, the per-cell no-double-pay rule, the bonus reading against the LIVE cap rather than the static one, the crash halving rounded down, the cap ratcheting permanently downward to its floor, and banking per maze surviving a later wipe -- coin placement ignoring the solve path, and the shop -- every lockable cosmetic priced, a re-buy refused rather than charged, and a default neither stocked nor purchasable. 39,051 assertions. |
+| `SceneTest.gd` | Does the game boot and run? Node setup, HUD construction, signal wiring, the gate/upgrade round trip, camera clipping, wall-indicator placement, path-indicator strip placement and orientation, dead-end decoration, the crash camera, pause, landmark mesh winding, marker sight lines, the maze-start loadout pick, Flying Vision's held clocks and raised camera, the spent-gate marker, the minimap's placement at two window widths, the gate marker names surviving a mesh rebuild, the rear-view mirror sharing the main world and clearing the HUD bands at two sizes, the quadrant box lighting the racer's own region and clearing the mirror at two sizes, and the end-of-run summary on both the death and completion paths, and the trail floor's shader, its per-cell texture sized to the grid, and the upgrade gating the drawing rather than the recording, and that every marker shape builds a closed, outward-wound solid inside its ring, that the steering pads stand down while an upgrade pick is open while the pause pad stays up, and that a pause press both pauses AND opens the settings panel, that closing it resumes, that the cog stands down while the pads are up, and that QUIT TO MENU reports run_dismissed rather than tearing the run down itself, that every marker shape builds with every decal and stays a closed solid once cut, and that scrape-amber and crash-red override a player-chosen colour on BOTH surfaces -- asserted with a colour that is not itself a state colour, since an earlier version used crash red and so passed against the exact regression it was named for, and that the camera sensitivity dial actually REACHES the camera -- measured by driving _process and reading the yaw the camera really moved, since a dial that maps correctly and is then ignored renders a perfectly plausible game -- with both camera invariants re-asserted at the dial's extremes, because the dial changes camera geometry and the default-dial pass cannot see it, and the quadrant box's two ends -- the start outline at start_cell's region, the start being region 1, and the two ends being DISTINCT regions, since an outline marking one corner twice says nothing at all, and the cluster's move to the top CENTRE -- centred on the whole grid-plus-dial width to a pixel, clearing the HUD's top row, clearing the MESSAGE band (the collision only a rendered frame caught) and no longer touching the mirror -- together with the compass needle carrying the racer's own facing, every heading giving a distinct angle, and north pointing up, and that the player MARKER EASES onto a new heading rather than snapping to it -- measured by driving real _process calls and reading _marker.rotation, since re-deriving the curve locally is the trap the camera-dial check beside it records -- and that the CAMERA's swing carries no velocity discontinuity, the jolt the removed turn-freeze multiplier caused by closing 70% of the turn in one frame at the default dial. 5,323 assertions. |
 | `RunTest.gd` | Is the game finishable? Plays a complete run through every maze in `Tuning.MAZES` on an autopilot and reports speed, time, crashes, per-maze gates, the final build, and the score breakdown per maze. |
-| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide, and that one real touch tap -- driven with the emulated mouse event a phone sends after it -- is exactly one turn and one held-direction change per edge -- including when that echo lands on a DIFFERENT pad, which is what a browser really sends -- that an unmatched release emits nothing, that a held tap whose emulated echo arrives LATE -- the case no time window can survive, since the echo is synthesized inside the engine and delivered on whatever frame it reaches -- is still one turn, that the pause pad clears the settings cog at two viewport sizes and stays above the 44px tap minimum on a phone, and that the menu's own buttons and labels clear that minimum on glass, that the Unlocks autoload is REGISTERED -- the hole Leaderboard shipped inert through for weeks -- and that the UPGRADES button opens the compendium, lists every line, and keeps its bubble inside the panel at BOTH ends of the list, since the top passes trivially, and the grouped menus -- every row of every menu REACHABLE by walking the table rather than by naming the rows, every submenu carrying a way back, the trail returning to the root, and the submenu title clearing both the logo above it and the first row below. 142 assertions. |
+| `ShellTest.gd` | Can a player get in? The menu boots, PLAY reaches a running game, WATCH TRAILER reaches the reel, finishing the reel comes back, the mobile-controls toggle survives the menu-to-game swap, and the left+right reverse chord resolves without latching and stays off the keyboard, the pads scale to a phone screen, and the leaderboard panel switches all four views, toggles sort and draws malformed rows safely with the service offline, the PLAY DAILY and PLAY MONTHLY buttons each start a game on their own date-derived seed, and the pads reporting held direction on press, on a partial chord release and on hide, and that one real touch tap -- driven with the emulated mouse event a phone sends after it -- is exactly one turn and one held-direction change per edge -- including when that echo lands on a DIFFERENT pad, which is what a browser really sends -- that an unmatched release emits nothing, that a held tap whose emulated echo arrives LATE -- the case no time window can survive, since the echo is synthesized inside the engine and delivered on whatever frame it reaches -- is still one turn, that the pause pad clears the settings cog at two viewport sizes and stays above the 44px tap minimum on a phone, and that the menu's own buttons and labels clear that minimum on glass, that the Unlocks autoload is REGISTERED -- the hole Leaderboard shipped inert through for weeks -- and that the UPGRADES button opens the compendium, lists every line, and keeps its bubble inside the panel at BOTH ends of the list, since the top passes trivially, and the grouped menus -- every row of every menu REACHABLE by walking the table rather than by naming the rows, every submenu carrying a way back, the trail returning to the root, and the submenu title clearing both the logo above it and the first row below. 143 assertions. |
 | `TrailerTest.gd` | Does the trailer show what it claims? Every maze appears in the declared order, each gate segment opens its cards, and every segment covers real ground. 22 assertions. |
 | `MusicTest.gd` | Does the music table hold together? Every declared track resolves to a real file, every maze names a track that exists, the autoload is registered and processing, and the transport crossfades, ducks and loops. 105 assertions. |
 
 `TrailerShot.gd` is the picture half of `TrailerTest` — it renders the reel and
 saves a frame per segment plus each gate moment, which is the only way to check
 captions, palettes and card layout without watching it.
+
+`CoinProbe.gd` is not a test -- it reports, per maze, how many coins were placed, how many
+sit ON the canonical solve path, and how many are invalid (duplicated, on the start or exit,
+or in a sealed pocket). The solve-path column is the one that matters: it is the routing-leak
+check §5b rests on, and it has to be read against the path's own share of the grid rather
+than against zero, since an unbiased scatter lands some coins there by chance.
+
+`CoinShot.gd` is the picture half of the coins. It **seeks a coin** rather than shooting on a
+timer -- a timed shot lands in an empty corridor and produces a frame that cannot tell a
+working coin from one that never spawned, the reason `PaletteShot` seeks a junction. It walks
+the corridor cell by cell rather than testing alignment, because a coin sharing an axis may
+sit behind a wall, which is the fault `AddedLinesShot` records for its first two versions.
+
+> **Its autopilot must steer toward COINS, not toward the exit.** An exit-seeking router takes
+> the optimal route, and coin placement deliberately ignores that route -- measured, it met a
+> coin in 1 maze of 5 and reported "no coin found" for the other four, which is an instrument
+> that photographs nothing. It routes by a bounded BFS, once per **cell** rather than once per
+> frame: flooding a 100x100 grid every frame made the first version appear to hang outright,
+> which is `RepeatProbe`'s frame-versus-cell lesson in a third instrument. The parent-chain
+> walk needs a hop guard too -- the start cell is its own parent, so a chain that reaches it
+> without matching spins forever, and an unguarded wait is a hang rather than a failure.
+
+> **Only a rendered frame caught the coin's size and height.** At `COIN_RADIUS` 0.55 the disc
+> was a sliver several cells out, and every headless assertion was green -- the mesh measured
+> exactly 1.1 x 1.1 x 0.12 with gold albedo and emission on, which is a correct coin that
+> cannot be seen. Diagnosed by probing the built mesh and material directly rather than by
+> looking at the frame again, the same way the palette lock was.
+
+`ShopShot.gd` is the picture half of the shop (§7b): one frame with an empty wallet, where the
+screen is a goal list, and one with a partial wallet, where the three chip states are all on
+screen at once. A single shot shows one half of the mechanic. It **restores the wallet and the
+earned set on the way out** and sets `suppress_save` throughout -- verified against the real
+`settings.cfg`, which still read `coins=0` afterwards.
+
+> **Build on one frame, capture on the NEXT.** Its first version opened the screen and shot it
+> in the same frame, and `process_frame` fires before the UI is drawn -- so it photographed
+> "0 COINS" against a wallet of 30. That reads exactly like a stale label in the shop and is
+> not; it is the trap §8c already records for `SummaryShot`, whose own two shots came out
+> identical for the same reason.
 
 `RunLengthProbe.gd` reports straight-run lengths, which is how the 8-cell cap in §6 is
 verified; "over cap" must always read 0.
@@ -4213,6 +5229,14 @@ actually buys.
 `GateShot.gd` shoots each maze from 2.5-6 cells short of a gate, which is how the
 above-the-wall gate marker gets checked -- the question it answers is "can I see it
 coming", so shooting from on top of a gate would show nothing.
+
+`GateSizeShot.gd` is the CONTROLLED picture of Gate Size -- one seed, one gate, one camera
+pose, varying only the rank, at two distances. `AddedLinesShot` also shoots this line and
+cannot answer the question it exists for: it restarts the run per rank, so its frames land at
+different distances on different mazes, which shows a marker is there and never that one is
+bigger. It SEEKS a gate with clear corridor behind it on all four approaches and fails loudly
+when none has one -- its first version took gates[0], which on the fixture seed sits against
+the maze's west edge, and shot the inside of the boundary wall.
 
 `GateSpentShot.gd` is the picture half of the taken-gate work (§7): three frames per gate --
 approaching it live, just past it, and **looking back at it** from two cells on. Only the
@@ -4274,6 +5298,16 @@ settling point.
 > `turns/s` at 0.11 against the 0.62 a 5x racer actually makes. This is `RepeatProbe`'s
 > frame-versus-cell lesson arriving in a second instrument.
 
+`DeepBreathProbe.gd` is not a test -- it reports what the held extension actually costs and
+pays, per rank, on maze 5 with a control row per rank that does NOT hold the direction. It
+exists because neither `RunTest` nor `RulesTest` can answer the question: RunTest's autopilot
+never holds a direction, so its final speed is identical with the line maxed and untaken --
+the same blind spot `MomentumProbe` records for its own line -- and RulesTest asserts one
+extension in isolation, which says nothing about six of them compounding across a maze. It is
+what showed the ramp-runs change to be +0.27x and ~2s of budget at max rank rather than the
+pump it was predicted to be. Steered once per CELL, never per frame, the lesson `RepeatProbe`
+and `MomentumProbe` both record.
+
 `AddedLinesShot.gd` is the picture half of the two added lines that change the screen: the card
 row at 3, 4 and 5 cards, and the gate marker at Gate Size rank 0 against rank 3. The card row is
 §12's hard-coded-layout trap — five 320px cards overrun a 1600px viewport — and no headless
@@ -4285,6 +5319,18 @@ assertion can see a row overflowing or text clipped from a narrowed card.
 > dismisses any upgrade pick immediately: the first run let a card screen open over the gate and
 > produced a frame of the card row where the marker should have been.
 
+`DecalProbe.gd` is not a test -- it reports, per shape and decal, the share of the mark the
+cut REMOVES, how many pieces the mark ends in, and how many INLAY pieces survive the seam
+inset. That last column is the one no other instrument reports and the one that exposed
+NOTCH drawing nothing on seven of eight shapes.
+
+`DecalShot.gd` is the picture half: every decal on the LIGHTCYCLE, from the ordinary
+trailing camera, which is the angle that turns a shallow cut into no cut at all. It reads
+the list from `MARKER_DECALS` rather than naming the decals, so one added later is
+photographed by construction. Not to be confused with `InlayPairShot.gd`, which holds the
+decal fixed and varies the COLOUR PAIR -- the two instruments cross the same grid the other
+way.
+
 `MazeColoursShot.gd` is the picture half of the maze-colour screen: a fresh profile (four
 palettes locked, which is what a new player sees) and an assigned one. The chips are drawn in
 their own palette's colours, so whether a locked chip reads as locked -- and whether a dark
@@ -4294,8 +5340,21 @@ BOTH the earned set and every slot assignment on the way out.
 `CompendiumShot.gd` is the picture half of the upgrade compendium: one frame per demo KIND
 rather than per line -- five kinds is what the drawing code has, and 28 frames of which a
 dozen are the same corridor function is a slower read for no more coverage -- plus the first
-and last rows, where bubble placement fails. It shoots mid-animation, because a demo that
-never advances is identical to a working one in a frame taken at t=0.
+and last rows, where bubble placement fails, plus the LONGEST CAPTION in the table. That last
+one is a different question from the longest demo: a caption that overflows its box clips
+silently, no assertion sees it, and every other frame of that kind is drawn from a short one.
+It shoots mid-animation, because a demo that never advances is identical to a working one in
+a frame taken at t=0.
+
+`CamSensShot.gd` is the picture half of the camera sensitivity dial. It **seeks a pivot**
+rather than shooting on a timer, for the reason `PaletteShot` seeks a junction -- at rest both
+ends of the dial look identical, because the swing has already finished -- and shoots a fixed
+number of frames INTO a turn at each end of the dial and at the default. The three positions
+are DERIVED from `CAM_SENSITIVITY_MIN`/`MAX` rather than written out — a literal `[0, 5, 10]`
+was correct while the dial ended at 10 and would have shot the fast half three times while
+never photographing the new slow end, which is the one frame the tool exists to produce. It
+un-sticks a parked racer, since a frame with no pivot in it is indistinguishable from the
+feature doing nothing.
 
 `Screenshot.gd` is not a test — it runs the real game with rendering and saves frames to
 `logs/`, which is how the visuals get checked without anyone opening the editor.
@@ -4333,7 +5392,10 @@ timer, and that is the whole point of the tool — a box that never updated woul
 *identical* to a working one in any single frame, since a lit square is a lit square.
 Shooting either side of a crossing is the only frame pair that shows the highlight
 actually move. It caught both the count label reaching into the mirror and the cardinal
-letter being too faint to read.
+letter being too faint to read, and later the start outline's first colour being
+**invisible against the box's own grid** while every headless assertion was green — and,
+after the pair moved to the top centre, the upgrade **toast drawn straight through both the
+grid and the compass dial**, which no assertion had any reason to look for.
 
 `TrailMemoryShot.gd` is the picture half of Trail Memory (§7): two frames per maze, one down
 a stretch driven once and one over ground crossed four times. It **drives a loop** rather than
@@ -4364,6 +5426,19 @@ a rule needs the renderer, the rule is in the wrong place.
   the `+` at the *start* of the next line is a parse error, and it surfaces as
   "Could not resolve class X, because of a parser error" in every *other* file that
   references the class — pointing anywhere but the actual broken line.
+- **A harness can report PASS at a STALE assertion count while a file it depends on fails to
+  parse.** Adding constants and a static function to `Tuning.gd` and immediately running
+  `RulesTest` produced `passed: 3609  failed: 0` — a clean green run — while the log also
+  carried `Parse Error: Cannot find member "CAM_SENSITIVITY_MIN" in base "Tuning"` and
+  `Failed to load script "res://scripts/core/Settings.gd"`. The autoload was dead, the new
+  test never ran, and the count was the *previous* build's. `--import` fixed it and the count
+  jumped to 3725 with two real failures.
+
+  **The count is the instrument, not the RESULT line.** A green PASS whose total has not moved
+  after adding assertions is evidence the additions never executed — the same shape as the CI
+  gate that went green on a crashed run, and the "check it took long enough to have run" note
+  below. Grep the log for `Parse Error` as well as `FAIL`, and compare the total against the
+  one in the harness table.
 - **A new `class_name` is invisible until the project is re-imported.** Adding a script
   with a fresh `class_name` and immediately running a harness fails with "Identifier not
   declared" — the same symptom as the missing-cache trap, but on an up-to-date project.

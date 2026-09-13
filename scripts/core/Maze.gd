@@ -94,6 +94,21 @@ var gates: Array[Vector2i] = []
 # never be used there.
 var landmarks: Array[Dictionary] = []
 
+# Coins scattered through the maze, as cells. Collected by standing in one
+# (CLAUDE.md section 5b).
+#
+# Unlike landmarks this is NOT display-only -- the racer reads it, because
+# collecting a coin raises the speed floor. What it still must not read is
+# ROUTING: placement ignores the solve path, the distance field, the gates and
+# the exit entirely, exactly as landmark placement does. A coin says "there is
+# value here", never "the exit is this way", so a currency that clustered on the
+# optimal route would be a free Path Indicator handed to a player who has not
+# bought one.
+#
+# Cells rather than richer entries: a coin has no per-instance variation to
+# carry, and the racer needs to answer "is there a coin in this cell" cheaply.
+var coins: Array[Vector2i] = []
+
 var start_cell: Vector2i
 var exit_cell: Vector2i
 
@@ -107,6 +122,14 @@ var _rng := RandomNumberGenerator.new()
 # sequence. A decoration knob must not be able to alter the maze it decorates.
 var _decor_rng := RandomNumberGenerator.new()
 
+# Coins draw from a THIRD stream, separate from both the carve and the
+# landmarks, for the reason the landmark stream is separate from the carve:
+# sharing one would mean that changing the coin density silently redraws every
+# landmark in the game, since each extra draw shifts the whole downstream
+# sequence. The knobs have to be independent of each other, not merely of the
+# maze.
+var _coin_rng := RandomNumberGenerator.new()
+
 # 0.0 = pure random DFS. Higher values bias the carve toward continuing in the
 # direction it was already going, which lengthens straight corridors.
 var _straighten := 0.0
@@ -115,7 +138,7 @@ var _straighten := 0.0
 func generate(p_width: int, p_height: int, p_seed: int, braid_factor: float,
 		dead_end_target: float, gate_count: int, straighten: float = 0.0,
 		shallow_keep: float = 1.0, landmark_density: float = 0.0,
-		zigzag_keep: float = 1.0) -> void:
+		zigzag_keep: float = 1.0, coin_density: float = 0.0) -> void:
 	width = p_width
 	height = p_height
 	seed_value = p_seed
@@ -123,6 +146,7 @@ func generate(p_width: int, p_height: int, p_seed: int, braid_factor: float,
 	_rng.seed = p_seed
 	# Offset so the two streams never run in lockstep on the same seed.
 	_decor_rng.seed = p_seed ^ 0x5EED_DEC0
+	_coin_rng.seed = p_seed ^ 0x5EED_C01D
 
 	# Start every cell fully walled; the carve knocks walls down.
 	cells = PackedInt32Array()
@@ -152,6 +176,10 @@ func generate(p_width: int, p_height: int, p_seed: int, braid_factor: float,
 	# cap is: the dead-end passes open walls, so a cell that was a sealed pocket
 	# or a dead end mid-pipeline may well not be one in the finished maze.
 	_place_landmarks(landmark_density)
+	# LAST, after the landmarks, for the same reason they run last: every
+	# wall-knocking stage above changes which cells are open, and a coin placed
+	# mid-pipeline could end up in a pocket the player can never reach.
+	_place_coins(coin_density)
 
 
 # --- Generation stages -------------------------------------------------------
@@ -608,6 +636,66 @@ func _place_gates(count: int) -> void:
 		var index := int(step * i)
 		index = clampi(index, 1, solve_path.size() - 2)
 		gates.append(solve_path[index])
+
+
+# --- Coins (CLAUDE.md section 5b) --------------------------------------------
+
+# Scatter coins through the maze.
+#
+# PLACEMENT IGNORES THE SOLVE PATH, THE DISTANCE FIELD, THE GATES AND THE EXIT.
+# That is the whole safety argument, and it is the same one landmarks rest on: a
+# coin is visible from a distance and is worth detouring for, so a currency that
+# preferred the optimal route would be telling the player which way to go. Path
+# Indicator, Gate Compass and Golden Trail are PAID lines sold on answering
+# exactly that, and free scenery must not answer it for nothing.
+#
+# What that buys is the decision the coin exists to create: a coin down a dead
+# end is a real choice between a speed bonus and the 180 it costs to take it. If
+# coins only ever sat on the way to the exit there would be no choice in them at
+# all -- they would simply be collected by driving well.
+#
+# The start and exit cells are excluded, and the exclusion is NOT a routing
+# read. The start would hand the player a free coin before they had driven
+# anywhere, and the exit cell ends the maze on contact -- a coin there could
+# never be banked, which reads as one that failed to collect.
+func _place_coins(density: float) -> void:
+	coins.clear()
+	if density <= 0.0:
+		return
+
+	var candidates: Array[Vector2i] = []
+	for y in height:
+		for x in width:
+			var cell := Vector2i(x, y)
+			if cell == start_cell or cell == exit_cell:
+				continue
+			# A sealed pocket cannot be driven into, so a coin there is one the
+			# player can see and never take. Landmarks WANT those cells; coins
+			# must avoid them for the same reason the exit is excluded.
+			if open_directions(cell).is_empty():
+				continue
+			candidates.append(cell)
+
+	if candidates.is_empty():
+		return
+
+	_shuffle_coins(candidates)
+	var want := int(round(candidates.size() * density))
+	# At least the cap's worth wherever the grid can carry it, so a maze can
+	# never be one a full purse is unreachable in. The density knob sets how far
+	# ABOVE that a maze goes, which is what leaves the player choosing which
+	# coins to detour for.
+	want = clampi(want, mini(Tuning.COIN_CAP, candidates.size()), candidates.size())
+	for i in want:
+		coins.append(candidates[i])
+
+
+func _shuffle_coins(array: Array) -> void:
+	for i in range(array.size() - 1, 0, -1):
+		var j := _coin_rng.randi_range(0, i)
+		var tmp = array[i]
+		array[i] = array[j]
+		array[j] = tmp
 
 
 # --- Landmarks (docs/specs/landmarks.md) -------------------------------------

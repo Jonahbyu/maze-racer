@@ -1,4 +1,4 @@
-# The marker picker: choose which mark sits inside the player's ring.
+﻿# The marker picker: choose which mark sits inside the player's ring.
 #
 # The one cosmetic choice in the game, and the reason it is a menu button rather
 # than a settings-panel row (CLAUDE.md, "The marker's shape is the player's to
@@ -35,7 +35,13 @@ const COL_CARD_HOVER := MainMenu.COL_CARD_HOVER
 # of the same outline to keep in step with the table -- and worse, it would be
 # the wrong question. What the player is choosing is how a silhouette reads from
 # behind at a shallow angle, which a face-on icon cannot show.
-const PREVIEW_SIZE := Vector2i(320, 200)
+# Shortened from 200 to 156. The turntable sat in visible dead space top and
+# bottom -- the marker lies flat on the floor and the camera looks DOWN at it,
+# so the box was taller than the silhouette ever filled. The height it gives up
+# goes to the choice list, which is the part that was actually short of room.
+# Width is unchanged: the shapes are longer along their facing axis than across
+# it, so it is the HEIGHT that was surplus.
+const PREVIEW_SIZE := Vector2i(320, 156)
 
 # Close enough to the game's trailing camera that the preview answers the
 # question actually being asked. Not derived from Tuning.CAM_*: those are tuned
@@ -54,7 +60,53 @@ const PREVIEW_LOOK := Vector3(0.0, 0.0, -0.08)
 # box on the empty floor around it.
 const PREVIEW_FOV := 38.0
 
-const PANEL_SIZE := Vector2(760, 830)
+# The panel's UPPER BOUND, never its height.
+#
+# A PanelContainer sizes to its CONTENTS and ignores an offset smaller than they
+# need -- the section 8c overrun, which this screen hit for the fourth time in
+# the codebase. Measured: three tables (8 shapes, 8 decals, 19 colours twice)
+# stack to 1054px against the 830 declared here, so the card laid out at 1054
+# whatever this said and ran 189px off the bottom of a 900-tall viewport. The
+# PATTERN COLOUR swatches and CLOSE were simply not on screen.
+#
+# The fix is the compendium's: clamp the box to a share of the viewport, then
+# derive the SCROLLING region's height from that box minus a measured fixed
+# cost. Raising this number ALONE would be the same trap one step along --
+# correct for today's three tables and overflowing on the next cosmetic added.
+#
+# It is raised here anyway, to the height the three tables actually need (1054
+# measured), because as an upper BOUND it now costs nothing: the viewport clamp
+# below is what keeps the card on screen, and capping at 830 only denied a tall
+# display the chance to show every table at once. A short one still scrolls.
+const PANEL_SIZE := Vector2(760, 1054)
+
+# What the card spends on everything that is NOT the scrolling choice list:
+# the MARKER heading, the preview, the state and name labels, the CLOSE button,
+# the row separations between them and the card's own content margins.
+#
+# MEASURED off the live layout, not estimated -- the settings card's note records
+# an estimated fixed cost laying out 107px over its computed height. Broken down:
+# heading 42, preview 156, state 20, name 34, CLOSE 46, five separations 60,
+# card margins 48.
+const PANEL_FIXED_COST := 406.0
+
+# The floor on the scrolling region. Below about this the list shows under two
+# rows of shape buttons and scrolling stops being navigation and starts being a
+# keyhole -- at which point the screen is worse than one that merely overflows.
+const LIST_MIN_HEIGHT := 220.0
+
+# How much of a short viewport's height the card may take.
+#
+# 0.94 rather than a tighter number because this screen is a full-screen modal
+# over a scrim -- there is nothing behind it that needs to stay legible, unlike
+# the settings card, which is lifted off centre so the menu title still reads.
+# What the margin is for is the scrim reading as a border rather than the card
+# meeting the screen edge.
+const PANEL_VIEW_SHARE := 0.94
+
+# Blank space after the last swatch row, so it can scroll fully clear of the
+# boundary instead of being sliced by it.
+const LIST_TAIL_PAD := 14.0
 
 # The colours offered as swatches.
 #
@@ -115,6 +167,19 @@ var _locked_hold := 0.0
 var _colour_2_label: Label = null
 var _colour_2_row: Control = null
 
+# The card's actual laid-out box, clamped to the viewport in _build_panel. Kept
+# because the scrolling region's height is derived from it, and a second call to
+# get_viewport_rect() could disagree with the box the card was actually built at.
+var _panel_box: Vector2 = PANEL_SIZE
+
+# The scrolling choice region, kept so _fit can re-derive its height. The card is
+# built once but the viewport can change under it -- a height computed only at
+# build time is correct for the window the screen happened to open on and wrong
+# for every resize after, which is the stale half of the hard-coded-band trap.
+var _scroll: ScrollContainer = null
+var _card: PanelContainer = null
+var _choices: VBoxContainer = null
+
 
 func _ready() -> void:
 	# Anchors and offsets together -- set_anchors_preset() alone leaves a
@@ -131,7 +196,68 @@ func _ready() -> void:
 	_build_scrim()
 	_build_panel()
 	_show_shape()
+	_fit()
+	# Re-fit on resize. The card is built once, so a height derived only at build
+	# time is correct for the window the screen opened on and stale for every one
+	# after it -- and this screen is reachable from a menu the player may have
+	# resized since launch.
+	get_viewport().size_changed.connect(_fit)
+	# SCROLL TO WHAT IS ALREADY CHOSEN, once the layout has resolved.
+	#
+	# The list opens at the top, which was invisible while the tables were short
+	# and is a real defect now that the shape grid alone runs to fifteen rows: a
+	# player whose marker is the last entry opened this screen with NO lit button
+	# anywhere in view, which reads as the picker having forgotten their choice.
+	#
+	# Deferred because ensure_control_visible measures rects, and nothing has a
+	# rect until the frame after the card is built -- the same "build on one
+	# frame, act on the next" rule the shot tools record, arriving in the screen
+	# itself rather than in an instrument.
+	_scroll_to_selection.call_deferred()
 	set_process(true)
+
+
+# Bring the selected shape button into view, so the screen opens on the choice
+# the player actually holds rather than on the top of the table.
+func _scroll_to_selection() -> void:
+	if _scroll == null or _index < 0 or _index >= _buttons.size():
+		return
+	var button: Button = _buttons[_index]
+	if button == null or not is_instance_valid(button):
+		return
+	_scroll.ensure_control_visible(button)
+
+
+# Size the card to the viewport and the scrolling region to what is left.
+#
+# Both halves are DERIVED. The card is clamped to a share of the viewport (a
+# pixel is a count, not a size -- section 9d), and the list then takes the box
+# minus the measured fixed cost, so a shorter screen shortens the LIST rather
+# than pushing CLOSE off the bottom edge. Raising a literal instead would be the
+# same trap one cosmetic later.
+func _fit() -> void:
+	if _card == null or _scroll == null:
+		return
+	var view := get_viewport_rect().size
+	# Guarded exactly as SettingsPanel's scale is: a headless dummy reports a
+	# degenerate viewport, and sizing against it produces plausible-looking
+	# nonsense rather than an error.
+	if view.x < 1.0 or view.y < 1.0:
+		return
+	var box := Vector2(minf(PANEL_SIZE.x, view.x * 0.94),
+		minf(PANEL_SIZE.y, view.y * PANEL_VIEW_SHARE))
+	_panel_box = box
+	_card.offset_left = -box.x * 0.5
+	_card.offset_right = box.x * 0.5
+	_card.offset_top = -box.y * 0.5
+	_card.offset_bottom = box.y * 0.5
+	# The floor is applied to the LIST, and the card is then allowed to exceed
+	# the box rather than the list becoming a keyhole. On a viewport too short
+	# for even that, scrolling the whole card is a worse answer than a list two
+	# rows deep -- but neither is reachable on any real display, so the floor is
+	# a guard rather than a layout anyone sees.
+	_scroll.custom_minimum_size = Vector2(0.0,
+		maxf(box.y - PANEL_FIXED_COST, LIST_MIN_HEIGHT))
 
 
 func _build_scrim() -> void:
@@ -148,10 +274,18 @@ func _build_panel() -> void:
 	card.anchor_right = 0.5
 	card.anchor_top = 0.5
 	card.anchor_bottom = 0.5
-	card.offset_left = -PANEL_SIZE.x * 0.5
-	card.offset_right = PANEL_SIZE.x * 0.5
-	card.offset_top = -PANEL_SIZE.y * 0.5
-	card.offset_bottom = PANEL_SIZE.y * 0.5
+	# Clamped to a share of the viewport rather than taking PANEL_SIZE outright,
+	# with the reasoning section 9d gives for the pads: a pixel is a count, not
+	# a size, so a card fixed in viewport units is a different physical size on
+	# every screen -- and on a short one it simply runs off the bottom.
+	var view := get_viewport_rect().size
+	var box := Vector2(minf(PANEL_SIZE.x, view.x * 0.94),
+		minf(PANEL_SIZE.y, view.y * 0.92))
+	_panel_box = box
+	card.offset_left = -box.x * 0.5
+	card.offset_right = box.x * 0.5
+	card.offset_top = -box.y * 0.5
+	card.offset_bottom = box.y * 0.5
 
 	var style := StyleBoxFlat.new()
 	style.bg_color = COL_CARD
@@ -161,6 +295,7 @@ func _build_panel() -> void:
 	style.set_content_margin_all(24)
 	card.add_theme_stylebox_override("panel", style)
 	add_child(card)
+	_card = card
 
 	var rows := VBoxContainer.new()
 	rows.add_theme_constant_override("separation", 12)
@@ -179,18 +314,51 @@ func _build_panel() -> void:
 	_name_label = _heading("", 24, Color.WHITE)
 	rows.add_child(_name_label)
 
-	rows.add_child(_label_row("SHAPE"))
-	rows.add_child(_build_grid())
-	rows.add_child(_label_row("PATTERN"))
-	rows.add_child(_build_decal_grid())
-	rows.add_child(_label_row("COLOUR"))
-	rows.add_child(_build_swatches(1))
+	# The three choice tables SCROLL; everything above and CLOSE below do not.
+	#
+	# The heading, preview and name answer "what am I looking at" and the button
+	# answers "how do I leave" -- both must stay put, which is precisely the
+	# failure being fixed: CLOSE was the row that went off the bottom edge, so
+	# the screen offered no visible way out. The compendium's note records the
+	# mirror of this, a list that grew until it pushed its own title off the top.
+	var scroll := ScrollContainer.new()
+	scroll.name = "Choices"
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# DERIVED from the panel box, never a literal: a shorter viewport shortens
+	# the list instead of losing the rows off the end of it.
+	_scroll = scroll
+	rows.add_child(scroll)
+
+	var choices := VBoxContainer.new()
+	choices.add_theme_constant_override("separation", 12)
+	choices.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(choices)
+	_choices = choices
+
+	choices.add_child(_label_row("SHAPE"))
+	choices.add_child(_build_grid())
+	choices.add_child(_label_row("PATTERN"))
+	choices.add_child(_build_decal_grid())
+	choices.add_child(_label_row("COLOUR"))
+	choices.add_child(_build_swatches(1))
 	# The second row is built always but SHOWN only when a decal is chosen: a
 	# plain mark has no cuts to fill, so offering a fill colour for it would be
 	# a control that changes nothing.
 	_colour_2_label = _label_row("PATTERN COLOUR")
-	rows.add_child(_colour_2_label)
-	rows.add_child(_build_swatches(2))
+	choices.add_child(_colour_2_label)
+	choices.add_child(_build_swatches(2))
+	# A tail spacer, so the last swatch row can scroll clear of the edge.
+	#
+	# Without it the list ends exactly on its final row, and a row sliced by the
+	# scroll boundary reads as a CLIPPED control rather than as more content
+	# below -- which is the same misread this whole screen was reported for. The
+	# spacer is what turns a cut-off row into a visible bottom of the list.
+	var tail := Control.new()
+	tail.custom_minimum_size = Vector2(0.0, LIST_TAIL_PAD)
+	tail.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	choices.add_child(tail)
+
 	rows.add_child(_make_button("CLOSE", _on_close))
 
 

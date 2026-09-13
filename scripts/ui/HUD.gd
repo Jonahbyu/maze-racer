@@ -33,7 +33,9 @@ const COL_BAD := Color(1.0, 0.25, 0.25)
 # palette would be re-learned five times a run.
 const COL_SCORE := Color(0.98, 0.92, 0.62)
 
+var _top_row: Control
 var _speed_label: Label
+var _coin_label: Label
 var _timer_label: Label
 var _maze_label: Label
 var _score_label: Label
@@ -42,6 +44,13 @@ var _barrier_bar: ProgressBar
 var _hp_bar: ProgressBar
 var _compass: Label
 var _flash: ColorRect
+# Where the message band sits when nothing is above it, and how far below
+# anything that is. The floor is kept so a run with neither line taken puts the
+# toast exactly where it has always been.
+const MESSAGE_TOP := 140.0
+const MESSAGE_HEIGHT := 50.0
+const MESSAGE_GAP := 12.0
+
 var _message: Label
 
 var _flash_time := 0.0
@@ -107,6 +116,15 @@ func _build_top_bar() -> void:
 	_maze_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	row.add_child(_maze_label)
 
+	# Coins sit in the LEFT group, with speed, because that is what they are: a
+	# coin is +0.05 on the floor, so the purse and the speed readout are one
+	# thought. The right group is the timer and the score, which are about the
+	# clock -- and the timer's width changes past a minute, so nothing may share
+	# its line (the collision section 9d records).
+	_coin_label = _make_label("", 24, Tuning.NEON_COIN)
+	_coin_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(_coin_label)
+
 	# The spacer goes BETWEEN the maze label and the timer, so speed and maze
 	# info group at the left and only the timer is pushed to the right. With the
 	# spacer immediately after speed, everything else piles up on the far edge
@@ -131,6 +149,33 @@ func _build_top_bar() -> void:
 	_timer_label = _make_label("0:00.0", 34, Color.WHITE)
 	_timer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	row.add_child(_timer_label)
+
+	_top_row = row
+
+
+# The bottom edge of the top row, for anything that stacks under it.
+#
+# Read off the ROW rather than restated as a literal by each caller. The row's
+# own offsets are the authority on where it ends, and a widget that guessed
+# would drift the moment the row's height changed -- the same reason the
+# quadrant box used to be handed the mirror's measured edge instead of a
+# constant.
+func top_row_bottom() -> float:
+	return _top_row.offset_bottom if _top_row != null else 70.0
+
+
+# The coin counter: held, and the live cap.
+#
+# Goes DIM once the purse is at the cap, so a full purse reads as full -- every
+# further coin is banked for the shop but buys no more speed, and a counter that
+# kept climbing past the number beside it would say otherwise.
+func set_coins(held: int, cap: int) -> void:
+	if _coin_label == null:
+		return
+	_coin_label.text = "%d/%d" % [held, cap]
+	var full := held >= cap
+	_coin_label.add_theme_color_override("font_color",
+		Tuning.NEON_COIN.darkened(0.45) if full else Tuning.NEON_COIN)
 
 
 func _build_stat_bars() -> void:
@@ -200,13 +245,32 @@ func _build_message() -> void:
 	_message.anchor_right = 0.5
 	_message.anchor_top = 0.0
 	_message.anchor_bottom = 0.0
-	_message.offset_top = 140
-	_message.offset_bottom = 190
+	_message.offset_top = MESSAGE_TOP
+	_message.offset_bottom = MESSAGE_TOP + MESSAGE_HEIGHT
 	_message.offset_left = -400
 	_message.offset_right = 400
 	_message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_message.modulate.a = 0.0
 	add_child(_message)
+
+
+# Push the message band below whatever now occupies the top centre.
+#
+# It sat at a hard-coded 140, which was clear while the top centre was empty --
+# and the quadrant box and compass moving there put the toast straight through
+# both of them. Measured in a rendered frame: "GATE SIZE RANK 1" was drawn
+# across the grid and the compass dial at once, so all three were unreadable.
+#
+# Handed the cluster's measured bottom rather than a new literal, which would be
+# the same hard-coded-band trap one step along -- correct for today's widget and
+# wrong the moment its size changes, and its size is derived from the viewport's
+# shorter edge, so it changes on every screen.
+func push_message_below(y: float) -> void:
+	if _message == null:
+		return
+	var top: float = maxf(MESSAGE_TOP, y + MESSAGE_GAP)
+	_message.offset_top = top
+	_message.offset_bottom = top + MESSAGE_HEIGHT
 
 
 func _make_label(text: String, size: int, colour: Color) -> Label:
@@ -246,6 +310,17 @@ func update_hud(racer: Racer, upgrades: Upgrades, elapsed: float, maze_name: Str
 		COL_SPEED.lerp(Color.WHITE, racer.speed_fraction()))
 
 	_timer_label.text = _format_time(elapsed)
+
+	# Read off the racer each frame rather than driven by the coin signals
+	# alone. A counter updated only on collection goes stale the moment anything
+	# else moves the purse -- a crash halves it and shrinks the cap, and the maze
+	# boundary carries both forward -- so the display would disagree with the
+	# speed the player is actually driving at.
+	#
+	# The CAP is shown beside the count, not just the count, because the cap is
+	# the number that falls permanently on a crash. "12/20" and "12/17" are the
+	# same purse and very different runs.
+	set_coins(racer.coins, racer.coin_cap)
 
 	if score != null:
 		# The projected total, not just the banked one: the number on screen

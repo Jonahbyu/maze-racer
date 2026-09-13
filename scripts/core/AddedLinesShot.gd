@@ -115,7 +115,8 @@ func _restart(rank: int) -> void:
 		_game.upgrades.take(Upgrades.Line.GATE_SIZE)
 	# Rebuilt rather than merely rescaled, so the shot exercises the ordinary
 	# build path a real run takes rather than the mid-maze rescale.
-	_game._mesh.build(_game.maze, 0, _game.upgrades.gate_height_scale())
+	_game._mesh.build(_game.maze, 0, _game.upgrades.gate_height_scale(),
+		_game.upgrades.gate_girth_scale())
 	_last_cell = Vector2i(-999, -999)
 
 
@@ -188,9 +189,9 @@ func _autopilot() -> void:
 # from a frame where the marker is merely dim.
 func _report() -> void:
 	var racer: Racer = _game.racer
-	print("  cell=%s facing=%d gates=%s scale=%.2f" % [
+	print("  cell=%s facing=%d gates=%s height=%.2f girth=%.2f" % [
 		str(racer.cell), racer.facing, str(racer.maze.gates),
-		_game.upgrades.gate_height_scale()])
+		_game.upgrades.gate_height_scale(), _game.upgrades.gate_girth_scale()])
 	for gate in racer.maze.gates:
 		if _sees(racer, gate):
 			print("  SEES gate at %s, delta %s" % [str(gate), str(gate - racer.cell)])

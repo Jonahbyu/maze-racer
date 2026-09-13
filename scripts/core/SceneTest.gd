@@ -234,6 +234,26 @@ func _run() -> void:
 	_check_trail_floor(game)
 	_check_dead_end_decoration(game)
 	_check_camera_never_clips(game)
+
+	# The two camera invariants again at the DIAL'S EXTREMES.
+	#
+	# Camera sensitivity changes how far the eye's yaw lags the racer's facing,
+	# and both invariants are geometric consequences of that yaw: `back` is
+	# derived from _cam_yaw, so a lagged camera sits somewhere a snapped one
+	# never does. The default-dial pass above cannot see that -- and a rendered
+	# frame at dial 10 showed the view opening out over the wall tops, which is
+	# the flattening section 12 forbids.
+	#
+	# Run at both ends rather than only the slow one: a snap camera reaches its
+	# final yaw within a frame of the pivot, which is its own geometry and not
+	# merely "less of" the lagged case.
+	var cam_settings: Node = game.get_node_or_null("/root/Settings")
+	if cam_settings != null:
+		var restore_dial: float = float(cam_settings.cam_sensitivity)
+		for dial in [Tuning.CAM_SENSITIVITY_MIN, Tuning.CAM_SENSITIVITY_MAX]:
+			cam_settings.set_cam_sensitivity(dial)
+			_check_camera_never_clips(game, " (dial %d)" % int(dial))
+		cam_settings.set_cam_sensitivity(restore_dial)
 	_check_crash_camera(game)
 	_check_pause(game)
 	_check_landmark_meshes(game)
@@ -453,7 +473,7 @@ func _check_trail_floor(game) -> void:
 # the maze boundary can all put it in geometry -- and a camera inside a wall box
 # fills the screen with one flat face. Screenshots only sample a few moments;
 # this drives thousands of frames including every turn.
-func _check_camera_never_clips(game) -> void:
+func _check_camera_never_clips(game, label: String = "") -> void:
 	var to_face: float = Tuning.CELL_SIZE * 0.5 - Tuning.WALL_THICKNESS * 0.5
 	var last := Vector2i(-999, -999)
 	var bad := 0
@@ -531,9 +551,9 @@ func _check_camera_never_clips(game) -> void:
 		if game._sight_blocked(p, marker):
 			blind += 1
 
-	check("camera never clips into a wall", bad == 0,
+	check("camera never clips into a wall%s" % label, bad == 0,
 		"%d of %d frames inside geometry" % [bad, frames])
-	check("the player marker is never hidden by a wall", blind == 0,
+	check("the player marker is never hidden by a wall%s" % label, blind == 0,
 		"%d of %d frames with sight blocked" % [blind, frames])
 
 
@@ -775,6 +795,9 @@ func _check_pause(game) -> void:
 
 	game._set_paused(true)
 	_check_pause_settings(game)
+	_check_cam_sensitivity(game)
+	_check_marker_eases_onto_a_new_heading(game)
+	_check_camera_swing_has_no_jolt(game)
 
 	game._set_paused(false)
 	check("unpause returns to racing", game.phase == game.Phase.RACING)
@@ -791,6 +814,204 @@ func _check_pause(game) -> void:
 # The panel mounted over a paused game, which is where the interactions that
 # can actually go wrong live: a modal that outlives the pause would swallow the
 # steering inputs the player just went back to.
+# The camera sensitivity dial is actually WIRED to the camera.
+#
+# RulesTest asserts the rate curve and the separation, and neither can see this:
+# a dial that maps beautifully and is then ignored by _process renders a
+# completely plausible game. The break that motivated this check was a single
+# hard-coded 12.0 left in the yaw update, which every rules assertion passed.
+#
+# Driven through Settings rather than by poking _cam_yaw_rate, because the
+# signal hop is the part that rots -- a setter that saves but never announces
+# leaves the camera on the old rate until the next maze.
+func _check_cam_sensitivity(game) -> void:
+	var settings: Node = game.get_node_or_null("/root/Settings")
+	if settings == null:
+		# The autoload is absent when Game.tscn is instantiated bare. That is
+		# the ordinary harness case and not a failure -- but say so, rather than
+		# silently reporting nothing, since a check that quietly does not run is
+		# indistinguishable from one that passed.
+		check("camera sensitivity: no Settings autoload to drive", true)
+		return
+
+	var restore: float = float(settings.cam_sensitivity)
+
+	# The snap end and the slow end must reach the camera as different rates.
+	settings.set_cam_sensitivity(Tuning.CAM_SENSITIVITY_MIN)
+	var snap_rate: float = float(game._cam_yaw_rate)
+	settings.set_cam_sensitivity(Tuning.CAM_SENSITIVITY_MAX)
+	var slow_rate: float = float(game._cam_yaw_rate)
+
+	check("the dial reaches the camera",
+		snap_rate > slow_rate, "snap %.2f vs slow %.2f" % [snap_rate, slow_rate])
+	check("sensitivity 0 gives the camera the snap rate",
+		absf(snap_rate - Tuning.CAM_YAW_RATE_SNAP) < 0.01,
+		"got %.3f" % snap_rate)
+	check("sensitivity 10 gives the camera the slow rate",
+		absf(slow_rate - Tuning.CAM_YAW_RATE_SLOW) < 0.01,
+		"got %.3f" % slow_rate)
+
+	# And the CAMERA itself swings differently. This is the assertion a
+	# hard-coded rate in _process cannot survive, and it has to drive _process
+	# to have that property.
+	#
+	# A first version re-derived the swing from game._cam_yaw_rate in a local
+	# loop, and passed against a deliberately hard-coded 12.0 -- because it was
+	# reading the field the break did not touch, and simply restating the
+	# arithmetic the game was no longer performing. Measuring _cam_yaw across
+	# real _process calls is what makes it evidence.
+	var swung := {}
+	for dial in [Tuning.CAM_SENSITIVITY_MIN, Tuning.CAM_SENSITIVITY_MAX]:
+		settings.set_cam_sensitivity(dial)
+		# Point the camera a quarter turn away from the racer's own facing and
+		# let _process close it. The freeze is cleared so the freeze multiplier
+		# is not part of what is being measured.
+		game.racer.freeze = 0.0
+		var facing_yaw: float = game._yaw_for(game.racer.facing)
+		game._cam_yaw = facing_yaw - PI * 0.5
+		for i in 6:
+			game._process(1.0 / 60.0)
+			game.racer.freeze = 0.0
+		# How much of the quarter turn is left, off the racer's CURRENT facing:
+		# _process drives the racer too, so the target can have moved.
+		swung[dial] = absf(wrapf(
+			game._yaw_for(game.racer.facing) - game._cam_yaw, -PI, PI))
+
+	var fast_left: float = float(swung[Tuning.CAM_SENSITIVITY_MIN])
+	var slow_left: float = float(swung[Tuning.CAM_SENSITIVITY_MAX])
+	check("a snap camera has closed the turn after a few frames",
+		fast_left < 0.05, "%.4f rad still to go" % fast_left)
+	check("a lagged camera is still visibly short after the same frames",
+		slow_left > fast_left + 0.2,
+		"snap %.4f vs lag %.4f" % [fast_left, slow_left])
+
+	settings.set_cam_sensitivity(restore)
+
+
+# The player MARKER eases onto a new heading rather than snapping to it.
+#
+# Measured by driving real _process calls and reading _marker.rotation, never by
+# re-deriving the curve locally: the camera check one function up records exactly
+# that trap -- a version that restated the arithmetic passed against a
+# hard-coded rate, because it was reading the field the break did not touch.
+#
+# The marker used to take racer.facing directly, so it rotated 90 degrees in ONE
+# frame under a camera easing over many. Measured before the fix: a worst
+# per-frame marker step of 180.00 degrees against the camera's 26.25.
+func _check_marker_eases_onto_a_new_heading(game) -> void:
+	if game.racer == null or game._marker == null:
+		check("marker ease: no racer to drive", false)
+		return
+
+	# Point the DRAWN marker a quarter turn off the racer's facing and let
+	# _process close it, the same construction the camera check uses. Going
+	# through the field rather than a real turn keeps the angle known: a real
+	# pivot also moves the racer, so the target would not be where it started.
+	var facing_yaw: float = game._yaw_for(game.racer.facing)
+	game._marker_yaw = facing_yaw - PI * 0.5
+
+	var biggest_step := 0.0
+	var previous: float = game._marker_yaw
+	var frames := 0
+	for i in 30:
+		game._process(1.0 / 60.0)
+		if game._marker == null or game.racer == null:
+			break
+		var now: float = float(game._marker.rotation.y)
+		var step: float = absf(wrapf(now - previous, -PI, PI))
+		biggest_step = maxf(biggest_step, step)
+		previous = now
+		frames += 1
+
+	# The guard: a loop that never ran would leave biggest_step at 0.0 and pass
+	# the "no single frame flips it" check by asserting nothing at all.
+	check("marker ease: the swing was actually driven", frames > 10,
+		"%d frames" % frames)
+	check("marker ease: was exercised", biggest_step > 0.0,
+		"the marker never moved")
+
+	# The whole point: no single frame may cover most of the quarter turn.
+	check("no single frame covers most of the marker's swing",
+		biggest_step < PI * 0.25,
+		"biggest step %.1f deg of a 90 deg swing" % rad_to_deg(biggest_step))
+
+	# And it must actually ARRIVE -- an ease that never closes leaves the arrow
+	# permanently off the corridor it is driving down.
+	var left: float = absf(wrapf(
+		game._yaw_for(game.racer.facing) - float(game._marker.rotation.y), -PI, PI))
+	check("the marker swing closes onto the racer's facing", left < 0.05,
+		"%.4f rad still to go" % left)
+
+
+# The camera's swing has no discontinuity in it -- no single frame may carry a
+# large step-down in angular velocity relative to the frame before.
+#
+# This is the "small jolt when turning" check. The camera used to swing 3.5x
+# faster while the turn freeze ran and drop to 1.0x the frame it ended, which is
+# a velocity break in the middle of the swing; worse, at the default dial that
+# boost closed 70% of the whole turn in a SINGLE frame. Measured before the
+# multiplier was removed: a worst frame-to-frame slowdown of 3.58x at the
+# default. After: 1.25x, which is just the natural shape of an exponential ease.
+#
+# Driven through real _process calls and measured off _cam_yaw, never re-derived
+# locally -- the trap the sensitivity check records, where a version that
+# restated the arithmetic passed against a hard-coded rate.
+func _check_camera_swing_has_no_jolt(game) -> void:
+	if game.racer == null:
+		check("camera jolt: no racer to drive", false)
+		return
+
+	var settings: Node = game.get_node_or_null("/root/Settings")
+	var restore: float = float(settings.cam_sensitivity) if settings != null else 0.0
+	if settings != null:
+		settings.set_cam_sensitivity(Tuning.cam_sensitivity_default())
+
+	# Open a quarter-turn gap and let _process close it, with the racer frozen
+	# as it would be mid-corner. The freeze is re-armed each frame for the first
+	# stretch so the boost, if one is ever reintroduced, is live across the
+	# boundary where it used to be switched off.
+	var facing_yaw: float = game._yaw_for(game.racer.facing)
+	game._cam_yaw = facing_yaw - PI * 0.5
+
+	var steps: Array = []
+	var previous: float = game._cam_yaw
+	for i in 30:
+		if game.racer == null:
+			break
+		# Frozen for the first six frames, exactly as a real turn is.
+		game.racer.freeze = 0.10 if i < 6 else 0.0
+		game._process(1.0 / 60.0)
+		if game.racer == null:
+			break
+		var now: float = game._cam_yaw
+		steps.append(absf(wrapf(now - previous, -PI, PI)))
+		previous = now
+
+	# The guard: an empty or tiny sample would pass the ratio check by asserting
+	# nothing at all.
+	check("camera jolt: the swing was actually driven", steps.size() > 20,
+		"%d frames" % steps.size())
+
+	var worst := 0.0
+	for k in range(1, steps.size()):
+		var before: float = float(steps[k - 1])
+		var after: float = float(steps[k])
+		# Only meaningful while the swing is still moving; once it has settled
+		# both numbers are noise and their ratio is meaningless.
+		if after > 0.0005 and before > 0.0005:
+			worst = maxf(worst, before / after)
+
+	check("camera jolt: the swing was exercised", worst > 0.0,
+		"the camera never moved")
+	# 1.6x is comfortably above the ~1.25x a clean exponential ease produces at
+	# the default dial, and far below the 3.58x the freeze multiplier caused.
+	check("no frame breaks the camera's swing velocity",
+		worst < 1.6, "worst frame-to-frame slowdown %.2fx" % worst)
+
+	if settings != null:
+		settings.set_cam_sensitivity(restore)
+
+
 func _check_pause_settings(game) -> void:
 	game._open_settings()
 	check("the cog opens the settings panel", game.settings_open())
@@ -1620,6 +1841,23 @@ func _check_quadrant_box(game) -> void:
 		"exit is %d of %d" % [maze.quadrant_of(maze.exit_cell, box.divisions),
 			maze.quadrant_count(box.divisions)])
 
+	# The start outline is the other end of the same measurement, and it is what
+	# turns the box from a position readout into a progress one. Derived from
+	# start_cell for the same reason the exit is derived from exit_cell -- the
+	# numbering's two ends come from those cells, so restating them as 1 and
+	# `total` here would be a second copy of that derivation.
+	check("the start outline is at the start's region",
+		box.start_at == maze.quadrant_coord(maze.start_cell, box.divisions),
+		"outline %s" % box.start_at)
+	check("the start is the first region",
+		maze.quadrant_of(maze.start_cell, box.divisions) == 1,
+		"start is %d" % maze.quadrant_of(maze.start_cell, box.divisions))
+	# The two ends must be DISTINCT regions, or the box marks one corner twice
+	# and the progress read it exists for says nothing. This holds at every
+	# rank because start_cell and exit_cell are opposite corners of the grid.
+	check("the start and exit regions differ", box.start_at != box.exit_at,
+		"both at %s" % box.start_at)
+
 	# The compass letter must match the way the racer actually faces. Read from
 	# the direction rather than compared to a literal "N", since the racer's
 	# heading here depends on wherever the earlier checks left it.
@@ -1632,6 +1870,35 @@ func _check_quadrant_box(game) -> void:
 	# look like a font problem rather than a wiring one.
 	check("the compass letter is cardinal",
 		box.cardinal in ["N", "E", "S", "W"], "letter %s" % box.cardinal)
+
+	# The NEEDLE needs an angle, which the letter cannot give -- so the facing
+	# is carried too, and must be the racer's own. A dial fed a stale or zero
+	# facing renders a perfectly plausible compass pointing north forever,
+	# which is the failure no rendered frame would catch either, since north is
+	# a legitimate heading.
+	check("the compass carries the racer's facing", box.facing == racer.facing,
+		"box %d vs racer %d" % [box.facing, racer.facing])
+
+	# And the needle must actually SWING. Driven through the four headings
+	# rather than trusting one: a mapping that returned a constant would agree
+	# with the racer on whichever heading happened to be current.
+	var angles := {}
+	var restore_facing: int = box.facing
+	for dir in [Maze.N, Maze.E, Maze.S, Maze.W]:
+		box.facing = dir
+		angles[dir] = box._facing_angle()
+	check("every heading gives a distinct needle angle",
+		angles.values().size() == 4
+			and angles[Maze.N] != angles[Maze.E]
+			and angles[Maze.E] != angles[Maze.S]
+			and angles[Maze.S] != angles[Maze.W]
+			and angles[Maze.W] != angles[Maze.N],
+		"angles %s" % angles)
+	# North is UP on screen, which is what makes it a compass rather than a
+	# dial with arbitrary labels. -Y is up, so the angle is -PI/2.
+	check("north points up", is_equal_approx(float(angles[Maze.N]), -PI * 0.5),
+		"north %.4f" % float(angles[Maze.N]))
+	box.facing = restore_facing
 
 	# Placement, at two sizes, for the reason the mirror check gives: both boxes
 	# derive their size from the shorter edge, so the wide case alone would pass
@@ -1654,18 +1921,48 @@ func _check_quadrant_box(game) -> void:
 				and rect.position.y >= 0.0 and rect.end.y <= view.y,
 			"rect %s in %s" % [rect, view])
 
-		# THE placement assertion. The box hangs off the mirror's bottom edge
-		# rather than off a constant, and an overlap is exactly what a literal
-		# would produce at one of these two sizes -- the hard-coded-band trap.
+		# THE placement assertion. The pair sits TOP-CENTRE, on the same
+		# vertical axis as the corridor vanishing point and the minimap below
+		# it, so the eye travels one line rather than into a corner and back.
+		#
+		# Centred on the WHOLE cluster, grid plus dial: centring the grid alone
+		# would push the compass off-axis by half its own width, which is the
+		# failure this is phrased to catch. Tolerance is a pixel, not a band.
+		check("the quadrant cluster is centred %s" % label,
+			absf((rect.position.x + rect.end.x) * 0.5 - view.x * 0.5) <= 1.0,
+			"centre %.1f of %.1f" % [
+				(rect.position.x + rect.end.x) * 0.5, view.x * 0.5])
+
+		# Below the HUD's top row, whose bottom edge it is HANDED rather than
+		# guessing -- the row carries the timer, whose width changes past a
+		# minute, so anything sharing its line eventually collides with it.
+		var band: float = game._hud.top_row_bottom()
+		check("the quadrant box clears the top row %s" % label,
+			rect.position.y >= band,
+			"box top %.1f vs row bottom %.1f" % [rect.position.y, band])
+
+		# It no longer stacks under the mirror, so it must not have landed ON
+		# it either -- the mirror keeps the top-LEFT corner and this is the
+		# check that the move actually vacated that column.
 		var mirror = game._rear_view
 		if mirror != null:
 			var mrect: Rect2 = mirror.get_rect()
 			check("the quadrant box clears the mirror %s" % label,
 				not rect.intersects(mrect),
 				"box %s vs mirror %s" % [rect, mrect])
-			check("the quadrant box hangs below the mirror %s" % label,
-				rect.position.y >= mrect.end.y,
-				"box top %.1f vs mirror bottom %.1f" % [rect.position.y, mrect.end.y])
+
+		# The HUD's MESSAGE band must clear the box. Only a rendered frame
+		# caught this one: the toast sits in the top centre too, so the moment
+		# the pair moved there "GATE SIZE RANK 1" was drawn straight across the
+		# grid and the compass dial at once, and all three became unreadable.
+		# The band was a hard-coded 140, clear only because nothing had ever
+		# been above it.
+		var msg: Control = game._hud._message
+		if msg != null:
+			check("the message band clears the quadrant box %s" % label,
+				msg.offset_top >= rect.end.y,
+				"message top %.1f vs box bottom %.1f" % [
+					msg.offset_top, rect.end.y])
 
 		# Clear of the bottom band the barrier and integrity bars own, on a
 		# screen tall enough for that band to mean anything.

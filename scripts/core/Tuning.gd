@@ -135,6 +135,78 @@ const BARRIER_REGEN_PER_RANK := 0.15
 # crashes get more expensive.
 const MAX_HP := 50
 
+# --- Coins (CLAUDE.md section 5b) --------------------------------------------
+
+# Each coin held raises the speed FLOOR by this much, additively on top of
+# whatever Base Speed ranks have bought. At the cap that is a full +1.00x.
+#
+# It is the floor rather than the ramp deliberately. The ramp is the game's
+# central pressure (section 3) and Momentum is already the line that prices it;
+# a currency that accelerated the climb would make coins a second Momentum with
+# no wall-contact reset to pay for it. The floor is the number a crash RESETS
+# to, so coins buy back exactly what a crash takes away -- which is what makes
+# losing half of them on a crash legible rather than arbitrary.
+const COIN_SPEED_BONUS := 0.05
+
+# Coins held at once, before crashes eat into it. 20 * 0.05 is +1.00x, so a full
+# purse doubles the base floor and no more -- deliberately of the same order as a
+# maxed Base Speed line (7 ranks * 0.25 = 1.75x) rather than dwarfing it.
+#
+# Collection past the cap is not an error and is not refused: the coin is taken,
+# banked toward the shop, and the surplus simply does not raise the floor.
+# Refusing it would leave coins sitting in a corridor the player has cleared,
+# which reads as a bug.
+const COIN_CAP := 20
+
+# Every crash permanently lowers the cap by this much for the rest of the run.
+#
+# This is what stops a purse from being fully recoverable. Halving alone is a
+# setback the player drives back out of in a minute; a cap that never recovers
+# means a crash-heavy run is PERMANENTLY capable of less, and the twentieth coin
+# is only ever held by someone who has not crashed at all. It is the ratchet the
+# rest of the coin economy lacks.
+#
+# The bonus is recomputed against the live cap, so a crash that takes the cap
+# below what is held trims the purse down to it -- otherwise the cap would be a
+# claim the game did not enforce.
+const COIN_CAP_LOST_PER_CRASH := 1
+
+# The cap never falls below this. At zero a run could reach a state where coins
+# are uncollectable for its whole remainder, which turns every coin still drawn
+# in the world into a thing that cannot be picked up -- the same "visible and
+# unreachable" failure the sealed-pocket exclusion avoids.
+const COIN_CAP_MIN := 5
+
+# What SURVIVES a crash, rounded DOWN. Half is the harsh read on an odd purse --
+# 9 coins becomes 4, not 5 -- which is consistent with a crash being the event
+# the whole barrier system exists to avoid (section 5.4).
+#
+# A crash already costs HP, the parked time, the speed reset and 1000 points.
+# Coins are the fifth cost, and the only one the player can see accumulating
+# BEFORE they pay it, which is what makes a full purse feel like something worth
+# protecting rather than a number that only goes up.
+const COIN_CRASH_KEEP := 0.5
+
+# Coins scattered per maze, as a fraction of open cells.
+#
+# Placement IGNORES the solve path, the distance field, the gates and the exit,
+# for exactly the reason landmark placement does (section 6): a coin the player
+# can see is a reason to go somewhere, and a currency that clustered on the
+# optimal route would be a free Path Indicator. Coins say "there is value here",
+# never "the exit is this way" -- so they must be able to sit down a dead end,
+# and often do.
+#
+# Tuned so a maze carries comfortably more than the cap: the player chooses
+# WHICH to detour for, and a maze that held exactly 20 would make the choice for
+# them. Denser on the early mazes in absolute terms because those are smaller --
+# the fraction falls as the grids grow so a late maze is not carpeted.
+const COIN_DENSITY := 0.006
+const COIN_DENSITY_BY_MAZE := [0.006, 0.005, 0.0042, 0.0036, 0.0032]
+
+# A coin is collected by standing in its cell. Membership, never a radius --
+# the reason section 7 gives for the gate footprint: a radius fires diagonally
+# through wall corners, collecting through solid geometry.
+
 # Wall damage per crash on maze 1, climbing by WALL_DAMAGE_PER_MAZE each maze:
 # 3, 5, 7, 9, 11. Against 75 HP that is 25 crashes on maze 1 and 6 on maze 5.
 #
@@ -392,7 +464,27 @@ const SECOND_WIND_PER_RANK := 1
 # The true opposite of Snap Turn: that line buys the clock back, this one spends
 # it to buy reading room. Never sensibly taken together, which is the point --
 # a card worthless to your build says more about that build than another +0.15.
-const DEEP_BREATH_BY_RANK := [0.0, 0.15, 0.30, 0.45]
+#
+# Long enough to be a real LOOK rather than a longer corner. 0.75s at max rank
+# against the ordinary 0.10s freeze is a beat the player stops and reads in; the
+# 0.15-0.45 it replaced was a corner that lasted slightly longer, which is a
+# different thing and was not what the card promised.
+const DEEP_BREATH_BY_RANK := [0.0, 0.25, 0.50, 0.75]
+
+# Deep Breath's cooldown, in seconds of accumulated driving time.
+#
+# The COOLDOWN is what limits the line, which is why the early-press gate could
+# be dropped. That gate existed because the line had no other limiter: the key
+# requesting a turn is still down when a 0.10s freeze ends, so a held direction
+# was true at every corner and the extension was automatic rather than asked
+# for. A cooldown bounds uses per minute DIRECTLY -- ~6 a minute here -- rather
+# than relying on the player not having pressed early, so the extension can now
+# fire on any turn and still be a decision.
+#
+# Ticked on the racer's own accumulated driving time, never a wall clock, so it
+# does not run down during an upgrade pick or a pause -- the same clock Trail
+# Memory ages on, and for the same reason.
+const DEEP_BREATH_COOLDOWN := 10.0
 
 # Overclock. HP burned per second while the gesture is held, by rank.
 #
@@ -422,6 +514,32 @@ const GATE_SIZE_REACH_BY_RANK := [0, 0, 1, 2]
 
 # The gate marker's height multiplier by rank, on top of GATE_MARKER_HEIGHT.
 const GATE_SIZE_HEIGHT_BY_RANK := [1.0, 1.35, 1.5, 1.65]
+
+# And its GIRTH multiplier -- how much wider the crossed slabs get.
+#
+# Height alone was measured not to read, and the reason is geometric rather than
+# a matter of degree. The camera is capped below WALL_HEIGHT (section 12), so
+# everything a taller marker adds is added ABOVE the wall line, at the far end
+# of a corridor, where perspective compresses it to a few pixels. The part of
+# the marker the player is actually looking at while collecting it -- the part
+# at eye level, in the cell -- was pixel-identical at every rank. Measured on a
+# controlled pair (one seed, one gate, one camera pose, varying only the rank):
+# the mesh AABB went 5.55 -> 9.16 on Y and stayed a flat 3.0 x 3.0 on XZ.
+#
+# So a rank now widens as well as raises. Width is the axis that reads from
+# inside the corridor, which is where "my gate got bigger" is actually asked.
+#
+# BOUNDED BY THE CORRIDOR, and that is what sets the top of the table. The base
+# slab is CELL_SIZE * 0.75 = 3.0m in a 4.0m cell, so 1.28 takes it to 3.84m and
+# leaves 8cm of clearance each side. Past that the marker intersects the side
+# walls -- which is not a wider gate, it is a gate with its ends buried, and at
+# 0.55 alpha it would read as a rendering fault rather than as an upgrade.
+#
+# 1.30 was tried first and sits EXACTLY on the clearance bound, which RulesTest
+# rejects on purpose: a top rank resting on the limit has no margin for a future
+# change to CELL_SIZE or to the 0.75 base, and would start intersecting on the
+# first tweak to either rather than failing a test.
+const GATE_SIZE_GIRTH_BY_RANK := [1.0, 1.12, 1.21, 1.28]
 
 # Extra Card. Cards offered at a pick, by rank -- an investment line whose cost
 # is the pick itself, so it is only correct early and needs no rule to say so.
@@ -1133,6 +1251,35 @@ const PALETTES := [
 const NEON_GATE := Color(1.0, 0.85, 0.15)
 const NEON_EXIT := Color(1.0, 1.0, 1.0)
 
+# Coins, fixed across every maze for the reason gates and the exit are: a coin
+# is a thing you learn to recognise once. Warm gold, and it has to separate from
+# NEON_GATE's amber-yellow at distance -- so a coin is small and SPINS while a
+# gate is a tall static slab, and the two never read alike in motion even where
+# the hues are neighbours.
+const NEON_COIN := Color(1.0, 0.78, 0.22)
+
+# How the coin sits and moves. It floats clear of the floor so the disc is seen
+# edge-on from the trailing camera rather than lying flat where it would be a
+# line, and spins slowly enough to read as an object turning rather than as a
+# flicker at 8x.
+# Measured against CAM_HEIGHT (2.3) rather than picked: a coin at eye level is
+# seen against the far wall and the dark corridor mouth behind it, where a low
+# one is seen against the lit floor grid and competes with the timing lines the
+# player is actually reading (section 11.3). Just under two thirds of eye height
+# puts it clear of the floor markings and still well below the wall line, so it
+# never reads as a gate.
+const COIN_HOVER_HEIGHT := 1.4
+# Big enough to read at MAX_AHEAD cells down a corridor. At 0.55 the disc was a
+# sliver at distance -- measured in a rendered frame, which is the only place a
+# size like this can be judged.
+const COIN_RADIUS := 0.72
+const COIN_THICKNESS := 0.14
+const COIN_SPIN_RATE := 1.6          # radians/sec
+# A slow vertical bob, so a coin is distinguishable from a static landmark at a
+# glance even before its spin resolves.
+const COIN_BOB_HEIGHT := 0.18
+const COIN_BOB_RATE := 1.9
+
 # A gate already taken. Cool and dim against the live gate's warm amber, so the
 # two separate on HUE as well as brightness -- brightness alone is what the wall
 # indicator ramps on (section 5.6), and a spent gate seen far off through fog
@@ -1206,6 +1353,15 @@ const GATE_SPENT_BASE := 0.95
 # maze, and mistaking one for the other at speed is a real routing error.
 # Colour separates them up close (amber-yellow vs white).
 const GATE_MARKER_HEIGHT := 1.85
+
+# How close a widened gate marker may come to the corridor's side walls.
+#
+# The bound exists because Gate Size widens the marker (GATE_SIZE_GIRTH_BY_RANK)
+# and the corridor does not widen with it. A slab that reached the wall would be
+# drawn intersecting it, and at 0.55 alpha that reads as a rendering fault, not
+# as a bigger gate. Enforced in the mesh rather than only in the table, so a
+# future rank added to the table cannot quietly bury the marker.
+const GATE_MARKER_WALL_CLEARANCE := 0.05
 const EXIT_MARKER_HEIGHT := 2.6
 
 
@@ -1298,6 +1454,152 @@ const CAM_CRASH_LOOK_HEIGHT := 0.35
 # Seconds for the crash view to ease in and out. Fast enough to feel like a
 # reaction, slow enough not to snap.
 const CAM_CRASH_EASE := 6.0
+
+# --- Camera sensitivity ------------------------------------------------------
+#
+# How fast the chase camera slews onto a new heading after a pivot, as a player
+# preference on a 0..50 dial, shipped at notch 20. 0 is a snap -- the view is on
+# the new corridor the frame the racer turns. 50 trails so far behind that the
+# camera is still coming round many cells after the freeze has ended and the
+# racer is already moving, so it is genuinely NOT always behind you.
+#
+# A RATE, not a duration, and that distinction is what keeps it a view setting
+# rather than a game rule. The freeze (TURN_FREEZE) is a rule -- it holds the
+# racer still, it costs run time, and Snap Turn buys it down. This dial does not
+# touch it. What it changes is only how much of the swing the camera spends
+# INSIDE that hold, which is a question about the view and nothing else.
+#
+# So the simulation still cannot read this: the racer pivots, freezes and
+# resumes identically at every setting. Only the eye behaves differently, which
+# is the same separation the marker shape and the maze palettes have.
+const CAM_YAW_RATE_DEFAULT := 12.0
+
+# The slow end of the dial, in the same units as CAM_YAW_RATE_DEFAULT (the
+# fraction of the remaining angle closed per second).
+#
+# At 1.0 a 90-degree pivot is nowhere near the new heading when the 0.10s freeze
+# ends even with the freeze multiplier applied, so the camera is still visibly
+# coming round several cells later -- which is exactly what the dial's top end
+# is being asked for.
+#
+# It was 2.5, and the comment here said "not lower: below about 2 the view is
+# still swinging when the NEXT junction arrives". MEASURED, that bound was
+# already breached at 2.5: the swing takes 867ms to settle, which is 4.3 cells
+# at 5x. The old number was not the edge of the section 11.3 rule, it was just
+# the slowest rate anyone had asked for.
+#
+# What the rule actually protects is that the corridor is READABLE by the time
+# the player has to act on it, not that the swing has finished. Measured as the
+# share of a 90 completed after one cell has passed:
+#
+#     rate    @1x     @3x     @5x     @8x
+#     2.50    97%     81%     74%     68%
+#     1.00    73%     47%     41%     35%
+#     0.80    65%     40%     34%     29%
+#
+# At 1.0 the player is 41% round after a cell at 5x and the new corridor is
+# resolving; the lag is heavy but the view is still arriving. Below about 0.8 it
+# stops being a lag and becomes a camera that never catches up at all, which is
+# the fault the rule forbids -- a corridor the player cannot see yet is the one
+# thing no preference should be able to buy.
+const CAM_YAW_RATE_SLOW := 1.0
+
+# Where the default sits on the dial, as a fraction of its travel.
+#
+# TWO FIFTHS, so on a 0..50 dial the shipped camera is notch 20 and the THIRTY
+# notches above it are all lag the dial did not previously reach. It was
+# implicitly one HALF while the default was the geometric mean of the two ends
+# (what SNAP = DEFAULT^2 / SLOW encodes), then two thirds on the 0..30 dial.
+#
+# The notch itself has not moved across either change -- the default has been 20
+# since the dial reached 30, and stays 20 here. What changes is the fraction of
+# the TRAVEL that notch represents, because the dial got longer above it.
+#
+# Named rather than left implicit because the derivation below reads it: moving
+# the default along the dial is a change to THIS number, and the endpoint
+# re-solves to keep the default landing exactly on a whole notch.
+const CAM_DEFAULT_DIAL_FRACTION := 20.0 / 50.0
+
+# The fast end, DERIVED so that the shipped rate lands exactly on a whole notch
+# rather than between two of them.
+#
+# A hand-picked snap rate and a whole-number dial are two incompatible demands:
+# with the ends chosen independently, the notch nearest the default was 10.5
+# against the shipped 12.0, so the setting a player never touches would not have
+# been the camera the game shipped with. Solving for the ENDPOINT instead fixes
+# that by construction.
+#
+# The general form, since the default is no longer the midpoint. On a geometric
+# curve DEFAULT = SNAP^(1-f) * SLOW^f, so SNAP = (DEFAULT / SLOW^f)^(1/(1-f)) --
+# which reduces to the old DEFAULT^2 / SLOW at f = 1/2. Solving it this way is
+# what let the dial grow to 30 notches with the default moved to 20 while BOTH
+# ends kept their meaning: verified, notch 20 comes out at exactly 12.000000.
+#
+# It comes out around 276, well past the ~57.6 it used to be -- but that is a
+# distinction without a difference in play. Anything above 60 closes the WHOLE
+# remaining angle inside one frame at 60fps, and the per-frame step is clamped
+# to 1.0 regardless, so every notch up to about 9 is the same rigid lock. That
+# is not a defect: 0 on the dial is meant to be indistinguishable from the
+# camera being welded to the racer's facing, and the notches near it are simply
+# more of that same answer.
+const CAM_YAW_RATE_SNAP := pow(
+	CAM_YAW_RATE_DEFAULT / pow(CAM_YAW_RATE_SLOW, CAM_DEFAULT_DIAL_FRACTION),
+	1.0 / (1.0 - CAM_DEFAULT_DIAL_FRACTION))
+
+# The dial the player actually sees. Whole numbers, because a camera lag is not
+# a thing anyone tunes to a decimal place.
+#
+# FIFTY notches, and the growth has bought different things each time.
+#
+# 10 -> 20 bought RESOLUTION: both ends held, so the dial became finer rather
+# than laggier. 20 -> 30 moved the DEFAULT off the midpoint, adding ten notches
+# of lag above it. 30 -> 50 went further and lowered CAM_YAW_RATE_SLOW itself,
+# which is the first time the dial's slowest camera has actually got slower.
+#
+# The default has stayed on notch 20 throughout the last two, which is what
+# CAM_DEFAULT_DIAL_FRACTION is re-solved to preserve -- the shipped camera is
+# the one number a player who never opens the setting is entitled to keep.
+#
+# The curve is reshaped on every one of these, not restretched, so a setting
+# does NOT carry across at a simple multiple of its old number. Worth knowing
+# because a saved settings.cfg holds a bare notch: a player sitting on the old
+# 0..30 maximum (notch 30, rate 2.5) lands on rate 5.24 here, a snappier camera
+# than they chose, and has to travel up the longer dial to get it back.
+const CAM_SENSITIVITY_MIN := 0.0
+const CAM_SENSITIVITY_MAX := 50.0
+
+# Where the dial sits on a fresh profile.
+#
+# DERIVED from CAM_YAW_RATE_DEFAULT rather than written as a literal, so the
+# default setting and the rate the game shipped with cannot drift apart -- the
+# transcription trap section 12 records for tests, in tuning clothes. It is the
+# dial position whose rate is the old hard-coded 12.0, so a player who never
+# opens the setting gets exactly the camera the game had before it existed.
+static func cam_sensitivity_default() -> float:
+	return round(cam_sensitivity_for_rate(CAM_YAW_RATE_DEFAULT))
+
+
+# The slew rate a dial position asks for.
+#
+# GEOMETRIC between the two ends, not linear. Rate is a reciprocal-feeling
+# quantity: the visible difference between 90 and 60 is nothing, while the
+# difference between 4 and 2.5 is the whole top half of the dial. A linear map
+# would spend most of its travel in the range where nothing changes and cram
+# every setting anyone would actually pick into the last two notches.
+static func cam_yaw_rate(sensitivity: float) -> float:
+	var t: float = clampf(
+		(sensitivity - CAM_SENSITIVITY_MIN)
+			/ (CAM_SENSITIVITY_MAX - CAM_SENSITIVITY_MIN), 0.0, 1.0)
+	return CAM_YAW_RATE_SNAP * pow(CAM_YAW_RATE_SLOW / CAM_YAW_RATE_SNAP, t)
+
+
+# The inverse, so the default dial position can be derived from the rate rather
+# than transcribed alongside it.
+static func cam_sensitivity_for_rate(rate: float) -> float:
+	var r: float = clampf(rate, CAM_YAW_RATE_SLOW, CAM_YAW_RATE_SNAP)
+	var t: float = (log(r / CAM_YAW_RATE_SNAP)
+		/ log(CAM_YAW_RATE_SLOW / CAM_YAW_RATE_SNAP))
+	return CAM_SENSITIVITY_MIN + t * (CAM_SENSITIVITY_MAX - CAM_SENSITIVITY_MIN)
 
 # --- Line of sight -----------------------------------------------------------
 #
@@ -1512,6 +1814,834 @@ const MARKER_SHAPES := [
 			Vector2(-0.86, 0.55),
 		],
 	},
+
+	# --- Shapes that are not blades ---------------------------------------
+	#
+	# Every entry above answers "which way" the same way: a tip at the front
+	# and a taper behind it. That is one idea drawn eight times, and once the
+	# table is a picker rather than a default it becomes a row of near-identical
+	# triangles -- a menu where every option is a variation on the one already
+	# selected.
+	#
+	# The requirement is that a shape POINTS, not that it is an arrow. These
+	# six answer the same question by other means: by where the bulk sits, by
+	# a stem against a head, by an asymmetric outline that has a clear front
+	# without ever coming to a point. The acceptance test is unchanged and they
+	# are held to it -- longer along the facing axis than across it, reaching
+	# forward, and distinguishable front from back after the trailing camera
+	# has compressed the length axis.
+	{
+		"id": "teardrop",
+		"label": "TEARDROP",
+		# Points by MASS, not by a tip: a slim nose swelling to a broad rear.
+		# The widest line sits BEHIND centre, where every blade above puts it
+		# ahead of the tail, and the rear is a single smooth curve -- so it is
+		# the roundest entry in the table without being a blob.
+		#
+		# THE FIRST VERSION WAS AN EGG. Drawn convex the whole way round, with
+		# the nose merely narrower than the tail, it rendered from the trailing
+		# camera as a featureless oval pointing NOWHERE -- the lightcycle's
+		# original failure exactly, and it passed every headless assertion for
+		# the same reason: the outline genuinely is longer than it is wide, and
+		# what defeated it was foreshortening compressing the length axis until
+		# a gentle curve at one end was indistinguishable from a gentle curve at
+		# the other.
+		#
+		# So the nose is a STEP rather than a slope. The shape pinches in hard
+		# at -0.55 and runs nearly parallel ahead of that, which puts a corner
+		# in the silhouette where there was only curvature -- a corner survives
+		# compression, which is the same argument KEYHOLE's waist rests on. The
+		# rear stays a smooth curve, so the two ends can never read alike.
+		"outline": [
+			Vector2(0.0, -1.34),
+			Vector2(0.17, -1.16),
+			Vector2(0.19, -0.62),
+			Vector2(0.46, -0.44),
+			Vector2(0.58, 0.20),
+			Vector2(0.44, 0.74),
+			Vector2(0.0, 0.96),
+			Vector2(-0.44, 0.74),
+			Vector2(-0.58, 0.20),
+			Vector2(-0.46, -0.44),
+			Vector2(-0.19, -0.62),
+			Vector2(-0.17, -1.16),
+		],
+	},
+	{
+		"id": "keyhole",
+		"label": "KEYHOLE",
+		# A wide head on a narrow stem: two masses joined at a waist. It points
+		# because the head is at the front and the stem trails, which is a
+		# read that survives foreshortening better than a taper does -- the
+		# waist is a hard step in the silhouette rather than a gradual change,
+		# and a step cannot be compressed away the way the lightcycle's first
+		# nose was.
+		"outline": [
+			Vector2(0.0, -1.28),
+			Vector2(0.46, -0.92),
+			Vector2(0.52, -0.30),
+			Vector2(0.22, 0.02),
+			Vector2(0.30, 0.92),
+			Vector2(-0.30, 0.92),
+			Vector2(-0.22, 0.02),
+			Vector2(-0.52, -0.30),
+			Vector2(-0.46, -0.92),
+		],
+	},
+	{
+		"id": "hammer",
+		"label": "HAMMER",
+		# A flat bar across the FRONT with a shaft behind it -- a T. The only
+		# entry with no forward point at all: its leading edge is square, and
+		# it points purely by which end carries the crossbar.
+		#
+		# That makes it the strongest test of the "must point" rule in the
+		# table, and it passes for a reason worth keeping: the crossbar is the
+		# widest thing on the shape and sits at the extreme front, so the
+		# trailing camera sees a broad line with a tail running away from it.
+		# A blade seen at that angle is a sliver; this is not.
+		"outline": [
+			Vector2(0.55, -1.10),
+			Vector2(0.55, -0.62),
+			Vector2(0.20, -0.62),
+			Vector2(0.20, 0.95),
+			Vector2(-0.20, 0.95),
+			Vector2(-0.20, -0.62),
+			Vector2(-0.55, -0.62),
+			Vector2(-0.55, -1.10),
+		],
+	},
+	{
+		"id": "shuttle",
+		"label": "SHUTTLE",
+		# A slim body with swept fins at the BACK. The bulk is rearward and the
+		# nose is the narrowest part, so the read is the opposite of the
+		# teardrop's -- and the fins give the tail a distinctive outline of its
+		# own, which is what keeps the two ends from ever being confused.
+		#
+		# It is the widest entry in the table at the fins, and it is legal
+		# because that width is at one end rather than at the waist: the length
+		# rule is measured against half-width, and a shape wide only at its
+		# tail still reads as long.
+		"outline": [
+			Vector2(0.0, -1.32),
+			Vector2(0.24, -0.80),
+			Vector2(0.28, 0.28),
+			Vector2(0.70, 0.62),
+			Vector2(0.70, 0.90),
+			Vector2(0.24, 0.78),
+			Vector2(0.0, 0.92),
+			Vector2(-0.24, 0.78),
+			Vector2(-0.70, 0.90),
+			Vector2(-0.70, 0.62),
+			Vector2(-0.28, 0.28),
+			Vector2(-0.24, -0.80),
+		],
+	},
+	{
+		"id": "trident",
+		"label": "TRIDENT",
+		# Three prongs forward on a single stem: a centre spike flanked by two
+		# shorter ones, with the gaps between them open to the floor. It points
+		# by having three fronts and one back.
+		#
+		# The most open silhouette here after the chevron, and for the same
+		# reason that one is worth having -- the floor grid is the timing
+		# contract, so a mark that lets more of it through is a real option
+		# rather than only a different look.
+		"outline": [
+			Vector2(0.0, -1.30),
+			Vector2(0.22, -0.42),
+			Vector2(0.56, -0.72),
+			Vector2(0.60, 0.10),
+			Vector2(0.24, 0.35),
+			Vector2(0.20, 0.95),
+			Vector2(-0.20, 0.95),
+			Vector2(-0.24, 0.35),
+			Vector2(-0.60, 0.10),
+			Vector2(-0.56, -0.72),
+			Vector2(-0.22, -0.42),
+		],
+	},
+	{
+		"id": "beacon",
+		"label": "BEACON",
+		# A stepped tower: narrow at the front and widening in two hard stages
+		# toward the back. It points by a staircase rather than by a slope,
+		# which is the same argument the keyhole's waist rests on -- a step
+		# survives compression where a taper does not -- drawn as a repeating
+		# feature rather than as a single joint.
+		#
+		# The narrowest entry in the table by half-width, so it is the one that
+		# hides least of the floor beneath it.
+		"outline": [
+			Vector2(0.0, -1.30),
+			Vector2(0.38, -0.62),
+			Vector2(0.24, -0.48),
+			Vector2(0.50, 0.30),
+			Vector2(0.26, 0.30),
+			Vector2(0.34, 0.95),
+			Vector2(-0.34, 0.95),
+			Vector2(-0.26, 0.30),
+			Vector2(-0.50, 0.30),
+			Vector2(-0.24, -0.48),
+			Vector2(-0.38, -0.62),
+		],
+	},
+
+	# --- Shapes that are OBJECTS ------------------------------------------
+	#
+	# The six above answer "which way" by abstract means -- mass, a waist, a
+	# crossbar. These ten are recognisable THINGS, which is a different kind of
+	# choice: a player picks the key because it is a key, not because its
+	# silhouette resolves well, and the picker is better for holding both sorts.
+	#
+	# Every one still earns its place the same way. A thing whose front and back
+	# are equally featureless is not a marker however charming it is, so each
+	# entry here points by a DISCONTINUITY -- a tooth, a crossbar, a split, a
+	# step -- rather than by a taper. That is the rule the teardrop's first
+	# outline was written against: at the trailing camera's angle a gradient is
+	# compressed away and a corner is not.
+	{
+		"id": "key",
+		"label": "KEY",
+		# The bow at the BACK and the bit teeth at the front, which is the way a
+		# key is held rather than the way it is drawn on a signpost.
+		#
+		# It points by its teeth: three square steps cut into the shaft, which
+		# make the most irregular outline in the table and read as an object
+		# rather than as a mark. That irregularity is also why it is safe --
+		# there is no angle at which the toothed end and the ring end could be
+		# confused.
+		#
+		# The bow is a ring drawn SOLID rather than as a loop. A true hole would
+		# be a second closed contour, which the extruder builds as its own
+		# outward loop and fills in -- the failure the removed EDGE decal
+		# records. A solid bow reads as a bow at this size anyway.
+		"outline": [
+			Vector2(0.0, -1.34),
+			Vector2(0.16, -1.30),
+			Vector2(0.16, -1.02),
+			Vector2(0.34, -1.02),
+			Vector2(0.34, -0.78),
+			Vector2(0.16, -0.78),
+			Vector2(0.16, -0.50),
+			Vector2(0.30, -0.50),
+			Vector2(0.30, -0.28),
+			Vector2(0.16, -0.28),
+			Vector2(0.16, 0.30),
+			Vector2(0.44, 0.44),
+			Vector2(0.52, 0.76),
+			Vector2(0.30, 0.98),
+			Vector2(0.0, 1.04),
+			Vector2(-0.30, 0.98),
+			Vector2(-0.52, 0.76),
+			Vector2(-0.44, 0.44),
+			Vector2(-0.16, 0.30),
+			Vector2(-0.16, -0.28),
+			Vector2(-0.30, -0.28),
+			Vector2(-0.30, -0.50),
+			Vector2(-0.16, -0.50),
+			Vector2(-0.16, -0.78),
+			Vector2(-0.34, -0.78),
+			Vector2(-0.34, -1.02),
+			Vector2(-0.16, -1.02),
+			Vector2(-0.16, -1.30),
+		],
+	},
+	{
+		"id": "anchor",
+		"label": "ANCHOR",
+		# A stock bar across the front and two flukes sweeping back. It points
+		# by the same mechanism HAMMER does -- a broad crossbar at the extreme
+		# front -- but the flukes give the tail an outline of its own, so the
+		# two ends differ at both ends rather than only at one.
+		"outline": [
+			Vector2(0.0, -1.28),
+			Vector2(0.18, -1.10),
+			Vector2(0.14, -0.88),
+			Vector2(0.52, -0.88),
+			Vector2(0.52, -0.66),
+			Vector2(0.14, -0.66),
+			Vector2(0.14, 0.34),
+			Vector2(0.46, 0.16),
+			Vector2(0.60, 0.40),
+			Vector2(0.20, 0.88),
+			Vector2(0.0, 0.96),
+			Vector2(-0.20, 0.88),
+			Vector2(-0.60, 0.40),
+			Vector2(-0.46, 0.16),
+			Vector2(-0.14, 0.34),
+			Vector2(-0.14, -0.66),
+			Vector2(-0.52, -0.66),
+			Vector2(-0.52, -0.88),
+			Vector2(-0.14, -0.88),
+			Vector2(-0.18, -1.10),
+		],
+	},
+	{
+		"id": "nib",
+		"label": "NIB",
+		# A pen nib: a split point ahead of a shouldered barrel. The narrowest
+		# entry in the table, and the split is what keeps it from being SPEAR
+		# drawn thinner -- the notch at the tail and the shoulder step are both
+		# hard features rather than tapers.
+		"outline": [
+			Vector2(0.0, -1.36),
+			Vector2(0.10, -1.06),
+			Vector2(0.06, -0.94),
+			Vector2(0.06, -0.60),
+			Vector2(0.26, -0.42),
+			Vector2(0.30, 0.42),
+			Vector2(0.20, 0.94),
+			Vector2(0.0, 0.80),
+			Vector2(-0.20, 0.94),
+			Vector2(-0.30, 0.42),
+			Vector2(-0.26, -0.42),
+			Vector2(-0.06, -0.60),
+			Vector2(-0.06, -0.94),
+			Vector2(-0.10, -1.06),
+		],
+	},
+	{
+		"id": "plough",
+		"label": "PLOUGH",
+		# A chisel nose on a waisted body with swept wings behind it. Two steps
+		# in the same silhouette -- in at the waist, out again at the wings --
+		# so the shape reads as three distinct sections at a glance.
+		"outline": [
+			Vector2(0.0, -1.24),
+			Vector2(0.30, -0.96),
+			Vector2(0.26, -0.42),
+			Vector2(0.62, 0.28),
+			Vector2(0.36, 0.34),
+			Vector2(0.30, 0.94),
+			Vector2(-0.30, 0.94),
+			Vector2(-0.36, 0.34),
+			Vector2(-0.62, 0.28),
+			Vector2(-0.26, -0.42),
+			Vector2(-0.30, -0.96),
+		],
+	},
+	{
+		"id": "hook",
+		"label": "HOOK",
+		# A barbed head on a slim shank. The barbs sweep BACKWARD off the point,
+		# so the front is a spike with two flared shoulders behind it and the
+		# tail is a plain squared end -- the two could not be confused.
+		#
+		# THE FIRST VERSION WAS TWO EQUAL BULGES and read as a featureless blob.
+		# It pointed, on paper, by which bulge carried the barb; in a rendered
+		# frame both bulges compressed to the same rounded mass and the barb was
+		# not resolvable at all. That is the third shape to fail this way, and
+		# the pattern is now unmistakable: a shape whose two ends are the same
+		# SIZE cannot rely on one of them carrying a finer detail, because the
+		# detail is what foreshortening removes first.
+		#
+		# It points by the barbs instead, which are a hard reversal in the
+		# outline rather than a swelling.
+		# The shank is 0.42 rather than the 0.20 first drawn, and the reason is
+		# the DECALS rather than the read. NOTCH bites a wedge from each flank
+		# at mid-body, sized as a fraction of the half-width THERE -- so a thin
+		# shank leaves it nothing to take. Measured on the way up: 0.20 removed
+		# 2.8% of the mark and 0.34 removed 3.8%, both under the 4% floor
+		# RulesTest sets, which is the band separating a real decal from one
+		# that silently draws nothing. At 0.42 it clears.
+		#
+		# Worth stating as a general rule, since it is the first shape to hit
+		# it: A SHAPE HAS TO LEAVE THE GENERATED DECALS ROOM TO WORK. Every
+		# decal is a function of the outline, so an outline with no flank is one
+		# the pattern set cannot decorate -- that is part of the acceptance test
+		# for a new entry, not a separate concern discovered afterwards.
+		"outline": [
+			Vector2(0.0, -1.30),
+			Vector2(0.58, -0.42),
+			Vector2(0.42, -0.52),
+			Vector2(0.42, 0.82),
+			Vector2(0.0, 0.98),
+			Vector2(-0.42, 0.82),
+			Vector2(-0.42, -0.52),
+			Vector2(-0.58, -0.42),
+		],
+	},
+	{
+		"id": "comb",
+		"label": "COMB",
+		# Five prongs of unequal length forward off a plain bar. TRIDENT with
+		# more teeth and no symmetry between them, which is what makes it a
+		# separate entry rather than a re-tuning: the prongs read as a ragged
+		# edge, where a trident reads as three deliberate points.
+		"outline": [
+			Vector2(0.0, -1.24),
+			Vector2(0.12, -0.84),
+			Vector2(0.30, -1.14),
+			Vector2(0.40, -0.76),
+			Vector2(0.56, -0.98),
+			Vector2(0.60, -0.52),
+			Vector2(0.26, -0.36),
+			Vector2(0.24, 0.92),
+			Vector2(-0.24, 0.92),
+			Vector2(-0.26, -0.36),
+			Vector2(-0.60, -0.52),
+			Vector2(-0.56, -0.98),
+			Vector2(-0.40, -0.76),
+			Vector2(-0.30, -1.14),
+			Vector2(-0.12, -0.84),
+		],
+	},
+	{
+		"id": "bolt",
+		"label": "BOLT",
+		# A lightning stroke: three zigzag steps narrowing toward the front,
+		# with a notched tail. Every vertex is a corner, so nothing about it can
+		# be compressed away -- the opposite extreme from the teardrop, and the
+		# entry that most obviously belongs to a neon game.
+		"outline": [
+			Vector2(0.0, -1.36),
+			Vector2(0.34, -0.62),
+			Vector2(0.14, -0.56),
+			Vector2(0.44, 0.10),
+			Vector2(0.20, 0.18),
+			Vector2(0.40, 0.96),
+			Vector2(0.0, 0.56),
+			Vector2(-0.40, 0.96),
+			Vector2(-0.20, 0.18),
+			Vector2(-0.44, 0.10),
+			Vector2(-0.14, -0.56),
+			Vector2(-0.34, -0.62),
+		],
+	},
+	{
+		"id": "shield",
+		"label": "SHIELD",
+		# Broad and flat across the FRONT, narrowing to a tail behind. The only
+		# entry whose narrow end is at the back, which is legal because the rule
+		# is that a shape must point -- not that it must point with a tip -- and
+		# the flat leading edge is unmistakably a front.
+		#
+		# It is the widest silhouette here and the one that holds up best
+		# against a busy wall, which is DELTA's job in the blade half of the
+		# table, done the other way round.
+		#
+		# THE FIRST VERSION TAPERED SMOOTHLY TO A REAR POINT AND READ AS A
+		# ROUNDED SLAB. Foreshortening compressed the rear taper to nothing, so
+		# the shape had a broad end and a slightly-less-broad end and pointed
+		# nowhere -- the teardrop's egg, arriving from the other direction. The
+		# frame is the only thing that showed it; the outline passed every
+		# assertion, since it genuinely is longer than it is wide.
+		#
+		# So the waist is a STEP: the flanks pull in hard at +0.30 and run
+		# nearly parallel behind it, which puts two corners in the silhouette
+		# where there was only curvature. Same remedy as the teardrop's nose,
+		# and the same reason -- a corner survives compression, a slope does
+		# not.
+		"outline": [
+			Vector2(0.0, -1.16),
+			Vector2(0.46, -1.04),
+			Vector2(0.58, -0.56),
+			Vector2(0.54, 0.22),
+			Vector2(0.24, 0.34),
+			Vector2(0.22, 0.96),
+			Vector2(0.0, 1.06),
+			Vector2(-0.22, 0.96),
+			Vector2(-0.24, 0.34),
+			Vector2(-0.54, 0.22),
+			Vector2(-0.58, -0.56),
+			Vector2(-0.46, -1.04),
+		],
+	},
+	{
+		"id": "pin",
+		"label": "PIN",
+		# A thumbtack seen side on: a broad head at the front, a hard shoulder,
+		# then a needle running back to a notched tail. The head-and-shoulder
+		# step is KEYHOLE's waist inverted -- head forward rather than back --
+		# and the two are deliberately opposite readings of the same device.
+		"outline": [
+			Vector2(0.0, -1.32),
+			Vector2(0.44, -1.08),
+			Vector2(0.50, -0.72),
+			Vector2(0.22, -0.56),
+			Vector2(0.18, 0.34),
+			Vector2(0.34, 0.52),
+			Vector2(0.30, 0.92),
+			Vector2(0.0, 0.82),
+			Vector2(-0.30, 0.92),
+			Vector2(-0.34, 0.52),
+			Vector2(-0.18, 0.34),
+			Vector2(-0.22, -0.56),
+			Vector2(-0.50, -0.72),
+			Vector2(-0.44, -1.08),
+		],
+	},
+	{
+		"id": "bracket",
+		"label": "BRACKET",
+		# A staple: two square legs reaching forward off a rear spine, with the
+		# span between them open to the floor. The most open silhouette in the
+		# table -- more so than CHEVRON or TRIDENT -- so it hides the least of
+		# the floor grid, which is the timing contract the player reads.
+		#
+		# Square rather than swept, deliberately: every other open shape here
+		# opens with angled prongs, and a right-angled one is a different
+		# object rather than a narrower version of the same one.
+		"outline": [
+			Vector2(0.0, -1.22),
+			Vector2(0.20, -1.02),
+			Vector2(0.56, -1.02),
+			Vector2(0.56, -0.66),
+			Vector2(0.26, -0.66),
+			Vector2(0.26, 0.42),
+			Vector2(0.52, 0.42),
+			Vector2(0.52, 0.94),
+			Vector2(-0.52, 0.94),
+			Vector2(-0.52, 0.42),
+			Vector2(-0.26, 0.42),
+			Vector2(-0.26, -0.66),
+			Vector2(-0.56, -0.66),
+			Vector2(-0.56, -1.02),
+			Vector2(-0.20, -1.02),
+		],
+	},
+
+	# --- Shapes that are TOOLS, CRAFT and MARKS ----------------------------
+	#
+	# Twenty more, and the table is forty-four. The three groups before this one
+	# each answered "which way" a different way -- blades by a tip, abstracts by
+	# a waist or a crossbar, objects by being a recognisable thing -- and this
+	# block widens the last of those rather than adding a fourth idea: a player
+	# who wants an axe wants an axe, and the picker is a better screen for
+	# holding forty-four opinions than eight.
+	#
+	# EVERY ENTRY HERE WAS CHECKED AGAINST THE WHOLE DECAL SET BEFORE IT WAS
+	# WRITTEN, which is new. A decal is a function of the outline, so a shape is
+	# not finished when it reads well -- it is finished when all twenty-eight
+	# patterns still bite on it. RATCHET is the entry that proves the check
+	# earns its keep: see its own note.
+	{
+		"id": "compass",
+		"label": "COMPASS",
+		# Two legs hinged at a head: the drawing compass. It points by the head
+		# being a solid block and the legs splaying open behind it, so the front
+		# is mass and the back is a gap -- which is the strongest version of the
+		# discontinuity rule, since a gap cannot be compressed into anything.
+		"outline": [
+			Vector2(0.00, -1.30), Vector2(0.26, -1.06), Vector2(0.24, -0.62),
+			Vector2(0.54, 0.92), Vector2(0.30, 1.00), Vector2(0.10, 0.10),
+			Vector2(-0.10, 0.10), Vector2(-0.30, 1.00), Vector2(-0.54, 0.92),
+			Vector2(-0.24, -0.62), Vector2(-0.26, -1.06),
+		],
+	},
+	{
+		"id": "axe",
+		"label": "AXE",
+		# A broad bit at the front, a haft behind. The bit's shoulders are a
+		# hard step off the haft, and that step is the whole read -- the same
+		# device HAMMER uses, with the mass at the front rather than spread
+		# across a bar.
+		"outline": [
+			Vector2(0.00, -1.24), Vector2(0.30, -1.16), Vector2(0.62, -0.80),
+			Vector2(0.58, -0.36), Vector2(0.22, -0.28), Vector2(0.20, 0.90),
+			Vector2(0.00, 0.98), Vector2(-0.20, 0.90), Vector2(-0.22, -0.28),
+			Vector2(-0.58, -0.36), Vector2(-0.62, -0.80), Vector2(-0.30, -1.16),
+		],
+	},
+	{
+		"id": "anvil",
+		"label": "ANVIL",
+		# A horn forward, a waisted body, a flat base behind. Three sections and
+		# two steps, so the silhouette is legible even when foreshortening has
+		# taken most of its length.
+		"outline": [
+			Vector2(0.00, -1.32), Vector2(0.20, -1.02), Vector2(0.56, -0.72),
+			Vector2(0.52, -0.34), Vector2(0.24, -0.20), Vector2(0.28, 0.44),
+			Vector2(0.60, 0.62), Vector2(0.58, 0.96), Vector2(-0.58, 0.96),
+			Vector2(-0.60, 0.62), Vector2(-0.28, 0.44), Vector2(-0.24, -0.20),
+			Vector2(-0.52, -0.34), Vector2(-0.56, -0.72), Vector2(-0.20, -1.02),
+		],
+	},
+	{
+		"id": "wrench",
+		"label": "WRENCH",
+		# An open jaw at the front, a plain shaft behind. The jaw is a notch in
+		# the LEADING edge rather than a narrowing of it, which is why it
+		# survives the angle: a gap between two prongs stays a gap however hard
+		# the length axis is squashed, where a taper into a point does not.
+		"outline": [
+			Vector2(0.00, -0.86), Vector2(0.22, -1.30), Vector2(0.52, -1.22),
+			Vector2(0.48, -0.66), Vector2(0.24, -0.44), Vector2(0.22, 0.88),
+			Vector2(0.00, 0.98), Vector2(-0.22, 0.88), Vector2(-0.24, -0.44),
+			Vector2(-0.48, -0.66), Vector2(-0.52, -1.22), Vector2(-0.22, -1.30),
+		],
+	},
+	{
+		"id": "torch",
+		"label": "TORCH",
+		# A flame head stepped off a plain handle, with a collar between them.
+		# The collar is the tell: two steps close together read as a deliberate
+		# join, where one step alone could be a taper caught mid-way.
+		"outline": [
+			Vector2(0.00, -1.34), Vector2(0.34, -0.94), Vector2(0.30, -0.62),
+			Vector2(0.44, -0.54), Vector2(0.42, -0.34), Vector2(0.22, -0.26),
+			Vector2(0.20, 0.80), Vector2(0.30, 0.96), Vector2(-0.30, 0.96),
+			Vector2(-0.20, 0.80), Vector2(-0.22, -0.26), Vector2(-0.42, -0.34),
+			Vector2(-0.44, -0.54), Vector2(-0.30, -0.62), Vector2(-0.34, -0.94),
+		],
+	},
+	{
+		"id": "rudder",
+		"label": "RUDDER",
+		# A raked blade with a stepped trailing edge -- a fin cut square at the
+		# back rather than tapered, so the two ends differ in KIND and not
+		# merely in width.
+		"outline": [
+			Vector2(0.00, -1.30), Vector2(0.42, -0.60), Vector2(0.38, 0.26),
+			Vector2(0.56, 0.34), Vector2(0.54, 0.94), Vector2(-0.54, 0.94),
+			Vector2(-0.56, 0.34), Vector2(-0.38, 0.26), Vector2(-0.42, -0.60),
+		],
+	},
+	{
+		"id": "sail",
+		"label": "SAIL",
+		# A leading edge that steps out twice -- a gaff sail's head and clew.
+		# Two steps on one flank pair and one plain edge behind them, which
+		# reads as rigging rather than as a blade.
+		"outline": [
+			Vector2(0.00, -1.28), Vector2(0.24, -1.04), Vector2(0.58, -0.44),
+			Vector2(0.34, -0.30), Vector2(0.50, 0.44), Vector2(0.26, 0.56),
+			Vector2(0.24, 0.96), Vector2(-0.24, 0.96), Vector2(-0.26, 0.56),
+			Vector2(-0.50, 0.44), Vector2(-0.34, -0.30), Vector2(-0.58, -0.44),
+			Vector2(-0.24, -1.04),
+		],
+	},
+	{
+		"id": "glider",
+		"label": "GLIDER",
+		# Swept wings well FORWARD on a slim fuselage, with tail fins behind.
+		# The wings sit ahead of centre deliberately: SHUTTLE puts its fins at
+		# the back and points by them, and this is the same argument run the
+		# other way, so the two are opposite readings rather than near-copies.
+		"outline": [
+			Vector2(0.00, -1.34), Vector2(0.18, -0.98), Vector2(0.66, -0.52),
+			Vector2(0.62, -0.22), Vector2(0.18, -0.34), Vector2(0.16, 0.52),
+			Vector2(0.46, 0.78), Vector2(0.42, 0.96), Vector2(-0.42, 0.96),
+			Vector2(-0.46, 0.78), Vector2(-0.16, 0.52), Vector2(-0.18, -0.34),
+			Vector2(-0.62, -0.22), Vector2(-0.66, -0.52), Vector2(-0.18, -0.98),
+		],
+	},
+	{
+		"id": "prow",
+		"label": "PROW",
+		# A ship's bow: a sharp cutwater, a hard step out to the beam, and a
+		# square transom behind. The step is what keeps the cutwater from
+		# reading as a plain taper.
+		"outline": [
+			Vector2(0.00, -1.34), Vector2(0.24, -0.72), Vector2(0.56, -0.30),
+			Vector2(0.54, 0.52), Vector2(0.44, 0.94), Vector2(-0.44, 0.94),
+			Vector2(-0.54, 0.52), Vector2(-0.56, -0.30), Vector2(-0.24, -0.72),
+		],
+	},
+	{
+		"id": "fin",
+		"label": "FIN",
+		# A dorsal fin: a raked leading edge and a notched trailing one. The
+		# notch is small and is not what carries the read -- the rake is, since
+		# the widest line sits far back and the shape leans forward off it.
+		"outline": [
+			Vector2(0.00, -1.32), Vector2(0.46, 0.06), Vector2(0.44, 0.44),
+			Vector2(0.24, 0.36), Vector2(0.26, 0.94), Vector2(-0.26, 0.94),
+			Vector2(-0.24, 0.36), Vector2(-0.44, 0.44), Vector2(-0.46, 0.06),
+		],
+	},
+	{
+		"id": "spade",
+		"label": "SPADE",
+		# A blade with SQUARE shoulders, a stepped shaft, and a notched tail.
+		#
+		# SHIELD is the other broad-fronted entry and its shoulders are swept;
+		# squaring them is what makes this a separate shape rather than a
+		# re-tuning, because at this angle a right angle and a curve are two of
+		# the very few things that still read differently once length has
+		# compressed away.
+		#
+		# The shoulders and the tail notch are both harder than the first
+		# outline, which read as a plain taper for RIVET's reason.
+		"outline": [
+			Vector2(0.00, -1.24), Vector2(0.54, -1.14), Vector2(0.54, -0.52),
+			Vector2(0.20, -0.38), Vector2(0.18, 0.46), Vector2(0.38, 0.58),
+			Vector2(0.36, 1.00), Vector2(0.00, 0.86), Vector2(-0.36, 1.00),
+			Vector2(-0.38, 0.58), Vector2(-0.18, 0.46), Vector2(-0.20, -0.38),
+			Vector2(-0.54, -0.52), Vector2(-0.54, -1.14),
+		],
+	},
+	{
+		"id": "crown",
+		"label": "CROWN",
+		# Three points forward off a solid band. TRIDENT's prongs are separate
+		# and read as three things; these sit on a continuous rim and read as
+		# one -- the difference is the band, not the points.
+		"outline": [
+			Vector2(0.00, -1.26), Vector2(0.16, -0.80), Vector2(0.34, -1.16),
+			Vector2(0.46, -0.76), Vector2(0.62, -1.04), Vector2(0.58, -0.40),
+			Vector2(0.30, -0.26), Vector2(0.28, 0.90), Vector2(-0.28, 0.90),
+			Vector2(-0.30, -0.26), Vector2(-0.58, -0.40), Vector2(-0.62, -1.04),
+			Vector2(-0.46, -0.76), Vector2(-0.34, -1.16), Vector2(-0.16, -0.80),
+		],
+	},
+	{
+		"id": "lantern",
+		"label": "LANTERN",
+		# A capped body: a NARROW flat cap forward, a long parallel glass, and a
+		# WIDE flat foot behind.
+		#
+		# THE FIRST OUTLINE READ AS A STACK OF BANDS POINTING NOWHERE, and the
+		# comment written beside it claimed the opposite -- that a narrow cap
+		# and a round foot were "different objects rather than different sizes
+		# of one", so the shape was safe. That was reasoned from the
+		# construction and not from a frame, which is the one move this file
+		# keeps recording as a mistake: the two ends measured close enough in
+		# width that foreshortening made them the same, and the waist between
+		# them was too shallow to survive at all.
+		#
+		# The fix is the fix every time: make the difference a STEP. The foot is
+		# now nearly three times the cap's width and sits hard at the tail, so
+		# what the eye gets is a wide bar at one end and a thin one at the
+		# other rather than a gradient between two similar blocks.
+		"outline": [
+			Vector2(0.00, -1.30), Vector2(0.20, -1.22), Vector2(0.20, -0.96),
+			Vector2(0.44, -0.86), Vector2(0.40, 0.34), Vector2(0.22, 0.46),
+			Vector2(0.24, 0.70), Vector2(0.60, 0.80), Vector2(0.58, 1.00),
+			Vector2(-0.58, 1.00), Vector2(-0.60, 0.80), Vector2(-0.24, 0.70),
+			Vector2(-0.22, 0.46), Vector2(-0.40, 0.34), Vector2(-0.44, -0.86),
+			Vector2(-0.20, -0.96), Vector2(-0.20, -1.22),
+		],
+	},
+	{
+		"id": "obelisk",
+		"label": "OBELISK",
+		# A pyramidion on a stepped shaft with a plinth. Two hard steps and no
+		# curve anywhere -- the most purely architectural entry in the table, and
+		# the one that best demonstrates the rule, since it points using nothing
+		# BUT discontinuities.
+		"outline": [
+			Vector2(0.00, -1.32), Vector2(0.26, -0.94), Vector2(0.22, -0.60),
+			Vector2(0.34, -0.52), Vector2(0.30, 0.48), Vector2(0.50, 0.60),
+			Vector2(0.48, 0.96), Vector2(-0.48, 0.96), Vector2(-0.50, 0.60),
+			Vector2(-0.30, 0.48), Vector2(-0.34, -0.52), Vector2(-0.22, -0.60),
+			Vector2(-0.26, -0.94),
+		],
+	},
+	{
+		"id": "chalice",
+		"label": "CHALICE",
+		# A wide square bowl forward, a thin stem, a flat foot behind.
+		#
+		# IT FAILED THE SAME WAY LANTERN DID and for the same written reason --
+		# "different shapes rather than different sizes" was a claim about the
+		# drawing, not about the frame, and in the frame it was a squat blob.
+		# Two shapes failing identically off one piece of reasoning is what
+		# makes it worth recording twice.
+		#
+		# The bowl is now much the WIDER end and its rim is square, so the shape
+		# reads front-heavy at a glance instead of relying on the stem to
+		# separate two similar masses.
+		"outline": [
+			Vector2(0.00, -1.18), Vector2(0.58, -1.10), Vector2(0.58, -0.74),
+			Vector2(0.44, -0.62), Vector2(0.16, -0.46), Vector2(0.14, 0.44),
+			Vector2(0.40, 0.56), Vector2(0.38, 0.98), Vector2(-0.38, 0.98),
+			Vector2(-0.40, 0.56), Vector2(-0.14, 0.44), Vector2(-0.16, -0.46),
+			Vector2(-0.44, -0.62), Vector2(-0.58, -0.74), Vector2(-0.58, -1.10),
+		],
+	},
+	{
+		"id": "caret",
+		"label": "CARET",
+		# A stepped chevron: two arms meeting at a point, each with a notch cut
+		# in its outer edge. CHEVRON is the plain V, so the notches are what
+		# keep this from being the same silhouette at a smaller scale.
+		"outline": [
+			Vector2(0.00, -1.30), Vector2(0.40, -0.62), Vector2(0.66, 0.10),
+			Vector2(0.44, 0.20), Vector2(0.52, 0.86), Vector2(0.24, 0.92),
+			Vector2(0.00, 0.06), Vector2(-0.24, 0.92), Vector2(-0.52, 0.86),
+			Vector2(-0.44, 0.20), Vector2(-0.66, 0.10), Vector2(-0.40, -0.62),
+		],
+	},
+	{
+		"id": "rivet",
+		"label": "RIVET",
+		# A broad head, a hard collar, and a square shank.
+		#
+		# The first outline read as a plain taper: the head was only a little
+		# wider than the shank and the collar step was small enough that
+		# compression closed it. Both are exaggerated here -- the head is more
+		# than twice the shank and the collar is a real right angle -- because
+		# a step only counts if it survives, and "there is a step in the
+		# outline" is not the same claim as "the step is visible".
+		"outline": [
+			Vector2(0.00, -1.26), Vector2(0.50, -1.14), Vector2(0.52, -0.84),
+			Vector2(0.22, -0.70), Vector2(0.22, 0.56), Vector2(0.42, 0.68),
+			Vector2(0.40, 0.98), Vector2(-0.40, 0.98), Vector2(-0.42, 0.68),
+			Vector2(-0.22, 0.56), Vector2(-0.22, -0.70), Vector2(-0.52, -0.84),
+			Vector2(-0.50, -1.14),
+		],
+	},
+	{
+		"id": "ratchet",
+		"label": "RATCHET",
+		# Saw teeth down ONE flank, against a straight plain flank. The only
+		# asymmetric entry in the table, which buys a read nothing else offers:
+		# it says which way you point AND which way is left.
+		#
+		# IT ALSO FOUND A LIMIT IN THE DECAL GENERATOR, and the first outline had
+		# to be redrawn for it rather than the generator changed. NOTCH sizes
+		# both its wedges from _half_width_at, which takes the WIDEST crossing --
+		# so on an asymmetric shape it measured the toothed flank at 0.506 and
+		# cut the plain flank, only 0.30 wide there, mostly through empty space.
+		# Measured: 2.9% of the mark removed against the 4% floor.
+		#
+		# The plain flank is now a straight 0.52 edge, so both sides have body to
+		# give and the cut lands at 5.5%. Recorded because the general rule is
+		# worth having: EVERY FLANK DECAL ASSUMES LATERAL SYMMETRY, and an
+		# asymmetric shape has to be wide on both sides even where only one of
+		# them carries the detail.
+		"outline": [
+			Vector2(0.00, -1.30), Vector2(0.32, -1.02), Vector2(0.32, -0.72),
+			Vector2(0.56, -0.56), Vector2(0.32, -0.36), Vector2(0.56, -0.28),
+			Vector2(0.32, -0.08), Vector2(0.56, 0.00), Vector2(0.32, 0.20),
+			Vector2(0.56, 0.28), Vector2(0.32, 0.48), Vector2(0.32, 0.92),
+			Vector2(0.00, 1.00), Vector2(-0.52, 0.92), Vector2(-0.52, -0.72),
+			Vector2(-0.32, -1.02),
+		],
+	},
+	{
+		"id": "tally",
+		"label": "TALLY",
+		# A bar with three square teeth off the TRAILING edge -- COMB reversed,
+		# so the ragged end is the back and the clean bar is the front. The pair
+		# is deliberate: it shows that where a feature sits matters more than
+		# what the feature is.
+		"outline": [
+			Vector2(0.00, -1.24), Vector2(0.36, -1.06), Vector2(0.34, 0.28),
+			Vector2(0.58, 0.34), Vector2(0.56, 0.62), Vector2(0.34, 0.58),
+			Vector2(0.34, 0.96), Vector2(-0.34, 0.96), Vector2(-0.34, 0.58),
+			Vector2(-0.56, 0.62), Vector2(-0.58, 0.34), Vector2(-0.34, 0.28),
+			Vector2(-0.36, -1.06),
+		],
+	},
+	{
+		"id": "sigil",
+		"label": "SIGIL",
+		# A diamond head on a barred stem -- a rune rather than a tool. The
+		# crossbar sits BEHIND the head, the opposite arrangement to ANCHOR,
+		# where the bar is the leading edge and the flukes trail.
+		"outline": [
+			Vector2(0.00, -1.34), Vector2(0.40, -0.86), Vector2(0.22, -0.52),
+			Vector2(0.56, -0.44), Vector2(0.54, -0.18), Vector2(0.22, -0.26),
+			Vector2(0.20, 0.88), Vector2(0.00, 0.98), Vector2(-0.20, 0.88),
+			Vector2(-0.22, -0.26), Vector2(-0.54, -0.18), Vector2(-0.56, -0.44),
+			Vector2(-0.22, -0.52), Vector2(-0.40, -0.86),
+		],
+	},
 ]
 
 
@@ -1716,6 +2846,144 @@ const MARKER_DECALS := [
 		# One half along the facing axis. The boldest of the set, and the one
 		# that most changes the silhouette's read at distance.
 	},
+
+	# --- Twenty more, and the set is twenty-eight -------------------------
+	#
+	# The eight above are one of each idea. These fill the space BETWEEN them:
+	# three bands where STRIPE has two, a row of bites where NOTCH has one, a
+	# chevron pointing the other way, a slot off the centre line. A pattern set
+	# is a set of near-neighbours or it is eight unrelated marks, and the picker
+	# is a better screen for the former.
+	#
+	# EVERY ONE IS CHECKED ON ALL FORTY-FOUR SHAPES, which is 1,232 pairings
+	# RulesTest walks in full. That is not ceremony: five of these twenty failed
+	# on their first tuning and one had to be abandoned outright, and none of it
+	# was visible in the drawing.
+	{
+		"id": "triband",
+		"label": "TRIBAND",
+		# Three even bands across the facing axis -- STRIPE's two, with a
+		# marching rhythm rather than a pair.
+	},
+	{
+		"id": "pinstripe",
+		"label": "PINSTRIPE",
+		# Four fine bands. The finest rhythm in the set that still survives
+		# INLAY_INSET on the narrowest shape, which is what sets the thickness
+		# rather than taste.
+	},
+	{
+		"id": "wedges",
+		"label": "WEDGES",
+		# Two bands that TAPER across the mark, thick on one flank and thin on
+		# the other. STRIPE's bands are parallel and say nothing about which way
+		# is which; these lean.
+	},
+	{
+		"id": "ladder",
+		"label": "LADDER",
+		# A lengthways spine with rungs off it -- the only entry that cuts on
+		# both axes at once, so it reads as a structure rather than a pattern.
+	},
+	{
+		"id": "scallop",
+		"label": "SCALLOP",
+		# Three bites down each flank. NOTCH takes one deep wedge; a row of them
+		# reads as fluted rather than shouldered.
+	},
+	{
+		"id": "shoulders",
+		"label": "SHOULDERS",
+		# A SQUARE step cut from each flank where NOTCH cuts a wedge. Same
+		# placement, right-angled tool, and it reads as machined.
+	},
+	{
+		"id": "serrate",
+		"label": "SERRATE",
+		# Saw teeth down both flanks, the two sides out of phase so the mark
+		# cannot read as symmetrical at a glance.
+	},
+	{
+		"id": "waist",
+		"label": "WAIST",
+		# One long bite from each flank at mid-body, pinching the mark in the
+		# middle -- the device KEYHOLE uses as a SHAPE, offered as a pattern.
+	},
+	{
+		"id": "quarters",
+		"label": "QUARTERS",
+		# Three lengthways slots: SPLIT's centre line and BARS' pair together, so
+		# the mark reads as four ribbons.
+	},
+	{
+		"id": "rails",
+		"label": "RAILS",
+		# Two slots out on the flanks, leaving a broad centre. BARS pushed
+		# outward, so what survives is a wide spine with thin edges.
+	},
+	{
+		"id": "offset",
+		"label": "OFFSET",
+		# One slot beside the centre line. The only ASYMMETRIC decal, so it says
+		# which way is left as well as which way is forward -- the pattern
+		# counterpart to the RATCHET shape.
+	},
+	{
+		"id": "arrows",
+		"label": "ARROWS",
+		# Chevrons pointing BACKWARD. CHEVRONS repeat the shape's own facing;
+		# these read as flow coming off the tail, which is the same information
+		# arriving from the other end.
+	},
+	{
+		"id": "delta_cut",
+		"label": "DELTA",
+		# A single deep V across the body -- one chevron rather than three, so it
+		# is a statement instead of a texture.
+	},
+	{
+		"id": "nock",
+		"label": "NOCK",
+		# A V bitten into the trailing edge: a fletching notch, cut from behind
+		# rather than across.
+	},
+	{
+		"id": "beak",
+		"label": "BEAK",
+		# The nose cut to a V from the front, NOCK's mirror. It reinforces facing
+		# at the end that already carries it, which is TIP's job done with a
+		# shape rather than a band.
+	},
+	{
+		"id": "collar",
+		"label": "COLLAR",
+		# Two bands close together near the nose. TIP's single band reads as a
+		# cut; a pair reads as one element.
+	},
+	{
+		"id": "bookend",
+		"label": "BOOKEND",
+		# A band at each end at once -- TIP and TAIL together, so what survives
+		# is the body alone with both ends detached.
+	},
+	{
+		"id": "crosshair",
+		"label": "CROSSHAIR",
+		# One band across and one slot along, crossing at the centre: the mark
+		# quartered. The most legible composite at distance.
+	},
+	{
+		"id": "grid",
+		"label": "GRID",
+		# Two cuts on each axis, so the mark comes back as a lattice. The busiest
+		# pattern in the set and the one that most changes the silhouette.
+	},
+	{
+		"id": "harpoon",
+		"label": "HARPOON",
+		# A flank wedge each side plus a nose band -- NOTCH and TIP as a single
+		# element, which reads as a barbed head rather than as two decals.
+	},
 ]
 
 
@@ -1740,6 +3008,21 @@ static func marker_decal(id: String) -> Dictionary:
 #
 # Returns polygons in the outline's own space. Empty for "none", which is the
 # plain shape.
+#
+# EVERY CUT IS MEASURED AGAINST THE SHAPE'S WIDTH WHERE THE CUT LANDS, never
+# against its global maximum. That distinction is what separates a pattern from
+# a scratch, and getting it wrong is what made NOTCH invisible: its wedge apex
+# sat at a fraction of `max_x`, but every shape in the table tapers, so at
+# mid-body the apex fell OUTSIDE the silhouette and the triangle only grazed the
+# flank. Measured with DecalProbe before the fix -- NOTCH removed 0.0-1.7% of
+# the mark on every shape, left it in ONE piece, and filled NOTHING on seven of
+# eight, because a sliver that thin does not survive the inlay's seam inset. It
+# was a menu entry that drew nothing, and RulesTest passed it because the cut
+# RESULT did change, by a hair.
+#
+# The same error made TIP and TAIL 5% scrapes rather than elements: a band sized
+# off the global width is thickest where the shape is widest, which is exactly
+# where it is least needed.
 static func decal_polygons(id: String, outline: Array) -> Array:
 	var poly := PackedVector2Array()
 	for v in outline:
@@ -1776,13 +3059,13 @@ static func decal_polygons(id: String, outline: Array) -> Array:
 			# trailing camera's foreshortening, which already ate a shallow
 			# taper once (section 12, the lightcycle nose).
 			var out: Array = []
-			for frac in [0.42, 0.70]:
+			for frac in [0.40, 0.68]:
 				var y: float = min_y + height * frac
 				var band := PackedVector2Array([
 					Vector2(-reach, y),
 					Vector2(reach, y),
-					Vector2(reach, y + height * 0.10),
-					Vector2(-reach, y + height * 0.10),
+					Vector2(reach, y + height * 0.13),
+					Vector2(-reach, y + height * 0.13),
 				])
 				# NOT intersected with the shape. A cutter is subtracted from
 				# the outline (PlayerMarker._cut_decal), so it must SPAN the
@@ -1791,31 +3074,69 @@ static func decal_polygons(id: String, outline: Array) -> Array:
 				out.append(band)
 			return out
 		"notch":
-			# A wedge into each flank at the mark's widest point. Proportional
-			# to the shape, so it bites the same fraction of a narrow dart as of
-			# a broad delta.
+			# A wedge bitten into each flank at mid-body, so the mark reads as
+			# having shoulders.
+			#
+			# The wedge is built from the SILHOUETTE EDGE inward, not from a
+			# distant base to an inner apex. That construction is the whole
+			# reason this decal exists twice: a triangle whose base sits out at
+			# +/-reach has narrowed almost to a needle by the time it crosses
+			# the actual flank, so it removed 1% of the mark and filled nothing
+			# (measured, DecalProbe, on every shape in the table). The width
+			# that matters is the width AT THE EDGE, so that is what is
+			# specified -- the base sits just outside the local half-width and
+			# the apex `depth` further in.
+			#
+			# Both numbers are fractions of the shape's half-width AT THIS
+			# HEIGHT rather than of its global maximum, since every shape tapers
+			# and the two differ most on the narrow ones where a decal is
+			# hardest to see.
+			#
+			# This replaced an "EDGE" decal that subtracted an INSET COPY of the
+			# outline. That is the prettiest idea in the set and it cannot be
+			# built here: subtracting an inset leaves a RING, which is an
+			# outline plus a hole, and the mark is extruded as a single closed
+			# loop per piece. A ring came back as an outer loop identical to the
+			# plain shape (so the decal did nothing) plus a clockwise hole the
+			# extruder would have filled in solid. Recorded so nobody re-adds it
+			# without first giving the extrusion real hole support.
 			var out2: Array = []
-			var mid: float = min_y + height * 0.55
-			var bite: float = height * 0.16
+			# Placed where the shape has the most flank to lose, not at a fixed
+			# fraction of its length. A flank cut needs flank to bite into: at
+			# 52% of height the wedges landed up the lightcycle's narrow nose
+			# and read as two small nicks even after they were sized correctly
+			# -- visible, but not the shoulders the decal is for.
+			var mid: float = _flank_y(poly, min_y, max_y)
+			var bite: float = height * 0.17
+			var halfw: float = _half_width_at(poly, mid, max_x)
+			var depth: float = halfw * 0.62
 			for side in [-1.0, 1.0]:
-				var tipx: float = max_x * side * 0.35
+				# Just outside the flank, so the cut reaches the edge cleanly
+				# however the outline slopes through this band.
+				var outer: float = (halfw + depth) * side
 				out2.append(PackedVector2Array([
-					Vector2(reach * side, mid - bite),
-					Vector2(tipx, mid),
-					Vector2(reach * side, mid + bite),
+					Vector2(outer, mid - bite),
+					Vector2((halfw - depth) * side, mid),
+					Vector2(outer, mid + bite),
 				]))
 			return out2
 		"tip":
-			# A band cut just behind the nose, so the tip reads as a separate
-			# forward element. Facing is -Y here, so forward is the LOW end.
+			# The nose cut off as a separate forward element. Facing is -Y here,
+			# so forward is the LOW end.
+			#
+			# The band is placed far enough back that the shape has real width
+			# to show a gap, and is thick enough to survive the trailing
+			# camera's foreshortening. At 9% of height it measured a 5% sliver
+			# and read as a scratch -- STRIPE's first failure, in a second
+			# decal.
 			#
 			# A cutter, so it spans the shape rather than being clipped to it.
-			var lo: float = min_y + height * 0.22
+			var lo: float = min_y + height * 0.26
 			var out3: Array = [PackedVector2Array([
 				Vector2(-reach, lo),
 				Vector2(reach, lo),
-				Vector2(reach, lo + height * 0.09),
-				Vector2(-reach, lo + height * 0.09),
+				Vector2(reach, lo + height * 0.13),
+				Vector2(-reach, lo + height * 0.13),
 			])]
 			return out3
 		"split":
@@ -1824,7 +3145,7 @@ static func decal_polygons(id: String, outline: Array) -> Array:
 			# A THIN slot rather than a whole half: removing half the mark
 			# leaves a shape that no longer reads as pointing, which is the one
 			# property every marker shape must keep (section 12).
-			var slot: float = maxf(max_x * 0.10, 0.004)
+			var slot: float = maxf(max_x * 0.11, 0.004)
 			return [PackedVector2Array([
 				Vector2(-slot, min_y - height),
 				Vector2(slot, min_y - height),
@@ -1839,8 +3160,8 @@ static func decal_polygons(id: String, outline: Array) -> Array:
 			# Each is a cutter and must SPAN the shape, so the arms run out to
 			# +/-reach and the V is formed by the notch between them.
 			var out4: Array = []
-			var arm: float = height * 0.085
-			for frac in [0.34, 0.54, 0.74]:
+			var arm: float = height * 0.10
+			for frac in [0.32, 0.53, 0.74]:
 				var y: float = min_y + height * frac
 				out4.append(PackedVector2Array([
 					Vector2(-reach, y),
@@ -1859,9 +3180,9 @@ static func decal_polygons(id: String, outline: Array) -> Array:
 			# mark cut into three thin ribbons stops reading as a solid shape,
 			# which is the same failure SPLIT's thin-slot note records.
 			var out5: Array = []
-			var barw: float = maxf(max_x * 0.09, 0.003)
+			var barw: float = maxf(max_x * 0.10, 0.003)
 			for side in [-1.0, 1.0]:
-				var cx: float = max_x * 0.42 * side
+				var cx: float = max_x * 0.40 * side
 				out5.append(PackedVector2Array([
 					Vector2(cx - barw, min_y - height),
 					Vector2(cx + barw, min_y - height),
@@ -1872,14 +3193,457 @@ static func decal_polygons(id: String, outline: Array) -> Array:
 		"tail":
 			# A band cut just ahead of the trailing edge, mirroring TIP at the
 			# other end. Facing is -Y, so the tail is the HIGH end.
-			var hi: float = max_y - height * 0.26
+			#
+			# Sized like TIP and for the same reason: at 10% of height it left a
+			# 3.7% sliver on the dart, which is not a band, it is a crack.
+			var hi: float = max_y - height * 0.30
 			return [PackedVector2Array([
 				Vector2(-reach, hi),
 				Vector2(reach, hi),
-				Vector2(reach, hi + height * 0.10),
-				Vector2(-reach, hi + height * 0.10),
+				Vector2(reach, hi + height * 0.13),
+				Vector2(-reach, hi + height * 0.13),
 			])]
+		"triband":
+			# Three even bands. STRIPE's construction with a third band and a
+			# tighter thickness, so the two are a pair rather than a duplicate.
+			var t_out: Array = []
+			for frac in [0.28, 0.50, 0.72]:
+				var ty: float = min_y + height * frac
+				t_out.append(PackedVector2Array([
+					Vector2(-reach, ty),
+					Vector2(reach, ty),
+					Vector2(reach, ty + height * 0.095),
+					Vector2(-reach, ty + height * 0.095),
+				]))
+			return t_out
+		"pinstripe":
+			# Four fine bands. The thickness is the smallest in the set and is
+			# bounded from BELOW by the inlay seam rather than by taste: a band
+			# thinner than this cuts a visible gap and then fills none of it,
+			# which is NOTCH's failure arriving through a band.
+			var p_out: Array = []
+			for frac in [0.26, 0.42, 0.58, 0.74]:
+				var py: float = min_y + height * frac
+				p_out.append(PackedVector2Array([
+					Vector2(-reach, py),
+					Vector2(reach, py),
+					Vector2(reach, py + height * 0.062),
+					Vector2(-reach, py + height * 0.062),
+				]))
+			return p_out
+		"wedges":
+			# Two bands that taper ACROSS the mark. Each is thick on the left
+			# flank and thin on the right, so the pattern leans -- where
+			# STRIPE's parallel bands are the same everywhere they cross.
+			var w_out: Array = []
+			for frac in [0.36, 0.64]:
+				var wy: float = min_y + height * frac
+				w_out.append(PackedVector2Array([
+					Vector2(-reach, wy),
+					Vector2(reach, wy - height * 0.02),
+					Vector2(reach, wy + height * 0.06),
+					Vector2(-reach, wy + height * 0.17),
+				]))
+			return w_out
+		"ladder":
+			# A spine along the facing axis with rungs across it. The only
+			# entry that cuts both axes, and the rungs are deliberately thinner
+			# than TRIBAND's so the spine stays the dominant line.
+			var l_out: Array = [PackedVector2Array([
+				Vector2(-maxf(max_x * 0.085, 0.004), min_y - height),
+				Vector2(maxf(max_x * 0.085, 0.004), min_y - height),
+				Vector2(maxf(max_x * 0.085, 0.004), max_y + height),
+				Vector2(-maxf(max_x * 0.085, 0.004), max_y + height),
+			])]
+			for frac in [0.34, 0.52, 0.70]:
+				var ly: float = min_y + height * frac
+				l_out.append(PackedVector2Array([
+					Vector2(-reach, ly),
+					Vector2(reach, ly),
+					Vector2(reach, ly + height * 0.055),
+					Vector2(-reach, ly + height * 0.055),
+				]))
+			return l_out
+		"scallop":
+			# Three bites down each flank, each sized against the half-width AT
+			# ITS OWN HEIGHT -- so the row follows the silhouette in rather than
+			# cutting a straight line through a tapering shape.
+			#
+			# The depth and the bite are both larger than the first draft, which
+			# measured 3.8% on the HAMMER: that shape is a crossbar with a short
+			# tail, so it has the least length in the table to spread three cuts
+			# over. A shallow row is the NOTCH failure in miniature.
+			var sc_out: Array = []
+			for frac in [0.30, 0.50, 0.70]:
+				var scy: float = min_y + height * frac
+				var sch: float = _half_width_at(poly, scy, max_x)
+				var scd: float = sch * 0.62
+				var scb: float = height * 0.13
+				for side in [-1.0, 1.0]:
+					sc_out.append(PackedVector2Array([
+						Vector2((sch + scd) * side, scy - scb),
+						Vector2((sch - scd) * side, scy),
+						Vector2((sch + scd) * side, scy + scb),
+					]))
+			return sc_out
+		"shoulders":
+			# NOTCH's placement with a square tool. Same _flank_y, same
+			# half-width scaling -- what differs is the corner, and at this
+			# camera angle a right angle and a point are two of the very few
+			# things that still read differently once length has compressed.
+			var sh_mid: float = _flank_y(poly, min_y, max_y)
+			var sh_half: float = _half_width_at(poly, sh_mid, max_x)
+			var sh_depth: float = sh_half * 0.52
+			var sh_bite: float = height * 0.13
+			var sh_out: Array = []
+			for side in [-1.0, 1.0]:
+				var sh_in: float = (sh_half - sh_depth) * side
+				var sh_o: float = (sh_half + sh_depth) * side
+				sh_out.append(PackedVector2Array([
+					Vector2(sh_in, sh_mid - sh_bite),
+					Vector2(sh_o, sh_mid - sh_bite),
+					Vector2(sh_o, sh_mid + sh_bite),
+					Vector2(sh_in, sh_mid + sh_bite),
+				]))
+			return sh_out
+		"serrate":
+			# Saw teeth down both flanks, the two sides offset by half a step so
+			# the mark never reads as symmetrical. Ten cuts, each sized against
+			# the local half-width like SCALLOP's.
+			var se_out: Array = []
+			for i in 5:
+				var sey: float = min_y + height * (0.24 + 0.15 * float(i))
+				var seh: float = _half_width_at(poly, sey, max_x)
+				var sed: float = seh * 0.54
+				var seb: float = height * 0.095
+				var se_side: float = -1.0 if i % 2 == 0 else 1.0
+				se_out.append(PackedVector2Array([
+					Vector2((seh + sed) * se_side, sey - seb),
+					Vector2((seh - sed) * se_side, sey),
+					Vector2((seh + sed) * se_side, sey + seb),
+				]))
+				var sey2: float = sey + height * 0.075
+				var seh2: float = _half_width_at(poly, sey2, max_x)
+				var sed2: float = seh2 * 0.54
+				se_out.append(PackedVector2Array([
+					Vector2((seh2 + sed2) * -se_side, sey2 - seb),
+					Vector2((seh2 - sed2) * -se_side, sey2),
+					Vector2((seh2 + sed2) * -se_side, sey2 + seb),
+				]))
+			return se_out
+		"waist":
+			# One LONG bite from each flank -- NOTCH's wedge stretched until the
+			# mark pinches rather than merely gaining shoulders.
+			#
+			# The bite is 0.42 of the height each way. At 0.30 it removed 3.5%
+			# on the HOOK, whose slim shank is the least flank in the table --
+			# the same shape that forced the 4% floor to be measured in the
+			# first place, failing a second decal for the same reason.
+			var wa_mid: float = _flank_y(poly, min_y, max_y)
+			var wa_half: float = _half_width_at(poly, wa_mid, max_x)
+			var wa_depth: float = wa_half * 0.72
+			var wa_bite: float = height * 0.42
+			var wa_out: Array = []
+			for side in [-1.0, 1.0]:
+				wa_out.append(PackedVector2Array([
+					Vector2((wa_half + wa_depth) * side, wa_mid - wa_bite),
+					Vector2((wa_half - wa_depth) * side, wa_mid),
+					Vector2((wa_half + wa_depth) * side, wa_mid + wa_bite),
+				]))
+			return wa_out
+		"quarters":
+			# Three lengthways slots -- SPLIT's centre line plus BARS' pair.
+			#
+			# THE MINIMUM WIDTH IS WHAT THE NARROW SHAPES NEEDED, not a larger
+			# proportion. At a 0.003 floor the slots cut a healthy 21% out of
+			# the NIB and the SPEAR and then filled NO inlay piece, because what
+			# survived was thinner than INLAY_INSET -- a decal that draws a gap
+			# and no second colour, which is exactly the pair of failures the
+			# harness asserts separately.
+			var q_w: float = maxf(max_x * 0.075, 0.010)
+			var q_out: Array = []
+			for cx in [0.0, max_x * 0.52, -max_x * 0.52]:
+				q_out.append(PackedVector2Array([
+					Vector2(cx - q_w, min_y - height),
+					Vector2(cx + q_w, min_y - height),
+					Vector2(cx + q_w, max_y + height),
+					Vector2(cx - q_w, max_y + height),
+				]))
+			return q_out
+		"rails":
+			# BARS pushed out toward the flanks, so what survives is a broad
+			# spine rather than three even ribbons. Floored at 0.010 for the
+			# reason QUARTERS is, and held at 0.60 rather than further out:
+			# hard against the edge there is nothing left to fill once the seam
+			# is inset.
+			var r_w: float = maxf(max_x * 0.10, 0.010)
+			var r_out: Array = []
+			for side in [-1.0, 1.0]:
+				var rcx: float = max_x * 0.60 * side
+				r_out.append(PackedVector2Array([
+					Vector2(rcx - r_w, min_y - height),
+					Vector2(rcx + r_w, min_y - height),
+					Vector2(rcx + r_w, max_y + height),
+					Vector2(rcx - r_w, max_y + height),
+				]))
+			return r_out
+		"offset":
+			# One slot beside the centre line rather than on it. The only
+			# asymmetric decal in the set, so it distinguishes left from right
+			# as well as front from back -- the pattern counterpart to RATCHET,
+			# and the only other place in these tables where handedness is
+			# information rather than an accident.
+			var o_w: float = maxf(max_x * 0.12, 0.004)
+			var o_cx: float = max_x * 0.34
+			return [PackedVector2Array([
+				Vector2(o_cx - o_w, min_y - height),
+				Vector2(o_cx + o_w, min_y - height),
+				Vector2(o_cx + o_w, max_y + height),
+				Vector2(o_cx - o_w, max_y + height),
+			])]
+		"arrows":
+			# CHEVRONS reversed: the vees point back down the mark rather than
+			# forward along it, which reads as flow leaving the tail. Same
+			# construction, so the two stay a matched pair.
+			var a_out: Array = []
+			var a_arm: float = height * 0.10
+			for frac in [0.30, 0.51, 0.72]:
+				var ay: float = min_y + height * frac
+				a_out.append(PackedVector2Array([
+					Vector2(-reach, ay),
+					Vector2(0.0, ay + a_arm),
+					Vector2(reach, ay),
+					Vector2(reach, ay + a_arm * 0.85),
+					Vector2(0.0, ay + a_arm * 1.85),
+					Vector2(-reach, ay + a_arm * 0.85),
+				]))
+			return a_out
+		"delta_cut":
+			# One deep V across the body instead of three shallow ones.
+			#
+			# THICKER THAN IT IS DEEP, and that is the tuning rather than the
+			# drawing: a deep thin V measured 4.6% on the NIB, barely over the
+			# floor, because its arms run out to the flanks exactly where that
+			# shape has least to give. Trading vee depth for band thickness
+			# keeps the chevron read and doubles what it removes on the worst
+			# shape in the table.
+			var d_y: float = min_y + height * 0.52
+			var d_arm: float = height * 0.24
+			return [PackedVector2Array([
+				Vector2(-reach, d_y),
+				Vector2(0.0, d_y - d_arm),
+				Vector2(reach, d_y),
+				Vector2(reach, d_y + height * 0.16),
+				Vector2(0.0, d_y - d_arm + height * 0.16),
+				Vector2(-reach, d_y + height * 0.16),
+			])]
+		"nock":
+			# A V bitten into the trailing edge -- a fletching notch.
+			#
+			# It SPANS PAST max_y rather than stopping inside the outline. A cut
+			# that stops inside leaves a HOLE, and Geometry2D.clip_polygons
+			# returns a hole as its own loop, which the extruder then builds as
+			# an outward loop and fills in solid -- the removed EDGE decal's
+			# failure exactly. Measured while drafting: a version that stopped
+			# short came back as 2 pieces totalling MORE area than the shape
+			# started with, because the inner loop's area adds.
+			#
+			# PLACED WELL INBOARD, at 0.42 of the height rather than the 0.24
+			# first written. A V at the extremity cannot reach the visibility
+			# floor on a pointed shape: it removes only the part of the end
+			# BELOW the vee, which is a fraction of a fraction. Measured, the
+			# arrow carries 36.7% of its area in its rear third and the trident
+			# only 22.2%, and at 0.24 the cut took 1.1% on the kite.
+			var n_y: float = max_y - height * 0.42
+			return [PackedVector2Array([
+				Vector2(-reach, n_y),
+				Vector2(0.0, n_y + height * 0.22),
+				Vector2(reach, n_y),
+				Vector2(reach, max_y + height),
+				Vector2(-reach, max_y + height),
+			])]
+		"beak":
+			# NOCK's mirror, cut into the nose. Named BEAK rather than PROW
+			# because a shape in the other table is already called that, and two
+			# picker rows reading PROW would be a puzzle even though the ids are
+			# namespaced (shape:prow against decal:beak) and could not collide. Inboard for the same reason and
+			# further still: the front of a pointed shape is the THINNER end --
+			# the trident carries just 9.0% of its area in its forward third,
+			# where the same shape carries 22.2% behind. A shallow nose V
+			# measured 0.4% removed and failed on 35 of the 44 shapes.
+			var pr_y: float = min_y + height * 0.46
+			return [PackedVector2Array([
+				Vector2(-reach, pr_y),
+				Vector2(0.0, pr_y - height * 0.20),
+				Vector2(reach, pr_y),
+				Vector2(reach, min_y - height),
+				Vector2(-reach, min_y - height),
+			])]
+		"collar":
+			# Two bands close together near the nose. TIP's single band reads as
+			# the nose having been cut off; a close pair reads as a fitting.
+			var c_out: Array = []
+			for frac in [0.22, 0.36]:
+				var cy: float = min_y + height * frac
+				c_out.append(PackedVector2Array([
+					Vector2(-reach, cy),
+					Vector2(reach, cy),
+					Vector2(reach, cy + height * 0.075),
+					Vector2(-reach, cy + height * 0.075),
+				]))
+			return c_out
+		"bookend":
+			# TIP and TAIL at once, so what survives is the body with both ends
+			# detached. Offered as one entry rather than left to the player
+			# because the two bands have to be placed against each OTHER -- at
+			# their own default heights they crowd the body on the short shapes.
+			var b_out: Array = [PackedVector2Array([
+				Vector2(-reach, min_y + height * 0.24),
+				Vector2(reach, min_y + height * 0.24),
+				Vector2(reach, min_y + height * 0.34),
+				Vector2(-reach, min_y + height * 0.34),
+			])]
+			b_out.append(PackedVector2Array([
+				Vector2(-reach, max_y - height * 0.34),
+				Vector2(reach, max_y - height * 0.34),
+				Vector2(reach, max_y - height * 0.24),
+				Vector2(-reach, max_y - height * 0.24),
+			]))
+			return b_out
+		"crosshair":
+			# One band across and one slot along, crossing at the centre.
+			var x_w: float = maxf(max_x * 0.085, 0.004)
+			var x_y: float = min_y + height * 0.46
+			return [
+				PackedVector2Array([
+					Vector2(-reach, x_y),
+					Vector2(reach, x_y),
+					Vector2(reach, x_y + height * 0.105),
+					Vector2(-reach, x_y + height * 0.105),
+				]),
+				PackedVector2Array([
+					Vector2(-x_w, min_y - height),
+					Vector2(x_w, min_y - height),
+					Vector2(x_w, max_y + height),
+					Vector2(-x_w, max_y + height),
+				]),
+			]
+		"grid":
+			# Two cuts on each axis: the mark comes back as a lattice. The
+			# busiest pattern in the set, and the individual cuts are the
+			# thinnest of any composite for that reason -- four of them at
+			# CROSSHAIR's weights would leave very little mark.
+			var g_w: float = maxf(max_x * 0.07, 0.003)
+			var g_out: Array = []
+			for frac in [0.34, 0.62]:
+				var gy: float = min_y + height * frac
+				g_out.append(PackedVector2Array([
+					Vector2(-reach, gy),
+					Vector2(reach, gy),
+					Vector2(reach, gy + height * 0.075),
+					Vector2(-reach, gy + height * 0.075),
+				]))
+			for side in [-1.0, 1.0]:
+				var gcx: float = max_x * 0.42 * side
+				g_out.append(PackedVector2Array([
+					Vector2(gcx - g_w, min_y - height),
+					Vector2(gcx + g_w, min_y - height),
+					Vector2(gcx + g_w, max_y + height),
+					Vector2(gcx - g_w, max_y + height),
+				]))
+			return g_out
+		"harpoon":
+			# NOTCH and TIP as ONE element -- a flank wedge each side plus a
+			# nose band -- so it reads as a barbed head rather than as two
+			# decals that happen to be on at once.
+			var h_mid: float = _flank_y(poly, min_y, max_y)
+			var h_half: float = _half_width_at(poly, h_mid, max_x)
+			var h_depth: float = h_half * 0.50
+			var h_bite: float = height * 0.12
+			var h_out: Array = [PackedVector2Array([
+				Vector2(-reach, min_y + height * 0.24),
+				Vector2(reach, min_y + height * 0.24),
+				Vector2(reach, min_y + height * 0.325),
+				Vector2(-reach, min_y + height * 0.325),
+			])]
+			for side in [-1.0, 1.0]:
+				h_out.append(PackedVector2Array([
+					Vector2((h_half + h_depth) * side, h_mid - h_bite),
+					Vector2((h_half - h_depth) * side, h_mid),
+					Vector2((h_half + h_depth) * side, h_mid + h_bite),
+				]))
+			return h_out
 	return []
+
+
+# The shape's half-width at a given height along the facing axis.
+#
+# This is what lets a cut be proportional to the silhouette WHERE IT LANDS
+# rather than to the shape's widest point, which is the distinction that decides
+# whether a flank cut bites or misses (see decal_polygons). Every shape in the
+# table tapers, so the two numbers differ most on exactly the narrow shapes
+# where a decal is hardest to see in the first place.
+#
+# Walks the edges and takes the widest crossing of the horizontal line at `y`,
+# which needs no assumption about vertex count, winding or convexity -- the
+# chevron is concave and the delta has three vertices.
+#
+# Falls back to the global half-width when the line misses the polygon entirely,
+# so a caller can never place an apex against nothing.
+static func _half_width_at(poly: PackedVector2Array, y: float,
+		fallback: float) -> float:
+	var widest := 0.0
+	var hit := false
+	for i in poly.size():
+		var a := poly[i]
+		var b := poly[(i + 1) % poly.size()]
+		if is_equal_approx(a.y, b.y):
+			continue
+		var lo: float = minf(a.y, b.y)
+		var hi: float = maxf(a.y, b.y)
+		if y < lo or y > hi:
+			continue
+		var t: float = (y - a.y) / (b.y - a.y)
+		widest = maxf(widest, absf(a.x + (b.x - a.x) * t))
+		hit = true
+	if not hit or widest <= 0.0001:
+		return fallback
+	return widest
+
+
+# Where along the facing axis a flank decal has the most silhouette to bite.
+#
+# NOT simply the widest point. On a barbed shape -- the arrow and the dart --
+# the widest line is at the very tips of the rear barbs, where there is width
+# but almost no body between them: measured, cutting there removed 3.5% and
+# 2.6% of the mark against 7.6% and 9.0% at mid-body, so the "obvious" target
+# was the worse one on two of the eight shapes and RulesTest caught it.
+#
+# What a wedge actually needs is width AND something behind it, so the score is
+# the half-width times how much of the shape lies further back. That picks the
+# shoulder of a barbed shape and the true widest line of a plain one, which is
+# the same place a human would point at.
+#
+# Sampled rather than solved, since an outline is an arbitrary polygon: the
+# chevron is concave, so the best line need not fall on a vertex at all.
+static func _flank_y(poly: PackedVector2Array, min_y: float,
+		max_y: float) -> float:
+	var best: float = (min_y + max_y) * 0.5
+	var top := -1.0
+	var steps := 48
+	for i in range(1, steps):
+		var t: float = float(i) / float(steps)
+		var y: float = min_y + (max_y - min_y) * t
+		var w: float = _half_width_at(poly, y, -1.0)
+		if w <= 0.0:
+			continue
+		# Falls off toward either end, so a line with nothing behind it loses
+		# to one with body on both sides.
+		var score: float = w * (1.0 - absf(t - 0.5) * 1.2)
+		if score > top:
+			top = score
+			best = y
+	return best
 
 
 # --- Landmarks (docs/specs/landmarks.md) -------------------------------------
@@ -2086,10 +3850,103 @@ const TURN_FREEZE := 0.10
 # one thing you have not been looking at.
 const REVERSE_FREEZE := 0.16
 
-# The camera slews toward the new heading this many times faster while frozen.
-# The whole point is that the view CATCHES UP during the hold rather than
-# trailing out of it -- a freeze the camera does not use is just a stutter.
-const TURN_FREEZE_CAM_MULTIPLIER := 3.5
+# REMOVED: the camera used to slew 3.5x faster while the turn freeze ran.
+#
+# The reasoning was that a freeze the camera does not spend is just a stutter --
+# the player held still and still looking the old way when released. Measured,
+# the cure was far worse than the disease: at the default dial the boost closed
+# 70% of the entire turn in a SINGLE FRAME, and at dials 0-5 a literal 100%. The
+# camera lurched almost the whole way round on frame one and then crept through
+# the remainder, which is the jolt that was reported.
+#
+# It could not be smoothed, only removed. Decaying the boost instead of
+# switching it off was tried first and measurably helped (worst frame-to-frame
+# slowdown 3.90x -> 1.14x at the slow end), and did nothing at the default,
+# because there the lurch is the boost ITSELF rather than the way it ends.
+#
+# The stutter it guarded against does not materialise: on the plain dial rate
+# the default still completes 73.8% of its swing inside the freeze. The slow
+# settings finish well after it, which is what the player chose them for.
+#
+# Do not reintroduce a multiplier here. If the camera needs to be faster during
+# a turn, that is the DIAL's job -- a multiplier on top of it pushes the rate
+# past the dial's own fast end during the one moment the player is watching.
+
+
+# How fast the player MARKER swings onto a new heading, as a fraction of the
+# remaining angle closed per second -- the same units as CAM_YAW_RATE_DEFAULT.
+#
+# The marker used to take the racer's facing directly, so it rotated 90 degrees
+# in ONE FRAME while the camera it sits under eased over many. Measured on a
+# maze-1 autopilot: a worst per-frame marker step of 180.00 degrees against the
+# camera's 26.25, and 26 such snaps in 2000 frames. So "the camera transition is
+# smooth" was already true and the complaint was still right -- what teleports is
+# the arrow, not the eye, and a marker that snaps under a gliding camera reads as
+# the whole world jumping.
+#
+# This is the LANE_TURN_KICK_RATE lesson on the rotational axis. That constant
+# exists because applying the lateral kick as a single step made it "a second
+# snap stapled to the 90-degree snap"; this is the 90-degree snap it was stapled
+# to, and it is smoothed the same way -- by easing a DISPLAY value, with the
+# simulation's own `facing` still flipping in one frame.
+#
+# Faster than the camera's own rate at every dial setting, deliberately. The
+# marker answers facing (section 12) and is the thing the player steers with, so
+# it must never be the laggier of the two: a marker trailing BEHIND a view that
+# has already arrived points at a wall. Leading the camera is what makes the
+# swing read as the racer turning and the view following, which is the actual
+# relationship.
+# Tuned against the FIRST FRAME's step, which is what the eye reads as a snap --
+# not against the total duration. At 12.0 a 90 moves 21 degrees on its first
+# frame and a 180 moves 49, so neither flips in one frame, and the swings settle
+# in 186ms and 159ms. Both run a little past their freeze, which is correct: the
+# camera does too, and a swing still finishing as the racer moves off is what
+# reads as the view FOLLOWING rather than being welded on.
+#
+# Higher was measured and rejected. At 18.0 the first frame of a 180 covered 86
+# degrees -- a near-instant half-flip, which is the snap this constant exists to
+# remove wearing a smaller number.
+#
+# It deliberately took no freeze multiplier even when the camera still had one.
+# That 3.5x existed so the CAMERA could catch up to a pivot it was not present
+# for; the marker is the thing that pivoted, so it has nothing to catch up to.
+# Applying it anyway drove the per-frame step straight into its own clamp --
+# measured, a 90 closed 100% of its angle in one frame at every rate from 14
+# upward, which is the snap this constant exists to remove, reintroduced by the
+# multiplier. The camera's own multiplier has since been removed outright, for
+# the same reason measured on the camera instead.
+const MARKER_YAW_RATE := 12.0
+
+# How much the marker's swing accelerates with the size of the angle left.
+#
+# The ask was "faster depending on the lag", and a bare exponential ease is the
+# opposite: it is fastest at the start and crawls at the end, so the LAST few
+# degrees of a 180 take as long as the first sixty. Scaling the rate by the
+# remaining angle makes a reversal resolve in roughly the wall time of a 90
+# rather than twice it, which matters because REVERSE_FREEZE is only 1.6x
+# TURN_FREEZE -- a 180 that eased at the 90's rate would still be swinging well
+# after the hold released.
+#
+# Measured in half-turns, so a 90 (0.5) contributes half of what a 180 (1.0)
+# does. Tuned so a 180 completes inside its own freeze rather than past it.
+# At 0.35 a 180 swings at 1.35x a 90's rate, so the reversal resolves in LESS
+# wall time (159ms) than the 90 (186ms) despite covering twice the angle.
+# That is the point: a reversal is the input the player most needs to see land,
+# and REVERSE_FREEZE is only 1.6x TURN_FREEZE, so a 180 easing at the 90's rate
+# would still be turning after the hold released.
+#
+# Not higher: at 0.6 the 180's first frame covered 86 of its 180 degrees, which
+# is most of the way round in a single frame -- the swing collapsing back toward
+# the snap it replaced.
+const MARKER_YAW_LAG_GAIN := 0.35
+
+# Below this, the swing is finished and the marker is snapped onto the exact
+# facing. An ease approaches its target asymptotically and never arrives, which
+# would leave the arrow permanently a fraction of a degree off the corridor it
+# is driving down -- invisible, but it means the marker's yaw is never actually
+# equal to the racer's facing, and anything that later compares the two would be
+# reading a value that is always slightly wrong.
+const MARKER_YAW_SNAP_EPSILON := 0.0015
 
 # How fast the kick is applied, in lanes per second.
 #

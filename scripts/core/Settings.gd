@@ -20,6 +20,7 @@ signal marker_decal_changed(id: String)
 signal marker_colour_changed(colour: Color)
 signal marker_colour_2_changed(colour: Color)
 signal maze_palettes_changed()
+signal cam_sensitivity_changed(value: float)
 
 const CONFIG_PATH := "user://settings.cfg"
 const SECTION := "controls"
@@ -103,6 +104,17 @@ var marker_colour_2: Color = Tuning.marker_colour(
 # Empty means "this slot uses its own default", which is what keeps a fresh
 # profile identical to the game as authored.
 var maze_palettes: Array[String] = []
+
+
+# How fast the chase camera slews onto a new heading after a pivot, on the 0..10
+# dial Tuning.cam_yaw_rate maps to a rate. 0 snaps; 10 lags far enough that the
+# camera is still coming round after the racer has started moving again.
+#
+# A VIEW preference, not a rule. The turn freeze is untouched at every setting --
+# the racer pivots, holds and resumes identically, and only the eye differs. So
+# this sits on the same side of the line as the marker shape and the maze
+# palettes: reachable from the simulation and never read by it.
+var cam_sensitivity: float = Tuning.cam_sensitivity_default()
 
 
 func _ready() -> void:
@@ -220,6 +232,18 @@ func palette_for_maze(slot: int) -> String:
 	return Tuning.default_palette_id(slot)
 
 
+# The only way the camera preference should change at runtime, for the reason
+# set_touch_controls exists: persisting and announcing must not be forgettable
+# at a call site.
+func set_cam_sensitivity(value: float) -> void:
+	var v := clampf(value, Tuning.CAM_SENSITIVITY_MIN, Tuning.CAM_SENSITIVITY_MAX)
+	if is_equal_approx(v, cam_sensitivity):
+		return
+	cam_sensitivity = v
+	_save()
+	emit_signal("cam_sensitivity_changed", cam_sensitivity)
+
+
 func set_marker_colour_2(colour: Color) -> void:
 	var opaque2 := Color(colour.r, colour.g, colour.b, 1.0)
 	if opaque2.is_equal_approx(marker_colour_2):
@@ -270,6 +294,9 @@ func _load() -> void:
 	marker_colour_2 = Color.from_string(String(config.get_value(
 		SECTION_LOOK, "marker_colour_2", fallback2.to_html(false))), fallback2)
 	marker_colour_2.a = 1.0
+	cam_sensitivity = clampf(float(config.get_value(
+		SECTION_LOOK, "cam_sensitivity", Tuning.cam_sensitivity_default())),
+		Tuning.CAM_SENSITIVITY_MIN, Tuning.CAM_SENSITIVITY_MAX)
 	maze_palettes.clear()
 	for i in Tuning.MAZES.size():
 		maze_palettes.append(String(config.get_value(
@@ -287,6 +314,7 @@ func _save() -> void:
 	config.set_value(SECTION_LOOK, "marker_colour", marker_colour.to_html(false))
 	config.set_value(SECTION_LOOK, "marker_colour_2",
 		marker_colour_2.to_html(false))
+	config.set_value(SECTION_LOOK, "cam_sensitivity", cam_sensitivity)
 	for i in maze_palettes.size():
 		config.set_value(SECTION_LOOK, "maze_palette_%d" % i,
 			maze_palettes[i])

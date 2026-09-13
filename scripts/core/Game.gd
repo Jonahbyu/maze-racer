@@ -105,9 +105,28 @@ var _vision_countdown := 0.0
 # Smoothed camera state, so the view does not snap on turns.
 var _cam_yaw := 0.0
 
+
+# Smoothed MARKER heading, for the same reason and separately.
+#
+# The marker used to read `racer.facing` directly and so rotated 90 degrees in a
+# single frame underneath a camera that eases over many -- measured at a 180.00
+# degree worst-case step against the camera's 26.25. A snapping arrow under a
+# gliding view reads as the world teleporting, which is the whole complaint.
+#
+# Display only. `racer.facing` still flips instantly and every rule still reads
+# it, so this is the same separation the lane offset has: purely positional,
+# with the simulation untouched.
+var _marker_yaw := 0.0
+
 # 0 = normal view, 1 = fully in the crash view. Eased, never snapped.
 var _crash_blend := 0.0
 var _cam_target_yaw := 0.0
+
+# The slew rate the camera sensitivity setting asks for, cached rather than
+# recomputed per frame -- cam_yaw_rate is a pow() and this runs in _process.
+# Refreshed from the signal, so a change made on the pause panel lands on the
+# very next frame rather than at the next maze.
+var _cam_yaw_rate: float = Tuning.CAM_YAW_RATE_DEFAULT
 var _shake := 0.0
 
 
@@ -344,6 +363,9 @@ func _build_ui() -> void:
 	if settings != null:
 		settings.touch_controls_changed.connect(
 			func(_enabled: bool) -> void: _apply_touch_setting())
+		settings.cam_sensitivity_changed.connect(
+			func(_value: float) -> void: _apply_cam_sensitivity())
+	_apply_cam_sensitivity()
 
 	# The mirror derives its whole size from the viewport's shorter edge, so it
 	# has to be re-placed whenever that changes -- otherwise a window resized
@@ -374,10 +396,18 @@ func _place_rear_view() -> void:
 	_rear_view.place(view)
 
 
-# Hung off the MIRROR's bottom edge rather than off a constant of its own. Both
-# widgets size themselves from the viewport's shorter edge, so a literal here
-# would be correct at one screen size and overlap at every other -- the same
-# hard-coded-band trap CLAUDE.md section 12 records for the upgrade card row.
+# TOP-CENTRE, under the HUD's top row.
+#
+# It used to hang off the MIRROR's bottom edge in the left column, which was
+# where the empty space happened to be rather than where the read belongs. Both
+# halves answer "where am I, and which way am I pointing" -- a question about
+# the corridor dead ahead -- so they sit on the axis the eye already tracks,
+# the same argument section 12 makes for the minimap moving to bottom-centre.
+#
+# Hung off the HUD's measured top-row band rather than a constant of its own,
+# for the reason it was hung off the mirror before: a literal would be correct
+# at one screen size and overlap at every other, which is the hard-coded-band
+# trap section 12 records for the upgrade card row.
 func _place_quadrant_box() -> void:
 	if _quadrant_box == null:
 		return
@@ -387,8 +417,16 @@ func _place_quadrant_box() -> void:
 	var view: Vector2 = parent.size
 	if view.x <= 0.0 or view.y <= 0.0:
 		return
-	var top: float = _rear_view.offset_bottom if _rear_view != null else 96.0
+	var top: float = _hud.top_row_bottom() if _hud != null else 70.0
 	_quadrant_box.place(view, top)
+
+	# The HUD's message band has to clear whatever is in the top centre, and it
+	# is now this. Pushed by the box's MEASURED bottom rather than by a constant
+	# on either side -- and only while the box is actually shown, so a run with
+	# neither line taken keeps the toast where it has always been.
+	if _hud != null:
+		_hud.push_message_below(
+			_quadrant_box.offset_bottom if _quadrant_box.visible else 0.0)
 
 
 # The minimap sits DIRECTLY BELOW THE PLAYER MARKER, on desktop and mobile
@@ -479,6 +517,19 @@ func _place_minimap() -> void:
 # The pads exist whether or not they are shown, and visibility is the only
 # thing the setting changes. A hidden Control takes no input in Godot, so this
 # is also what stops an invisible pad swallowing a click on the upgrade cards.
+# The camera's slew rate, off the player's dial.
+#
+# Read here and cached rather than in _process, and applied through the change
+# signal so the pause panel's slider moves the camera while the panel is still
+# open -- a camera setting you cannot see the effect of until you close the
+# screen is one you have to adjust by guessing.
+func _apply_cam_sensitivity() -> void:
+	var settings := get_node_or_null("/root/Settings")
+	var dial: float = (float(settings.cam_sensitivity) if settings != null
+		else Tuning.cam_sensitivity_default())
+	_cam_yaw_rate = Tuning.cam_yaw_rate(dial)
+
+
 func _apply_touch_setting() -> void:
 	if _touch == null:
 		return
@@ -503,7 +554,8 @@ func _start_maze(index: int) -> void:
 		float(config.get("straighten", 0.0)),
 		float(config.get("shallow_keep", 1.0)),
 		_landmark_density(index),
-		float(config.get("zigzag_keep", 1.0))
+		float(config.get("zigzag_keep", 1.0)),
+		_coin_density(index)
 	)
 
 	if _golden_trail:
@@ -511,8 +563,29 @@ func _start_maze(index: int) -> void:
 	if _platinum_trail:
 		_platinum_trail.reset()
 
+	# The purse, the crash-shrunk cap and the banked wallet all carry to the next
+	# maze, read off the OUTGOING racer before it is replaced.
+	#
+	# Game builds a fresh Racer per maze, so anything run-scoped has to be
+	# carried explicitly -- setup() deliberately resets only what is per-maze.
+	# Without this a maze boundary would empty the purse, wiping more than any
+	# crash can and making the cap unreachable.
+	var carried_coins := 0
+	var carried_cap := Tuning.COIN_CAP
+	var carried_banked := 0
+	if racer != null:
+		carried_coins = racer.coins
+		carried_cap = racer.coin_cap
+		carried_banked = racer.coins_banked
+
 	racer = Racer.new()
 	racer.setup(maze, upgrades, index)
+	racer.coins = carried_coins
+	racer.coin_cap = carried_cap
+	racer.coins_banked = carried_banked
+	# The floor moved with the purse, so the opening speed has to be re-read:
+	# setup() set it from a floor computed before the coins were assigned.
+	racer.speed = racer.speed_floor()
 
 	racer.crashed.connect(_on_crashed)
 	racer.unstuck.connect(_on_unstuck)
@@ -523,6 +596,8 @@ func _start_maze(index: int) -> void:
 	racer.reversed.connect(_on_turned.bind(-1))
 	racer.died.connect(_on_died)
 	racer.cell_entered.connect(_on_cell_entered)
+	racer.coin_taken.connect(_on_coin_taken)
+	racer.coins_lost.connect(_on_coins_lost)
 
 	# The track is named on the maze config, so a maze changes its own music the
 	# same way it changes its own palette (docs/specs/music.md). Shared across all
@@ -549,7 +624,8 @@ func _start_maze(index: int) -> void:
 				if String(Tuning.PALETTES[i].get("id", "")) == wanted:
 					palette_index = i
 					break
-	_mesh.build(maze, palette_index, upgrades.gate_height_scale())
+	_mesh.build(maze, palette_index, upgrades.gate_height_scale(),
+		upgrades.gate_girth_scale())
 	# After build(), which is what creates the maze's trail image and texture --
 	# they are sized to the grid, so a handle taken before the build is a handle
 	# to the previous maze's texture.
@@ -560,6 +636,10 @@ func _start_maze(index: int) -> void:
 
 	_cam_target_yaw = _yaw_for(racer.facing)
 	_cam_yaw = _cam_target_yaw
+	# Reset with the camera, not eased from the previous maze's heading -- a new
+	# maze is a cut, and a marker spinning onto its opening facing would read as
+	# the racer arriving mid-turn.
+	_marker_yaw = _cam_target_yaw
 
 	phase = Phase.RACING
 
@@ -612,6 +692,40 @@ func _landmark_density(index: int) -> float:
 	if index < 0 or index >= Tuning.MAZES.size():
 		return Tuning.LANDMARK_DENSITY
 	return float(Tuning.MAZES[index].get("landmarks", Tuning.LANDMARK_DENSITY))
+
+
+# Coins scattered per maze, as a fraction of open cells.
+#
+# Read off a per-maze table rather than a knob on the MAZES entry only because
+# it varies with grid AREA rather than with a maze's character -- the later
+# grids are larger, so a flat fraction would carpet them. Out of range falls
+# back to the flat default rather than erroring, the way the landmark density
+# does.
+func _coin_density(index: int) -> float:
+	if index < 0 or index >= Tuning.COIN_DENSITY_BY_MAZE.size():
+		return Tuning.COIN_DENSITY
+	return float(Tuning.COIN_DENSITY_BY_MAZE[index])
+
+
+# A coin was collected: retire its node and tell the HUD.
+func _on_coin_taken(cell: Vector2i, held: int) -> void:
+	if _mesh != null:
+		_mesh.clear_coin(cell)
+	if _hud != null:
+		_hud.set_coins(held, racer.coin_cap)
+
+
+# A crash halved the purse and took a point off the cap.
+#
+# Announced rather than left to the HUD counter alone: the cap falling is the
+# one permanent consequence in the coin economy, and a number that quietly drops
+# in the corner of the screen during a crash -- when the camera is pulling back
+# and a recovery prompt is being held -- is a rule the player never sees fire.
+func _on_coins_lost(held: int, cap: int) -> void:
+	if _hud != null:
+		_hud.set_coins(held, cap)
+		_hud.show_message("COINS %d  -  CAP %d" % [held, cap],
+			Tuning.NEON_COIN)
 
 
 # Retint the fog and the headlight to match the maze's palette.
@@ -713,6 +827,7 @@ func _update_quadrant_box() -> void:
 
 	var divisions := 0
 	var here := Vector2i(-1, -1)
+	var start_at := Vector2i(-1, -1)
 	var exit_at := Vector2i(-1, -1)
 	var number := 0
 	var total := 0
@@ -720,6 +835,13 @@ func _update_quadrant_box() -> void:
 	if upgrades.has_quadrant():
 		divisions = upgrades.quadrant_divisions()
 		here = racer.maze.quadrant_coord(racer.cell, divisions)
+		# Both ends read from the maze's own cells rather than from the first
+		# and last quadrant NUMBER. The numbering derives its ends from these
+		# two cells (Maze.quadrant_of), so restating them as 1 and total would
+		# be a second copy of that derivation -- and it would go quietly wrong
+		# the moment a generator moved either corner, which is exactly the case
+		# the derived numbering exists to survive.
+		start_at = racer.maze.quadrant_coord(racer.maze.start_cell, divisions)
 		exit_at = racer.maze.quadrant_coord(racer.maze.exit_cell, divisions)
 		number = racer.maze.quadrant_of(racer.cell, divisions)
 		total = racer.maze.quadrant_count(divisions)
@@ -728,10 +850,24 @@ func _update_quadrant_box() -> void:
 	if upgrades.has_cardinal_compass():
 		cardinal = Maze.cardinal_name(racer.facing)
 
-	_quadrant_box.show_state(divisions, here, exit_at, number, total, cardinal)
+	# The FACING is carried as well as the letter: the needle needs an angle,
+	# and re-deriving one from the string would be a second copy of
+	# Maze.CARDINAL_NAMES to keep in step.
+	var compass_facing := racer.facing if upgrades.has_cardinal_compass() else 0
+	_quadrant_box.show_state(
+		divisions, here, start_at, exit_at, number, total, cardinal,
+		compass_facing)
 	# Hidden outright when neither line is held, so an untaken pair costs no
 	# pixels rather than leaving an empty frame in the corner.
+	var was_visible: bool = _quadrant_box.visible
 	_quadrant_box.visible = divisions > 0 or cardinal != ""
+	# The message band clears the box only while the box is up, and the box
+	# appears the moment either line is TAKEN -- mid-run, at a gate. Placement
+	# alone runs on resize, so without this the toast announcing that very pick
+	# would be the one drawn through the widget it just created.
+	if _quadrant_box.visible != was_visible and _hud != null:
+		_hud.push_message_below(
+			_quadrant_box.offset_bottom if _quadrant_box.visible else 0.0)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -934,7 +1070,7 @@ func _update_camera(delta: float) -> void:
 
 	if _marker:
 		_marker.position = ground
-		_marker.rotation = Vector3(0.0, _yaw_for(racer.facing), 0.0)
+		_marker.rotation = Vector3(0.0, _marker_yaw_toward(racer, delta), 0.0)
 		_marker.update_state(racer, delta)
 
 	# Aimed off the RACER's facing, not the camera's trailing yaw. The chase
@@ -1026,13 +1162,27 @@ func _update_camera(delta: float) -> void:
 	_cam_target_yaw = _yaw_for(racer.facing)
 	# Rotate the short way round, so a west-to-north turn does not spin 270.
 	var difference := wrapf(_cam_target_yaw - _cam_yaw, -PI, PI)
-	# The turn freeze exists so the view can catch up to a pivot the world made
-	# instantly -- so the camera swings FASTER while it runs, not at its usual
-	# trailing rate. A freeze the camera does not spend is just a stutter: the
-	# player would be held still and still be looking the old way when released.
-	var yaw_rate := 12.0
-	if racer.freeze > 0.0:
-		yaw_rate *= Tuning.TURN_FREEZE_CAM_MULTIPLIER
+	# The base rate is the PLAYER's, off the camera sensitivity dial. Guarded
+	# rather than assumed, like every other Settings read: the autoload is
+	# absent in every harness that instantiates Game.tscn bare, and a missing
+	# preference must never be what stops the game running.
+	#
+	# There is NO freeze multiplier any more, and removing it is what finally
+	# made the turn smooth. The camera used to swing 3.5x faster while the
+	# freeze ran, on the reasoning that a freeze the camera does not spend is
+	# just a stutter -- but measured, that boost closed 70% of the whole turn in
+	# a SINGLE FRAME at the default dial, and a literal 100% at dials 0-5. The
+	# camera lurched almost the whole way round on frame one and then crept, and
+	# no amount of smoothing the boost's decay could fix that, because the
+	# lurch was the boost itself rather than the way it was switched off.
+	#
+	# The stutter it was guarding against does not materialise: without it the
+	# default still completes 73.8% of the swing inside the freeze, so the hold
+	# is still doing the catching up. What changes is that the swing is now an
+	# even ease the whole way rather than a jump followed by a crawl -- and the
+	# dial finally governs the turn, instead of being multiplied past its own
+	# fast end during the one moment the player is watching it.
+	var yaw_rate: float = _cam_yaw_rate
 	_cam_yaw += difference * minf(1.0, delta * yaw_rate)
 
 	# Ease toward the crash view rather than snapping, both in and out.
@@ -1354,6 +1504,38 @@ func _camera_clearance(back: Vector3) -> float:
 
 # Maze +Y is south, which in world space is +Z. Camera looks down -Z at yaw 0,
 # so each compass direction maps to the yaw that points the camera along it.
+# Ease the marker onto the racer's facing, and return the angle to draw it at.
+#
+# Faster the further it has to go, which is the "faster depending on the lag"
+# half: a plain exponential ease is fastest at the START and crawls at the end,
+# so the last few degrees of a 180 would take as long as the first sixty and the
+# reversal would still be swinging after REVERSE_FREEZE released. Scaling the
+# rate by the angle remaining makes a 180 resolve in roughly a 90's wall time.
+#
+# It does NOT take the camera's freeze multiplier. That 3.5x exists so the eye can
+# catch up to a pivot it was not present for; the marker IS the thing that
+# pivoted. Applying it anyway drove the per-frame step into its clamp and put the
+# single-frame snap straight back -- see MARKER_YAW_RATE.
+#
+# Snapped inside MARKER_YAW_SNAP_EPSILON rather than eased forever, because an
+# asymptotic approach never actually arrives and would leave the arrow
+# permanently a fraction of a degree off the corridor it is driving down.
+func _marker_yaw_toward(r: Racer, delta: float) -> float:
+	var target := _yaw_for(r.facing)
+	# Rotate the short way round, so a west-to-north turn does not spin 270 --
+	# the same wrap the camera does, and for the same reason.
+	var difference := wrapf(target - _marker_yaw, -PI, PI)
+	if absf(difference) < Tuning.MARKER_YAW_SNAP_EPSILON:
+		_marker_yaw = target
+		return target
+
+	# In half-turns: a 90 contributes 0.5, a 180 a full 1.0.
+	var lag: float = absf(difference) / PI
+	var rate: float = Tuning.MARKER_YAW_RATE * (1.0 + Tuning.MARKER_YAW_LAG_GAIN * lag)
+	_marker_yaw = wrapf(_marker_yaw + difference * minf(1.0, delta * rate), -PI, PI)
+	return _marker_yaw
+
+
 func _yaw_for(direction: int) -> float:
 	match direction:
 		Maze.N: return 0.0
@@ -1634,7 +1816,8 @@ func _on_upgrade_chosen(line: int) -> void:
 		# place. Rebuilding the whole mesh instead would re-run the name collision
 		# section 12 records -- and would lose which gates are already cleared.
 		if line == Upgrades.Line.GATE_SIZE and _mesh != null:
-			_mesh.rescale_gates(upgrades.gate_height_scale())
+			_mesh.rescale_gates(upgrades.gate_height_scale(),
+				upgrades.gate_girth_scale())
 
 		# Second Wind's bank is sized by rank, so a rank taken mid-maze tops it up
 		# rather than leaving the player to wait for the next gate to feel it.
@@ -1687,6 +1870,15 @@ func _on_exit_reached() -> void:
 	var mult := score.time_multiplier()
 	var earned := score.bank_maze(maze_index, String(config["name"]))
 
+	# Clearing a maze COMMITS the purse to the shop wallet, and this is the only
+	# place that happens. A death never reaches here, which is the rule: coins
+	# are banked by finishing mazes, so a run that ends badly still keeps
+	# everything the mazes before it earned.
+	#
+	# The purse is not emptied -- the coins keep paying their speed bonus for the
+	# rest of the run. Banking records what has been earned; it does not spend it.
+	racer.bank_coins()
+
 	if maze_index + 1 < Tuning.MAZES.size():
 		phase = Phase.TRANSITION
 		_transition_time = 2.0
@@ -1729,6 +1921,19 @@ func _post_run(died: bool) -> void:
 	# the autoload is absent, which is every harness and every offline desktop
 	# run -- awarding after it would make unlocks depend on the network being
 	# reachable, which has nothing to do with how the player drove.
+	# The shop wallet is credited HERE, with the achievements and for the same
+	# reasons: this is the only point at which a run is genuinely over, and it
+	# sits BEFORE the leaderboard guard so a missing or unreachable service never
+	# costs the player money they earned.
+	#
+	# What is credited is `coins_banked` -- the per-maze commits -- and never the
+	# live purse. A player who dies mid-maze holding 6 coins banks nothing for
+	# that maze, which is the rule: coins are banked by FINISHING mazes.
+	if racer != null and racer.coins_banked > 0:
+		var wallet := get_node_or_null("/root/Unlocks")
+		if wallet != null:
+			wallet.add_coins(racer.coins_banked)
+
 	_new_unlocks.clear()
 	var unlocks := get_node_or_null("/root/Unlocks")
 	if unlocks != null:
